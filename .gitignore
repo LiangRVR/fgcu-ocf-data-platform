@@ -44,4 +44,3 @@ next-env.d.ts
 # agents / skills (workspace tooling, not project source)
 .agents
 .claude
-skills-lock.json
