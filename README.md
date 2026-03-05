@@ -1,181 +1,139 @@
 # OCF Fellowship Management System
 
 Internal admin platform for the **FGCU Office of Competitive Fellowships (OCF)**.
-Built to track students, fellowship opportunities, applications, and advising sessions.
+Manages students, fellowship opportunities, applications, and advising sessions.
 
 ---
 
-## Tech Stack
+## 🚀 Quick Start
 
-| Layer | Technology |
-|---|---|
-| Framework | [Next.js 16](https://nextjs.org) — App Router, Server Components |
-| Language | TypeScript (strict mode) |
-| Styling | Tailwind CSS v4 |
-| UI Components | shadcn/ui + Radix UI primitives |
-| Icons | lucide-react |
-| Forms | React Hook Form + Zod |
-| Data Tables | TanStack Table v8 (wired up in next phase) |
-| Backend / Auth | Supabase (JS client — ready, not yet wired) |
-| Toasts | Sonner |
-| Dates | date-fns |
-
----
-
-## Project Structure
-
-```
-.
-├── app/
-│   ├── (auth)/
-│   │   ├── layout.tsx            # Centered auth shell
-│   │   └── login/page.tsx        # Login form (RHF + Zod)
-│   ├── (dashboard)/
-│   │   ├── layout.tsx            # Auth gate → DashboardShell
-│   │   ├── dashboard/page.tsx
-│   │   ├── students/page.tsx
-│   │   ├── fellowships/page.tsx
-│   │   ├── applications/page.tsx
-│   │   ├── advising/page.tsx
-│   │   └── reports/page.tsx
-│   ├── api/
-│   │   └── health/route.ts       # GET /api/health
-│   ├── globals.css               # Tailwind + design tokens (CSS vars)
-│   └── layout.tsx                # Root layout + Sonner Toaster
-├── components/
-│   ├── layout/
-│   │   ├── dashboard-shell.tsx   # Client shell — mobile sidebar state
-│   │   ├── page-header.tsx       # PageHeader + PageSkeleton
-│   │   ├── sidebar.tsx           # Desktop fixed + mobile overlay drawer
-│   │   └── top-bar.tsx           # Sticky header, mobile menu toggle
-│   └── ui/                       # shadcn/ui primitives
-│       ├── badge.tsx
-│       ├── button.tsx
-│       ├── card.tsx
-│       ├── input.tsx
-│       ├── label.tsx
-│       ├── separator.tsx
-│       ├── skeleton.tsx
-│       └── toaster.tsx
-├── lib/
-│   ├── auth/
-│   │   └── mock.ts               # IS_AUTHED flag — replace with Supabase session
-│   ├── config/
-│   │   └── nav.ts                # Sidebar NAV_ITEMS config
-│   ├── supabase/
-│   │   ├── client.ts             # Browser Supabase client
-│   │   └── server.ts             # Server Supabase client factory
-│   ├── utils/
-│   │   ├── cn.ts                 # clsx + tailwind-merge helper
-│   │   └── format.ts             # formatDate, getInitials
-│   └── validators/
-│       └── auth.ts               # loginSchema (Zod)
-├── types/
-│   ├── database.ts               # Placeholder for supabase gen types
-│   └── index.ts                  # NavItem, User, Student, Fellowship, Application
-├── public/
-├── .env.example                  # Required env vars
-├── components.json               # shadcn/ui config
-├── proxy.ts                      # Next.js 16 edge proxy stub (auth hook placeholder)
-├── next.config.ts
-├── tailwind.config (inline)      # Configured via globals.css @theme
-└── tsconfig.json                 # strict: true
-```
-
----
-
-## Getting Started
-
-### 1. Install dependencies
+### 1. Install Dependencies
 
 ```bash
-npm install
+pnpm install
 ```
 
-### 2. Set up environment variables
+### 2. Set Up Environment
 
 ```bash
 cp .env.example .env.local
 ```
 
-Open `.env.local` and fill in your Supabase project credentials:
+Edit `.env.local` and add your Supabase credentials (see [Quick Start Guide](docs/quickstart.md)).
 
-```env
-NEXT_PUBLIC_SUPABASE_URL=https://<your-project>.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=<your-anon-key>
-```
-
-> **Note:** The app runs without real keys — missing vars trigger a `console.warn` but do not crash.
-
-### 3. Run the development server
+### 3. Run Development Server
 
 ```bash
-npm run dev
+pnpm dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) — automatically redirects to `/dashboard`.
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-### 4. Other commands
+---
+
+## 📚 Documentation
+
+- **[Quick Start Guide](docs/quickstart.md)** - Get up and running with Supabase
+- **[Schema Verification](docs/schema-verification.md)** - Database setup checklist
+- **[Supabase Setup](supabase/README.md)** - Detailed database configuration
+- **[Database Schema](supabase/SCHEMA.md)** - Complete schema documentation
+
+---
+
+## 🛠️ Tech Stack
+
+| Layer | Technology |
+|---|---|
+| **Framework** | Next.js 16 (App Router, Server Components) |
+| **Language** | TypeScript (strict mode) |
+| **Database** | Supabase (PostgreSQL) |
+| **Auth** | Supabase Auth (setup in progress) |
+| **Styling** | Tailwind CSS v4 |
+| **UI Library** | shadcn/ui + Radix UI |
+| **Forms** | React Hook Form + Zod |
+| **Icons** | lucide-react |
+| **Toasts** | Sonner |
+
+---
+
+## 📁 Project Structure
+
+```
+├── app/                    # Next.js App Router
+│   ├── (auth)/            # Authentication pages
+│   ├── (dashboard)/       # Protected dashboard pages
+│   └── api/               # API routes
+├── components/
+│   ├── layout/            # Shell, sidebar, top bar
+│   └── ui/                # shadcn/ui components
+├── lib/
+│   ├── auth/              # Authentication logic
+│   ├── supabase/          # Supabase clients
+│   ├── utils/             # Utility functions
+│   └── validators/        # Zod schemas
+├── types/                 # TypeScript types
+├── supabase/
+│   └── migrations/        # Database migrations
+├── docs/                  # Documentation
+└── scripts/               # Utility scripts
+```
+
+See the [full project structure details](docs/quickstart.md#project-structure) for more information.
+
+---
+
+## 🗄️ Database Setup
+
+The application uses Supabase for the backend. To set up the database:
+
+1. **Create a Supabase project** at [supabase.com](https://supabase.com)
+2. **Apply the schema**: Copy `supabase/migrations/20260305000000_initial_schema.sql` to Supabase SQL Editor
+3. **Generate types**: Run `pnpm run db:types`
+4. **Test connection**: Run `pnpm run test:connection`
+
+For detailed instructions, see the [Supabase Setup Guide](supabase/README.md).
+
+---
+
+## 🎯 Features
+
+### Current
+- ✅ Dashboard layout with responsive sidebar
+- ✅ Authentication UI (mock auth, Supabase integration pending)
+- ✅ Empty state pages for all modules
+- ✅ Database schema and migrations
+- ✅ TypeScript type safety
+- ✅ Form validation with Zod
+
+### Planned
+- 🔄 Supabase Auth integration
+- 🔄 Student management CRUD
+- 🔄 Fellowship opportunity management
+- 🔄 Application tracking and review workflow
+- 🔄 Advising session scheduling
+- 🔄 Data tables with sorting/filtering
+
+---
+
+## 📜 Available Scripts
 
 ```bash
-npm run build   # Production build
-npm run lint    # ESLint
+pnpm dev              # Start development server
+pnpm build            # Build for production
+pnpm start            # Start production server
+pnpm lint             # Run ESLint
+pnpm db:types         # Generate TypeScript types from Supabase
+pnpm test:connection  # Test Supabase connection
 ```
 
 ---
 
-## Current State (Phase 1 — Foundation)
+## 🤝 Contributing
 
-### ✅ Done
-- Next.js 16 App Router with TypeScript strict mode
-- Tailwind CSS v4 with a consistent CSS variable design-token system (FGCU Blue primary)
-- Dashboard shell: fixed desktop sidebar + responsive mobile drawer
-- Active route highlighting in sidebar
-- Top bar with mobile menu toggle
-- Route stubs for all 6 sections (Dashboard, Students, Fellowships, Applications, Advising, Reports)
-- Login page UI with React Hook Form + Zod validation, accessible error states
-- Supabase client/server files configured and gracefully degraded when env vars are absent
-- Domain types (`Student`, `Fellowship`, `Application`, `User`)
-- shadcn/ui component primitives: `Button`, `Card`, `Input`, `Label`, `Badge`, `Skeleton`, `Separator`, `Toaster`
-- `GET /api/health` endpoint
-- Mock auth gate via `lib/auth/mock.ts` — single boolean toggle to simulate logged-in/out state
-- Edge proxy stub (`proxy.ts`) ready for Supabase session middleware
-
-### 🔜 Next Steps (Phase 2)
-- [ ] Wire Supabase auth (email/password sign-in, session cookies via `@supabase/ssr`)
-- [ ] Replace `IS_AUTHED` mock with real session check in `proxy.ts` and layouts
-- [ ] Define database schema and run first Supabase migration
-- [ ] Generate TypeScript types: `npx supabase gen types typescript ... > types/database.ts`
-- [ ] Build Students data table with TanStack Table
-- [ ] Build Fellowships CRUD
-- [ ] Build Applications tracker
-- [ ] Add role-based access control (admin / advisor / viewer)
+This is an internal project for FGCU OCF. For questions or issues, contact the development team.
 
 ---
 
-## Auth Gate (Development)
+## 📄 License
 
-The auth gate is controlled by a single flag in [lib/auth/mock.ts](lib/auth/mock.ts):
-
-```ts
-export const IS_AUTHED = true; // set to false to test redirect → /login
-```
-
-When Supabase auth is integrated, this file is deleted and replaced by a session check in `proxy.ts`.
-
----
-
-## Environment Variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | Yes (for auth/DB) | Your Supabase project URL |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Yes (for auth/DB) | Your Supabase anon public key |
-
-See [`.env.example`](.env.example) for the full template.
-
----
-
-## License
-
-[LICENSE](LICENSE)
+See [LICENSE](LICENSE) for details.

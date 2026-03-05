@@ -14,7 +14,7 @@
     "documentation-templates": {
       "source": "sickn33/antigravity-awesome-skills",
       "sourceType": "github",
-      "computedHash": "8c8bd75ba7de392c07a16952c7a28a3be6d4ddfc09d37b1c114672f6f48930be"
+      "computedHash": "2b0bf6b1f48f9da0102a5fecae026f18acd13981746a4593b9750cd9e0579f9b"
     },
     "next-best-practices": {
       "source": "vercel-labs/next-skills",
@@ -29,17 +29,17 @@
     "vercel-cli": {
       "source": "vercel/vercel",
       "sourceType": "github",
-      "computedHash": "17794541d3a0433c422b92be689f798c25dd886bda31f4828edd8b5929552075"
+      "computedHash": "b030d91f22bb7665a4871649ad52d3918db93273e339ba92d90a67ed00de465a"
     },
     "vercel-deployment": {
       "source": "sickn33/antigravity-awesome-skills",
       "sourceType": "github",
-      "computedHash": "388f52fe41c1d5b17d3c599e6c15c4758e871968ffdc2a03dc3aa681e8c8df0c"
+      "computedHash": "53b95746d6ed728a76d7fdba944fd72f23dac43620595f965e84eb4897871697"
     },
     "vercel-react-best-practices": {
       "source": "vercel-labs/agent-skills",
       "sourceType": "github",
-      "computedHash": "4365be772fd3b41994a72ad478472c6d680678e7f3859860ab010e9c46e48ee0"
+      "computedHash": "3462ec83f862abb2d532953df33a4dbf87f4616849da5d4b5cc7c13601aaf997"
     },
     "web-design-guidelines": {
       "source": "vercel-labs/agent-skills",
