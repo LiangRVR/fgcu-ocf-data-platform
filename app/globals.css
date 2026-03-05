@@ -1,46 +1,77 @@
+/* ── Google Fonts ────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Merriweather:wght@400;700&family=Open+Sans:wght@400;600;700&display=swap');
+
 @import "tailwindcss";
 
 /* ── shadcn/ui CSS variables ─────────────────────────────────── */
 :root {
+  /* FGCU Brand Colors */
+  --fgcu-green: 158 100% 20%; /* #006747 */
+  --fgcu-green-dark: 158 100% 17%; /* #00563b */
+  --fgcu-blue: 205 100% 18%; /* #003B5C */
+  --fgcu-gold: 45 100% 39%; /* #C99700 */
+
+  /* Neutrals */
+  --gray-dark: 0 0% 20%; /* #333333 */
+  --gray-medium: 218 11% 46%; /* #6B7280 */
+  --gray-light: 220 13% 96%; /* #F3F4F6 */
+
+  /* Base colors */
   --background: 0 0% 100%;
-  --foreground: 222.2 84% 4.9%;
+  --foreground: 0 0% 20%; /* Dark gray for text */
 
   --card: 0 0% 100%;
-  --card-foreground: 222.2 84% 4.9%;
+  --card-foreground: 0 0% 20%;
 
   --popover: 0 0% 100%;
-  --popover-foreground: 222.2 84% 4.9%;
+  --popover-foreground: 0 0% 20%;
 
-  /* FGCU Blue */
-  --primary: 213 94% 30%;
-  --primary-foreground: 210 40% 98%;
+  /* FGCU Green as primary */
+  --primary: 158 100% 20%; /* FGCU Green */
+  --primary-foreground: 0 0% 100%;
 
-  --secondary: 210 40% 96.1%;
-  --secondary-foreground: 222.2 47.4% 11.2%;
+  /* FGCU Blue as secondary */
+  --secondary: 205 100% 18%; /* FGCU Blue */
+  --secondary-foreground: 0 0% 100%;
 
-  --muted: 210 40% 96.1%;
-  --muted-foreground: 215.4 16.3% 46.9%;
+  /* Muted grays */
+  --muted: 220 13% 96%; /* Light gray */
+  --muted-foreground: 218 11% 46%; /* Medium gray */
 
-  --accent: 210 40% 96.1%;
-  --accent-foreground: 222.2 47.4% 11.2%;
+  /* FGCU Gold as accent */
+  --accent: 45 100% 39%; /* FGCU Gold */
+  --accent-foreground: 0 0% 0%; /* Black text on gold */
 
   --destructive: 0 84.2% 60.2%;
-  --destructive-foreground: 210 40% 98%;
+  --destructive-foreground: 0 0% 100%;
 
-  --border: 214.3 31.8% 91.4%;
-  --input: 214.3 31.8% 91.4%;
-  --ring: 213 94% 30%;
+  --border: 220 13% 91%;
+  --input: 220 13% 91%;
+  --ring: 158 100% 20%; /* FGCU Green */
 
-  --sidebar: 222 47% 11%;
-  --sidebar-foreground: 210 40% 98%;
-  --sidebar-muted: 217 33% 17%;
-  --sidebar-accent: 213 94% 30%;
+  /* Sidebar using FGCU Green */
+  --sidebar: 158 100% 20%; /* FGCU Green */
+  --sidebar-foreground: 0 0% 100%;
+  --sidebar-muted: 158 100% 17%; /* Darker green */
+  --sidebar-accent: 205 100% 18%; /* FGCU Blue for active items */
 
   --radius: 0.5rem;
 }
 
 /* ── Tailwind v4 theme mapping ───────────────────────────────── */
 @theme inline {
+  /* FGCU Brand Colors */
+  --color-fgcu-green: hsl(var(--fgcu-green));
+  --color-fgcu-green-dark: hsl(var(--fgcu-green-dark));
+  --color-fgcu-blue: hsl(var(--fgcu-blue));
+  --color-fgcu-gold: hsl(var(--fgcu-gold));
+
+  /* Neutral Colors */
+  --color-gray-dark: hsl(var(--gray-dark));
+  --color-gray-medium: hsl(var(--gray-medium));
+  --color-gray-light: hsl(var(--gray-light));
+
+  /* Base colors */
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
 
@@ -73,6 +104,10 @@
   --color-sidebar-foreground: hsl(var(--sidebar-foreground));
   --color-sidebar-muted: hsl(var(--sidebar-muted));
   --color-sidebar-accent: hsl(var(--sidebar-accent));
+
+  /* Typography */
+  --font-family-heading: "Merriweather", "Georgia", serif;
+  --font-family-body: "Open Sans", "Roboto", system-ui, -apple-system, sans-serif;
 }
 
 /* ── Base styles ─────────────────────────────────────────────── */
@@ -83,5 +118,10 @@
 body {
   background-color: hsl(var(--background));
   color: hsl(var(--foreground));
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: var(--font-family-body);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-family-heading);
+  font-weight: 700;
 }

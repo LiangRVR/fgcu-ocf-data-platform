@@ -16,10 +16,10 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const pathname = usePathname();
 
   const sidebarContent = (
-    <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
+    <div className="flex h-full flex-col bg-slate-900 text-slate-200">
       {/* Brand */}
-      <div className="flex h-16 items-center gap-3 border-b border-white/10 px-5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/10">
+      <div className="flex h-16 items-center gap-3 border-b border-slate-800 px-5">
+        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#006747]">
           <GraduationCap className="h-5 w-5 text-white" />
         </div>
         <span className="text-sm font-semibold leading-tight text-white">
@@ -42,13 +42,13 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
               href={item.href}
               onClick={onClose}
               className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                "flex items-center gap-3 rounded-md px-4 py-2 text-sm font-medium transition-colors",
                 isActive
-                  ? "bg-white/15 text-white"
-                  : "text-white/70 hover:bg-white/10 hover:text-white"
+                  ? "bg-[#006747] text-white"
+                  : "text-slate-200 hover:bg-slate-800 hover:text-white"
               )}
             >
-              {Icon && <Icon className="h-4 w-4 shrink-0" />}
+              {Icon && <Icon className="h-4.5 w-4.5 shrink-0" />}
               {item.label}
             </Link>
           );
@@ -56,10 +56,11 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
       </nav>
 
       {/* Footer */}
-      <div className="border-t border-white/10 px-5 py-4">
-        <p className="text-xs text-white/40">
-          FGCU Office of Competitive Fellowships
-        </p>
+      <div className="border-t border-slate-700 px-5 py-4">
+        <div className="text-xs font-semibold text-white">FGCU</div>
+        <div className="text-xs text-slate-400">
+          Office of Competitive Fellowships
+        </div>
       </div>
     </div>
   );

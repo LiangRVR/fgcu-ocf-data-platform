@@ -16,7 +16,7 @@ export function DashboardShell({ children }: DashboardShellProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-gray-50">
       <Sidebar
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
@@ -25,7 +25,7 @@ export function DashboardShell({ children }: DashboardShellProps) {
       {/* Main content — offset by sidebar width on desktop */}
       <div className="lg:pl-64">
         <TopBar onMenuClick={() => setSidebarOpen(true)} />
-        <main className="mx-auto max-w-7xl px-4 py-6 lg:px-6">
+        <main className="mx-auto max-w-7xl px-8 py-6">
           {children}
         </main>
       </div>

@@ -58,24 +58,32 @@ export default async function DashboardPage() {
       value: stats.totalStudents.toString(),
       description: "Tracked in the system",
       icon: Users,
+      bgColor: "bg-blue-100",
+      iconColor: "text-blue-600",
     },
     {
       title: "Active Fellowships",
       value: stats.activeFellowships.toString(),
       description: "Open for applications",
       icon: Award,
+      bgColor: "bg-amber-100",
+      iconColor: "text-amber-600",
     },
     {
       title: "Applications",
       value: stats.totalApplications.toString(),
       description: "In progress or submitted",
       icon: FileText,
+      bgColor: "bg-purple-100",
+      iconColor: "text-purple-600",
     },
     {
       title: "Awards This Year",
       value: stats.awardsThisYear.toString(),
       description: "Fellowships awarded",
       icon: TrendingUp,
+      bgColor: "bg-green-100",
+      iconColor: "text-green-600",
     },
   ];
 
@@ -87,22 +95,21 @@ export default async function DashboardPage() {
       />
 
       {/* Stat cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {STAT_CARDS.map((stat) => {
           const Icon = stat.icon;
           return (
-            <Card key={stat.title}>
-              <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  {stat.title}
-                </CardTitle>
-                <Icon className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <p className="text-3xl font-bold">{stat.value}</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {stat.description}
-                </p>
+            <Card key={stat.title} className="border-gray-200 shadow-sm">
+              <CardContent className="p-4">
+                <div className="flex items-center gap-3">
+                  <div className={`flex h-10 w-10 items-center justify-center rounded-lg ${stat.bgColor}`}>
+                    <Icon className={`h-5 w-5 ${stat.iconColor}`} />
+                  </div>
+                  <div>
+                    <div className="text-2xl font-semibold text-slate-900">{stat.value}</div>
+                    <div className="text-sm text-slate-500">{stat.title}</div>
+                  </div>
+                </div>
               </CardContent>
             </Card>
           );
@@ -110,20 +117,18 @@ export default async function DashboardPage() {
       </div>
 
       {/* Placeholder recent activity */}
-      <div className="mt-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Recent Activity</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">
-              {stats.totalStudents === 0
-                ? "No data yet. Add some students, fellowships, and applications to get started."
-                : "Recent activity will appear here."}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
+      <Card className="border-gray-200 shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-base font-semibold text-slate-900">Recent Activity</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-slate-500">
+            {stats.totalStudents === 0
+              ? "No data yet. Add some students, fellowships, and applications to get started."
+              : "Recent activity will appear here."}
+          </p>
+        </CardContent>
+      </Card>
     </>
   );
 }

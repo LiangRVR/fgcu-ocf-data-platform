@@ -34,6 +34,8 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 ## 📚 Documentation
 
 - **[Quick Start Guide](docs/quickstart.md)** - Get up and running with Supabase
+- **[FGCU Design Style Guide](docs/DESIGN_GUIDE.md)** - Official design system and style guidelines
+- **[UI/UX Refactor Summary](docs/UI_UX_REFACTOR.md)** - Complete UI/UX transformation documentation
 - **[Schema Verification](docs/schema-verification.md)** - Database setup checklist
 - **[Supabase Setup](supabase/README.md)** - Detailed database configuration
 - **[Database Schema](supabase/SCHEMA.md)** - Complete schema documentation
@@ -49,7 +51,9 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | **Database** | Supabase (PostgreSQL) |
 | **Auth** | Supabase Auth (setup in progress) |
 | **Styling** | Tailwind CSS v4 |
+| **Design System** | FGCU Brand Colors + Custom Palette |
 | **UI Library** | shadcn/ui + Radix UI |
+| **Typography** | Merriweather (headings) + Open Sans (body) |
 | **Forms** | React Hook Form + Zod |
 | **Icons** | lucide-react |
 | **Toasts** | Sonner |
@@ -61,20 +65,35 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 ```
 ├── app/                    # Next.js App Router
 │   ├── (auth)/            # Authentication pages
+│   │   └── login/         # Login page
 │   ├── (dashboard)/       # Protected dashboard pages
-│   └── api/               # API routes
+│   │   ├── dashboard/     # Overview with statistics
+│   │   ├── students/      # Student management
+│   │   ├── fellowships/   # Fellowship opportunities
+│   │   ├── applications/  # Application tracking
+│   │   ├── advising/      # Advising sessions
+│   │   └── reports/       # Analytics and reports
+│   ├── api/               # API routes
+│   └── globals.css        # FGCU design system styles
 ├── components/
-│   ├── layout/            # Shell, sidebar, top bar
-│   └── ui/                # shadcn/ui components
+│   ├── layout/            # Shell, sidebar, top bar, page header
+│   └── ui/                # shadcn/ui components (buttons, cards, badges, etc.)
 ├── lib/
 │   ├── auth/              # Authentication logic
-│   ├── supabase/          # Supabase clients
-│   ├── utils/             # Utility functions
-│   └── validators/        # Zod schemas
-├── types/                 # TypeScript types
+│   ├── config/            # Navigation and app config
+│   ├── supabase/          # Supabase clients (browser & server)
+│   ├── utils/             # Utility functions (cn, format)
+│   └── validators/        # Zod validation schemas
+├── types/                 # TypeScript types (Database, App)
 ├── supabase/
-│   └── migrations/        # Database migrations
-├── docs/                  # Documentation
+│   ├── migrations/        # SQL migrations
+│   ├── SCHEMA.md          # Database documentation
+│   └── README.md          # Supabase setup guide
+├── docs/                  # Project documentation
+│   ├── DESIGN_GUIDE.md    # FGCU design system
+│   ├── UI_UX_REFACTOR.md  # UI transformation docs
+│   ├── quickstart.md      # Quick start guide
+│   └── schema-verification.md
 └── scripts/               # Utility scripts
 ```
 
@@ -98,20 +117,33 @@ For detailed instructions, see the [Supabase Setup Guide](supabase/README.md).
 ## 🎯 Features
 
 ### Current
-- ✅ Dashboard layout with responsive sidebar
-- ✅ Authentication UI (mock auth, Supabase integration pending)
-- ✅ Empty state pages for all modules
-- ✅ Database schema and migrations
-- ✅ TypeScript type safety
-- ✅ Form validation with Zod
+- ✅ **Professional Dashboard UI** - Modern, neutral design with FGCU green accents
+- ✅ **Responsive Layout** - Adaptive sidebar and mobile-friendly tables
+- ✅ **Statistics Cards** - Real-time metrics with colorful icons
+- ✅ **Interactive Tables** - Hover states, search bars, action buttons
+- ✅ **Enhanced Empty States** - Engaging onboarding with CTAs
+- ✅ **Semantic Status Badges** - Color-coded indicators with borders
+- ✅ **FGCU Design System** - Consistent colors, typography, and spacing
+- ✅ **Database Schema** - Complete schema and migrations
+- ✅ **TypeScript Type Safety** - Full type coverage
+- ✅ **Form Validation** - Zod schemas for data validation
 
-### Planned
+### In Progress
 - 🔄 Supabase Auth integration
-- 🔄 Student management CRUD
+- 🔄 Student management CRUD operations
 - 🔄 Fellowship opportunity management
 - 🔄 Application tracking and review workflow
-- 🔄 Advising session scheduling
-- 🔄 Data tables with sorting/filtering
+- 🔄 Advising session scheduling and calendar
+
+### Planned
+- 📋 Client-side search and filtering
+- 📋 Table sorting functionality
+- 📋 Real pagination with page size controls
+- 📋 Add/Edit modals and forms
+- 📋 Student profile pages
+- 📋 Data export (CSV/PDF)
+- 📋 Loading skeletons
+- 📋 Bulk actions
 
 ---
 
