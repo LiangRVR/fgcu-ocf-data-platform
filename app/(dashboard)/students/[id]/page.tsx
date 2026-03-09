@@ -9,6 +9,9 @@ import { createServerClient } from "@/lib/supabase/server";
 import type { Database } from "@/types/database";
 
 type Student = Database["public"]["Tables"]["student"]["Row"];
+type Application = Database["public"]["Tables"]["application"]["Row"] & {
+  fellowship: { fellowship_name: string } | null;
+};
 
 interface StudentDetailPageProps {
   params: Promise<{ id: string }>;
@@ -36,6 +39,28 @@ async function getStudent(id: number): Promise<Student | null> {
   }
 }
 
+async function getApplications(studentId: number): Promise<Application[]> {
+  const supabase = createServerClient();
+
+  try {
+    const { data, error } = await supabase
+      .from("application")
+      .select("*, fellowship(fellowship_name)")
+      .eq("student_id", studentId)
+      .order("application_id", { ascending: false });
+
+    if (error) {
+      console.error("Error fetching applications:", error);
+      return [];
+    }
+
+    return (data as Application[]) || [];
+  } catch (error) {
+    console.error("Error fetching applications:", error);
+    return [];
+  }
+}
+
 export default async function StudentDetailPage({ params }: StudentDetailPageProps) {
   const { id } = await params;
   const studentId = parseInt(id);
@@ -44,7 +69,10 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
     notFound();
   }
 
-  const student = await getStudent(studentId);
+  const [student, applications] = await Promise.all([
+    getStudent(studentId),
+    getApplications(studentId),
+  ]);
 
   if (!student) {
     notFound();
@@ -191,20 +219,79 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
           </CardContent>
         </Card>
 
-        {/* Applications Section - Placeholder */}
+        {/* Applications Section */}
         <Card className="border-gray-200 shadow-sm">
           <CardHeader>
-            <CardTitle className="text-lg">Applications</CardTitle>
+            <CardTitle className="text-lg">
+              Applications
+              {applications.length > 0 && (
+                <span className="ml-2 text-sm font-normal text-slate-500">
+                  ({applications.length})
+                </span>
+              )}
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="flex flex-col items-center justify-center py-8">
-              <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gray-100">
-                <Award className="h-8 w-8 text-gray-400" />
+            {applications.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-8">
+                <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gray-100">
+                  <Award className="h-8 w-8 text-gray-400" />
+                </div>
+                <p className="text-sm text-slate-500">
+                  No applications found for this student.
+                </p>
               </div>
-              <p className="text-sm text-slate-500">
-                No applications yet for this student.
-              </p>
-            </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-100">
+                      <th className="pb-3 text-left font-medium text-slate-500">Fellowship</th>
+                      <th className="pb-3 text-left font-medium text-slate-500">Stage</th>
+                      <th className="pb-3 text-left font-medium text-slate-500">Destination</th>
+                      <th className="pb-3 text-left font-medium text-slate-500">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {applications.map((app) => (
+                      <tr key={app.application_id} className="py-2">
+                        <td className="py-3 pr-4 font-medium text-slate-900">
+                          {app.fellowship?.fellowship_name ?? `Fellowship #${app.fellowship_id}`}
+                        </td>
+                        <td className="py-3 pr-4 text-slate-700">
+                          {app.stage_of_application || "—"}
+                        </td>
+                        <td className="py-3 pr-4 text-slate-700">
+                          {app.destination_country || "—"}
+                        </td>
+                        <td className="py-3">
+                          <div className="flex flex-wrap gap-1">
+                            {app.is_finalist && (
+                              <Badge className="border-blue-200 bg-blue-100 text-blue-800 hover:bg-blue-100">
+                                Finalist
+                              </Badge>
+                            )}
+                            {app.is_semi_finalist && (
+                              <Badge className="border-purple-200 bg-purple-100 text-purple-800 hover:bg-purple-100">
+                                Semi-Finalist
+                              </Badge>
+                            )}
+                            {!app.is_finalist && !app.is_semi_finalist && (
+                              <Badge
+                                variant="secondary"
+                                className="border-gray-200 bg-gray-100 text-gray-600 hover:bg-gray-100"
+                              >
+                                Applicant
+                              </Badge>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
