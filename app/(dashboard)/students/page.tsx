@@ -36,18 +36,43 @@ async function getStudents(): Promise<Student[]> {
   }
 }
 
+async function getApplicationsCount(): Promise<number> {
+  const supabase = createServerClient();
+  try {
+    const { count } = await supabase
+      .from("application")
+      .select("*", { count: "exact", head: true });
+    return count ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function getFellowshipsCount(): Promise<number> {
+  const supabase = createServerClient();
+  try {
+    const { count } = await supabase
+      .from("fellowship")
+      .select("*", { count: "exact", head: true });
+    return count ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * Calculate dashboard statistics
  */
-function getStatistics(students: Student[]) {
-  const totalStudents = students.length;
-  const chStudents = students.filter((s) => s.is_ch_student).length;
-
+function getStatistics(
+  students: Student[],
+  activeApplications: number,
+  fellowshipsAvailable: number,
+) {
   return {
-    totalStudents,
-    chStudents,
-    activeApplications: 0, // TODO: Calculate from applications table
-    fellowshipsAvailable: 0, // TODO: Calculate from fellowships table
+    totalStudents: students.length,
+    chStudents: students.filter((s) => s.is_ch_student).length,
+    activeApplications,
+    fellowshipsAvailable,
   };
 }
 
@@ -109,8 +134,12 @@ function KPICardsSkeleton() {
  * Students Content Component
  */
 async function StudentsContent() {
-  const students = await getStudents();
-  const stats = getStatistics(students);
+  const [students, activeApplications, fellowshipsAvailable] = await Promise.all([
+    getStudents(),
+    getApplicationsCount(),
+    getFellowshipsCount(),
+  ]);
+  const stats = getStatistics(students, activeApplications, fellowshipsAvailable);
 
   return (
     <>

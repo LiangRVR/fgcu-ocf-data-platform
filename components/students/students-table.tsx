@@ -54,7 +54,7 @@ import type { Database } from "@/types/database";
 
 type Student = Database["public"]["Tables"]["student"]["Row"];
 
-type SortField = "full_name" | "student_id" | "major" | "is_ch_student";
+type SortField = "full_name" | "student_id" | "major" | "gpa" | "class_standing";
 type SortDirection = "asc" | "desc" | null;
 
 interface StudentsTableProps {
@@ -84,7 +84,12 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
     email: "",
     student_id: "",
     major: "",
+    class_standing: "",
+    gpa: "",
     is_ch_student: false,
+    first_gen: false,
+    honors_college: false,
+    us_citizen: false,
   });
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
 
@@ -231,6 +236,13 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
       errors.student_id = "Student ID must be numeric";
     }
 
+    if (newStudent.gpa.trim()) {
+      const gpaNum = parseFloat(newStudent.gpa);
+      if (isNaN(gpaNum) || gpaNum < 0 || gpaNum > 4.0) {
+        errors.gpa = "GPA must be a number between 0.0 and 4.0";
+      }
+    }
+
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
   };
@@ -248,18 +260,18 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
         full_name: newStudent.full_name,
         email: newStudent.email,
         major: newStudent.major || null,
+        class_standing: newStudent.class_standing || null,
+        gpa: newStudent.gpa ? parseFloat(newStudent.gpa) : null,
         is_ch_student: newStudent.is_ch_student,
+        first_gen: newStudent.first_gen,
+        honors_college: newStudent.honors_college,
+        us_citizen: newStudent.us_citizen,
         age: null,
-        class_standing: null,
-        first_gen: false,
         gender: null,
-        gpa: null,
-        honors_college: false,
         languages: null,
         minor: null,
         pronouns: null,
         race_ethnicity: null,
-        us_citizen: false,
       };
 
       setStudents((prev) => [student, ...prev]);
@@ -270,7 +282,12 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
         email: "",
         student_id: "",
         major: "",
+        class_standing: "",
+        gpa: "",
         is_ch_student: false,
+        first_gen: false,
+        honors_college: false,
+        us_citizen: false,
       });
       setFormErrors({});
     } catch {
@@ -434,13 +451,25 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
                           </div>
                         </th>
                         <th
-                          onClick={() => handleSort("is_ch_student")}
+                          onClick={() => handleSort("gpa")}
                           className="cursor-pointer px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-600 hover:text-gray-900"
                         >
                           <div className="flex items-center">
-                            Status
-                            <SortIcon field="is_ch_student" />
+                            GPA
+                            <SortIcon field="gpa" />
                           </div>
+                        </th>
+                        <th
+                          onClick={() => handleSort("class_standing")}
+                          className="cursor-pointer px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-600 hover:text-gray-900"
+                        >
+                          <div className="flex items-center">
+                            Class Standing
+                            <SortIcon field="class_standing" />
+                          </div>
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-600">
+                          Tags
                         </th>
                         <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-600">
                           Actions
@@ -475,21 +504,36 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
                             </div>
                           </td>
                           <td className="whitespace-nowrap px-6 py-4">
-                            {student.is_ch_student ? (
-                              <Badge
-                                variant="default"
-                                className="rounded-full border border-green-200 bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 hover:bg-green-100"
-                              >
-                                CH Student
-                              </Badge>
-                            ) : (
-                              <Badge
-                                variant="secondary"
-                                className="rounded-full border border-gray-200 bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 hover:bg-gray-100"
-                              >
-                                Other
-                              </Badge>
-                            )}
+                            <div className="text-sm text-slate-600">
+                              {student.gpa != null ? student.gpa.toFixed(2) : "—"}
+                            </div>
+                          </td>
+                          <td className="whitespace-nowrap px-6 py-4">
+                            <div className="text-sm text-slate-600">
+                              {student.class_standing || "—"}
+                            </div>
+                          </td>
+                          <td className="whitespace-nowrap px-6 py-4">
+                            <div className="flex flex-wrap gap-1">
+                              {student.is_ch_student && (
+                                <Badge className="rounded-full border border-green-200 bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 hover:bg-green-100">
+                                  CH
+                                </Badge>
+                              )}
+                              {student.first_gen && (
+                                <Badge className="rounded-full border border-teal-200 bg-teal-100 px-2 py-0.5 text-xs font-medium text-teal-800 hover:bg-teal-100">
+                                  First Gen
+                                </Badge>
+                              )}
+                              {student.honors_college && (
+                                <Badge className="rounded-full border border-amber-200 bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 hover:bg-amber-100">
+                                  Honors
+                                </Badge>
+                              )}
+                              {!student.is_ch_student && !student.first_gen && !student.honors_college && (
+                                <span className="text-sm text-slate-400">—</span>
+                              )}
+                            </div>
                           </td>
                           <td className="whitespace-nowrap px-6 py-4">
                             <div className="flex items-center justify-end gap-1">
@@ -714,19 +758,105 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
               />
             </div>
 
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="is_ch_student"
-                checked={newStudent.is_ch_student}
-                onChange={(e) =>
-                  setNewStudent({ ...newStudent, is_ch_student: e.target.checked })
-                }
-                className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
-              />
-              <Label htmlFor="is_ch_student" className="cursor-pointer">
-                CH Student
-              </Label>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="class_standing">Class Standing</Label>
+                <Select
+                  value={newStudent.class_standing}
+                  onValueChange={(v) =>
+                    setNewStudent({ ...newStudent, class_standing: v })
+                  }
+                >
+                  <SelectTrigger id="class_standing">
+                    <SelectValue placeholder="Select…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Freshman">Freshman</SelectItem>
+                    <SelectItem value="Sophomore">Sophomore</SelectItem>
+                    <SelectItem value="Junior">Junior</SelectItem>
+                    <SelectItem value="Senior">Senior</SelectItem>
+                    <SelectItem value="Graduate">Graduate</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="gpa">GPA</Label>
+                <Input
+                  id="gpa"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="4.0"
+                  value={newStudent.gpa}
+                  onChange={(e) =>
+                    setNewStudent({ ...newStudent, gpa: e.target.value })
+                  }
+                  placeholder="3.75"
+                />
+                {formErrors.gpa && (
+                  <p className="text-sm text-red-600">{formErrors.gpa}</p>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="is_ch_student"
+                  checked={newStudent.is_ch_student}
+                  onChange={(e) =>
+                    setNewStudent({ ...newStudent, is_ch_student: e.target.checked })
+                  }
+                  className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
+                />
+                <Label htmlFor="is_ch_student" className="cursor-pointer">
+                  CH Student
+                </Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="first_gen"
+                  checked={newStudent.first_gen}
+                  onChange={(e) =>
+                    setNewStudent({ ...newStudent, first_gen: e.target.checked })
+                  }
+                  className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
+                />
+                <Label htmlFor="first_gen" className="cursor-pointer">
+                  First Generation
+                </Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="honors_college"
+                  checked={newStudent.honors_college}
+                  onChange={(e) =>
+                    setNewStudent({ ...newStudent, honors_college: e.target.checked })
+                  }
+                  className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
+                />
+                <Label htmlFor="honors_college" className="cursor-pointer">
+                  Honors College
+                </Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="us_citizen"
+                  checked={newStudent.us_citizen}
+                  onChange={(e) =>
+                    setNewStudent({ ...newStudent, us_citizen: e.target.checked })
+                  }
+                  className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
+                />
+                <Label htmlFor="us_citizen" className="cursor-pointer">
+                  US Citizen
+                </Label>
+              </div>
             </div>
           </div>
           <DialogFooter>
@@ -739,7 +869,12 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
                   email: "",
                   student_id: "",
                   major: "",
+                  class_standing: "",
+                  gpa: "",
                   is_ch_student: false,
+                  first_gen: false,
+                  honors_college: false,
+                  us_citizen: false,
                 });
                 setFormErrors({});
               }}
