@@ -1,209 +1,268 @@
 -- ============================================================================
--- OCF Fellowship Management System - Initial Schema
+-- OCF Fellowship Management System — Initial Schema
+-- FGCU Office of Competitive Fellowships
+--
+-- This migration creates the canonical database schema.
+-- All table names are SINGULAR. All primary keys are INTEGER SEQUENCES.
+-- Do NOT use UUID primary keys or plural table names in this project.
+--
+-- Table creation order respects foreign key dependencies:
+--   1. advisor       (no FKs)
+--   2. fellowship    (no FKs)
+--   3. student       (no FKs)
+--   4. application           → student, fellowship
+--   5. advising_meeting      → student, advisor
+--   6. fellowship_thursday   → student
+--   7. scholarship_history   → student, fellowship
 -- ============================================================================
 
--- Enable UUID extension
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- ============================================================================
--- Students Table
--- Stores information about fellowship-eligible students
+-- advisor
+--
+-- Holds the list of OCF advisors who conduct advising meetings.
+-- advisor_name is unique so the same person cannot be entered twice.
 -- ============================================================================
-CREATE TABLE public.students (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    fgcu_id VARCHAR(20) UNIQUE NOT NULL,
-    first_name VARCHAR(100) NOT NULL,
-    last_name VARCHAR(100) NOT NULL,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    phone VARCHAR(20),
-    major VARCHAR(100),
-    gpa DECIMAL(3, 2),
-    expected_graduation DATE,
-    academic_standing VARCHAR(50) DEFAULT 'Good Standing',
-    enrollment_status VARCHAR(50) DEFAULT 'Full-time',
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+CREATE TABLE public.advisor (
+    advisor_id  integer    NOT NULL DEFAULT nextval('advisor_advisor_id_seq'::regclass),
+    advisor_name character varying NOT NULL,
+    CONSTRAINT advisor_pkey PRIMARY KEY (advisor_id),
+    CONSTRAINT advisor_advisor_name_key UNIQUE (advisor_name)
 );
 
--- Index for faster lookups
-CREATE INDEX idx_students_email ON public.students(email);
-CREATE INDEX idx_students_fgcu_id ON public.students(fgcu_id);
+-- Sequence that backs advisor_id
+CREATE SEQUENCE IF NOT EXISTS public.advisor_advisor_id_seq
+    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+ALTER SEQUENCE public.advisor_advisor_id_seq OWNED BY public.advisor.advisor_id;
+
 
 -- ============================================================================
--- Fellowships Table
--- Stores information about available fellowship opportunities
+-- fellowship
+--
+-- Holds each fellowship or scholarship program that the OCF tracks.
+-- fellowship_name is unique to prevent duplicate program entries.
 -- ============================================================================
-CREATE TABLE public.fellowships (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    title VARCHAR(255) NOT NULL,
-    description TEXT,
-    funding_amount DECIMAL(10, 2),
-    duration_months INTEGER,
-    eligibility_criteria TEXT,
-    application_deadline DATE NOT NULL,
-    start_date DATE,
-    end_date DATE,
-    max_recipients INTEGER DEFAULT 1,
-    status VARCHAR(50) DEFAULT 'Open' CHECK (status IN ('Draft', 'Open', 'Closed', 'Awarded')),
-    created_by UUID,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+CREATE TABLE public.fellowship (
+    fellowship_id   integer          NOT NULL DEFAULT nextval('fellowship_fellowship_id_seq'::regclass),
+    fellowship_name character varying NOT NULL,
+    CONSTRAINT fellowship_pkey PRIMARY KEY (fellowship_id),
+    CONSTRAINT fellowship_fellowship_name_key UNIQUE (fellowship_name)
 );
 
--- Index for filtering by status and deadline
-CREATE INDEX idx_fellowships_status ON public.fellowships(status);
-CREATE INDEX idx_fellowships_deadline ON public.fellowships(application_deadline);
+CREATE SEQUENCE IF NOT EXISTS public.fellowship_fellowship_id_seq
+    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+ALTER SEQUENCE public.fellowship_fellowship_id_seq OWNED BY public.fellowship.fellowship_id;
+
 
 -- ============================================================================
--- Applications Table
--- Stores student fellowship applications
+-- student
+--
+-- Core profile table for every FGCU student tracked by the OCF.
+--
+-- Notable constraints:
+--   gpa            — must be between 0.00 and 4.00 (U.S. scale)
+--   class_standing — controlled vocabulary; prevents free-form text errors
+--   gender         — short codes: F, M, NB (non-binary), NR (not reported)
+--   us_citizen     — required for most fellowship eligibility checks
 -- ============================================================================
-CREATE TABLE public.applications (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    student_id UUID NOT NULL REFERENCES public.students(id) ON DELETE CASCADE,
-    fellowship_id UUID NOT NULL REFERENCES public.fellowships(id) ON DELETE CASCADE,
-    status VARCHAR(50) DEFAULT 'Submitted' CHECK (status IN ('Draft', 'Submitted', 'Under Review', 'Interviewed', 'Accepted', 'Rejected', 'Withdrawn')),
-    submitted_at TIMESTAMPTZ,
-    reviewed_at TIMESTAMPTZ,
-    reviewed_by UUID,
-    essay TEXT,
-    cv_url TEXT,
-    recommendation_letters TEXT[], -- Array of URLs or file paths
-    notes TEXT,
-    score DECIMAL(5, 2),
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(student_id, fellowship_id)
+CREATE TABLE public.student (
+    student_id     integer          NOT NULL DEFAULT nextval('student_student_id_seq'::regclass),
+    full_name      character varying NOT NULL,
+    is_ch_student  boolean          NOT NULL DEFAULT false,
+    email          character varying NOT NULL,
+    major          character varying,
+    minor          character varying,
+    gpa            numeric,
+    class_standing character varying,
+    us_citizen     boolean          NOT NULL,
+    age            integer,
+    gender         character varying,
+    pronouns       character varying,
+    race_ethnicity character varying,
+    languages      character varying,
+    first_gen      boolean          NOT NULL DEFAULT false,
+    honors_college boolean          NOT NULL DEFAULT false,
+    CONSTRAINT student_pkey PRIMARY KEY (student_id),
+    -- GPA must be a valid U.S. 4.0-scale value
+    CONSTRAINT student_gpa_check CHECK (
+        gpa IS NULL OR (gpa >= 0.00 AND gpa <= 4.00)
+    ),
+    -- Restrict class_standing to known enrollment levels
+    CONSTRAINT student_class_standing_check CHECK (
+        class_standing IS NULL OR class_standing::text = ANY (ARRAY[
+            'Freshman', 'Sophomore', 'Junior', 'Senior', 'Graduate', 'Doctoral'
+        ])
+    ),
+    -- Gender is stored as a short code to avoid inconsistent free-form entries
+    CONSTRAINT student_gender_check CHECK (
+        gender IS NULL OR gender::text = ANY (ARRAY['F', 'M', 'NB', 'NR'])
+    )
 );
 
--- Indexes for querying applications
-CREATE INDEX idx_applications_student ON public.applications(student_id);
-CREATE INDEX idx_applications_fellowship ON public.applications(fellowship_id);
-CREATE INDEX idx_applications_status ON public.applications(status);
+CREATE SEQUENCE IF NOT EXISTS public.student_student_id_seq
+    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+ALTER SEQUENCE public.student_student_id_seq OWNED BY public.student.student_id;
+
+-- Indexes on commonly filtered and looked-up columns
+CREATE INDEX idx_student_email         ON public.student (email);
+CREATE INDEX idx_student_is_ch         ON public.student (is_ch_student);
+CREATE INDEX idx_student_class_standing ON public.student (class_standing);
+
 
 -- ============================================================================
--- Advising Sessions Table
--- Tracks advising sessions with students
+-- application
+--
+-- Records a student's application to one fellowship program.
+-- One student may have multiple rows for the same fellowship (e.g., across
+-- different years), so there is intentionally NO unique constraint on
+-- (student_id, fellowship_id).
+--
+-- stage_of_application — controlled vocabulary representing the pipeline
+--   position of the application.  The values are ordered roughly by
+--   progression: Started → Submitted → Under Review → Semi-Finalist →
+--   Finalist → Awarded / Rejected.
+--
+-- is_semi_finalist / is_finalist — denormalised boolean flags that duplicate
+--   information already implied by stage_of_application.  They exist for fast
+--   filtering (e.g. "show me all finalists") without a string comparison.
 -- ============================================================================
-CREATE TABLE public.advising_sessions (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    student_id UUID NOT NULL REFERENCES public.students(id) ON DELETE CASCADE,
-    advisor_id UUID,
-    session_date TIMESTAMPTZ NOT NULL,
-    duration_minutes INTEGER DEFAULT 30,
-    session_type VARCHAR(50) DEFAULT 'General' CHECK (session_type IN ('General', 'Fellowship', 'Academic', 'Career')),
-    notes TEXT,
-    follow_up_required BOOLEAN DEFAULT FALSE,
-    follow_up_notes TEXT,
-    status VARCHAR(50) DEFAULT 'Scheduled' CHECK (status IN ('Scheduled', 'Completed', 'Cancelled', 'No-Show')),
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+CREATE TABLE public.application (
+    application_id       integer          NOT NULL DEFAULT nextval('application_application_id_seq'::regclass),
+    student_id           integer          NOT NULL,
+    fellowship_id        integer          NOT NULL,
+    destination_country  character varying,
+    stage_of_application character varying NOT NULL,
+    is_semi_finalist     boolean          NOT NULL DEFAULT false,
+    is_finalist          boolean          NOT NULL DEFAULT false,
+    CONSTRAINT application_pkey PRIMARY KEY (application_id),
+    CONSTRAINT application_student_id_fkey
+        FOREIGN KEY (student_id) REFERENCES public.student (student_id),
+    CONSTRAINT application_fellowship_id_fkey
+        FOREIGN KEY (fellowship_id) REFERENCES public.fellowship (fellowship_id),
+    -- Restrict stage values to the known OCF pipeline stages
+    CONSTRAINT application_stage_check CHECK (
+        stage_of_application::text = ANY (ARRAY[
+            'Started', 'Submitted', 'Under Review',
+            'Semi-Finalist', 'Finalist', 'Awarded', 'Rejected'
+        ])
+    )
 );
 
--- Indexes for scheduling and querying
-CREATE INDEX idx_advising_student ON public.advising_sessions(student_id);
-CREATE INDEX idx_advising_date ON public.advising_sessions(session_date);
-CREATE INDEX idx_advising_status ON public.advising_sessions(status);
+CREATE SEQUENCE IF NOT EXISTS public.application_application_id_seq
+    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+ALTER SEQUENCE public.application_application_id_seq OWNED BY public.application.application_id;
+
+CREATE INDEX idx_application_student   ON public.application (student_id);
+CREATE INDEX idx_application_fellowship ON public.application (fellowship_id);
+CREATE INDEX idx_application_stage     ON public.application (stage_of_application);
+
 
 -- ============================================================================
--- Application Reviews Table
--- Tracks individual review comments and scores for applications
+-- advising_meeting
+--
+-- Records each advising session between a student and an OCF advisor.
+--
+-- advisor_id is nullable: a meeting can be logged before an advisor is assigned.
+-- meeting_mode — must be 'In-Person' or 'Virtual'; no other delivery modes exist.
+-- no_show      — true when the student failed to attend the scheduled meeting.
 -- ============================================================================
-CREATE TABLE public.application_reviews (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    application_id UUID NOT NULL REFERENCES public.applications(id) ON DELETE CASCADE,
-    reviewer_id UUID NOT NULL,
-    score DECIMAL(5, 2),
-    comments TEXT,
-    criteria_scores JSONB, -- Stores individual criterion scores
-    review_date TIMESTAMPTZ DEFAULT NOW(),
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+CREATE TABLE public.advising_meeting (
+    meeting_id   integer          NOT NULL DEFAULT nextval('advising_meeting_meeting_id_seq'::regclass),
+    student_id   integer          NOT NULL,
+    advisor_id   integer,
+    meeting_date date             NOT NULL,
+    meeting_mode character varying NOT NULL,
+    no_show      boolean          NOT NULL DEFAULT false,
+    notes        text,
+    CONSTRAINT advising_meeting_pkey PRIMARY KEY (meeting_id),
+    CONSTRAINT advising_meeting_student_id_fkey
+        FOREIGN KEY (student_id) REFERENCES public.student (student_id),
+    CONSTRAINT advising_meeting_advisor_id_fkey
+        FOREIGN KEY (advisor_id) REFERENCES public.advisor (advisor_id),
+    -- Only two delivery modes are recognised
+    CONSTRAINT advising_meeting_mode_check CHECK (
+        meeting_mode::text = ANY (ARRAY['In-Person', 'Virtual'])
+    )
 );
 
-CREATE INDEX idx_reviews_application ON public.application_reviews(application_id);
+CREATE SEQUENCE IF NOT EXISTS public.advising_meeting_meeting_id_seq
+    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+ALTER SEQUENCE public.advising_meeting_meeting_id_seq OWNED BY public.advising_meeting.meeting_id;
+
+CREATE INDEX idx_advising_meeting_student ON public.advising_meeting (student_id);
+CREATE INDEX idx_advising_meeting_date    ON public.advising_meeting (meeting_date);
+
 
 -- ============================================================================
--- Users Table (for staff/administrators)
--- Stores information about system users (advisors, reviewers, admins)
+-- fellowship_thursday
+--
+-- Tracks whether a student attended the weekly Thursday fellowship meeting.
+--
+-- source_info — indicates which OCF programme introduced the student to the
+--   Thursday meeting.  NULL means the source was not recorded.
+--   Allowed values:
+--     OCF = Office of Competitive Fellowships (direct referral)
+--     HC  = Honors College
+--     MM  = McNair Scholars / Miami Mosaic (or other named programme)
 -- ============================================================================
-CREATE TABLE public.users (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    email VARCHAR(255) UNIQUE NOT NULL,
-    first_name VARCHAR(100) NOT NULL,
-    last_name VARCHAR(100) NOT NULL,
-    role VARCHAR(50) DEFAULT 'Advisor' CHECK (role IN ('Admin', 'Advisor', 'Reviewer', 'Staff')),
-    department VARCHAR(100),
-    is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+CREATE TABLE public.fellowship_thursday (
+    attendance_id integer          NOT NULL DEFAULT nextval('fellowship_thursday_attendance_id_seq'::regclass),
+    student_id    integer          NOT NULL,
+    attended      boolean          NOT NULL,
+    source_info   character varying,
+    CONSTRAINT fellowship_thursday_pkey PRIMARY KEY (attendance_id),
+    CONSTRAINT fellowship_thursday_student_id_fkey
+        FOREIGN KEY (student_id) REFERENCES public.student (student_id),
+    -- source_info is optional, but when present must be a known code
+    CONSTRAINT fellowship_thursday_source_check CHECK (
+        source_info IS NULL OR source_info::text = ANY (ARRAY['OCF', 'HC', 'MM'])
+    )
 );
 
-CREATE INDEX idx_users_email ON public.users(email);
-CREATE INDEX idx_users_role ON public.users(role);
+CREATE SEQUENCE IF NOT EXISTS public.fellowship_thursday_attendance_id_seq
+    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+ALTER SEQUENCE public.fellowship_thursday_attendance_id_seq OWNED BY public.fellowship_thursday.attendance_id;
+
+CREATE INDEX idx_fellowship_thursday_student ON public.fellowship_thursday (student_id);
+
 
 -- ============================================================================
--- Update Timestamp Trigger Function
+-- scholarship_history
+--
+-- Records fellowships that a student has previously been awarded.
+-- Distinct from application: this table only holds confirmed awards,
+-- not in-progress applications.
 -- ============================================================================
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$ language 'plpgsql';
+CREATE TABLE public.scholarship_history (
+    history_id    integer NOT NULL DEFAULT nextval('scholarship_history_history_id_seq'::regclass),
+    student_id    integer NOT NULL,
+    fellowship_id integer NOT NULL,
+    CONSTRAINT scholarship_history_pkey PRIMARY KEY (history_id),
+    CONSTRAINT scholarship_history_student_id_fkey
+        FOREIGN KEY (student_id) REFERENCES public.student (student_id),
+    CONSTRAINT scholarship_history_fellowship_id_fkey
+        FOREIGN KEY (fellowship_id) REFERENCES public.fellowship (fellowship_id)
+);
 
--- Apply the trigger to all tables with updated_at
-CREATE TRIGGER update_students_updated_at BEFORE UPDATE ON public.students
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE SEQUENCE IF NOT EXISTS public.scholarship_history_history_id_seq
+    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+ALTER SEQUENCE public.scholarship_history_history_id_seq OWNED BY public.scholarship_history.history_id;
 
-CREATE TRIGGER update_fellowships_updated_at BEFORE UPDATE ON public.fellowships
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE INDEX idx_scholarship_history_student   ON public.scholarship_history (student_id);
+CREATE INDEX idx_scholarship_history_fellowship ON public.scholarship_history (fellowship_id);
 
-CREATE TRIGGER update_applications_updated_at BEFORE UPDATE ON public.applications
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_advising_sessions_updated_at BEFORE UPDATE ON public.advising_sessions
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_application_reviews_updated_at BEFORE UPDATE ON public.application_reviews
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON public.users
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================================================
--- Row Level Security (RLS) Policies
--- Enable RLS on all tables (requires configuration with Supabase Auth)
+-- Row Level Security
+--
+-- RLS is enabled on every table.  Permissive read policies for the anon role
+-- are applied in the next migration (20260305000001_allow_anon_read.sql).
+-- Write access requires authentication and should be configured per deployment.
 -- ============================================================================
-ALTER TABLE public.students ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.fellowships ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.applications ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.advising_sessions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.application_reviews ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
-
--- Example policies (customize based on your auth requirements)
--- Students can view their own records
-CREATE POLICY "Students can view own record" ON public.students
-    FOR SELECT USING (auth.email() = email);
-
--- All authenticated users can view fellowships
-CREATE POLICY "Authenticated users can view fellowships" ON public.fellowships
-    FOR SELECT USING (auth.role() = 'authenticated');
-
--- Students can view their own applications
-CREATE POLICY "Students can view own applications" ON public.applications
-    FOR SELECT USING (
-        student_id IN (SELECT id FROM public.students WHERE email = auth.email())
-    );
-
--- ============================================================================
--- Sample Data Functions
--- ============================================================================
-COMMENT ON TABLE public.students IS 'Fellowship-eligible students';
-COMMENT ON TABLE public.fellowships IS 'Available fellowship opportunities';
-COMMENT ON TABLE public.applications IS 'Student fellowship applications';
-COMMENT ON TABLE public.advising_sessions IS 'Advising session records';
-COMMENT ON TABLE public.application_reviews IS 'Application review records';
-COMMENT ON TABLE public.users IS 'System users (staff, advisors, admins)';
+ALTER TABLE public.advisor             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.fellowship          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.student             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.application         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.advising_meeting    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.fellowship_thursday ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.scholarship_history ENABLE ROW LEVEL SECURITY;

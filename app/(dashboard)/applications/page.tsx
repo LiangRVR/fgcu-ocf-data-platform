@@ -93,7 +93,7 @@ export default async function ApplicationsPage() {
                   <tr className="border-b border-gray-200">
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">Student</th>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">Fellowship</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">Stage</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">Stage of Application</th>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">Semifinalist</th>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">Finalist</th>
                     <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500">Actions</th>

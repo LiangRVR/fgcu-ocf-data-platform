@@ -85,7 +85,7 @@ This will verify:
 To add sample data for testing:
 
 1. Navigate to **Table Editor** in Supabase dashboard
-2. Select a table (e.g., `students`)
+2. Select a table (e.g., `student`)
 3. Click **Insert row** → **Insert manually**
 4. Fill in the required fields
 5. Click **Save**

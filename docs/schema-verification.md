@@ -3,6 +3,7 @@
 ## Current Status
 
 ### ✅ Completed
+
 - [x] Supabase client configuration (`lib/supabase/client.ts` and `lib/supabase/server.ts`)
 - [x] Environment variable setup (`.env.local`)
 - [x] Database schema design (`supabase/migrations/20260305000000_initial_schema.sql`)
@@ -35,200 +36,85 @@
 Our database schema aligns with the application needs:
 
 ### Students Management
-- **Table**: `students`
+
+- **Table**: `student`
 - **Application Pages**: `/students`
-- **Key Fields**: fgcu_id, name, email, major, gpa, academic_standing
+- **Primary Key**: `student_id` (integer)
+- **Key Fields**: full_name, email, major, gpa, class_standing, is_ch_student, us_citizen
 
 ### Fellowship Management
-- **Table**: `fellowships`
+
+- **Table**: `fellowship`
 - **Application Pages**: `/fellowships`
-- **Key Fields**: title, description, funding_amount, application_deadline, status
+- **Primary Key**: `fellowship_id` (integer)
+- **Key Fields**: fellowship_name
 
 ### Application Tracking
-- **Table**: `applications`
+
+- **Table**: `application`
 - **Application Pages**: `/applications`
-- **Key Fields**: student_id, fellowship_id, status, essay, cv_url
-- **Relationships**: Links students to fellowships
+- **Primary Key**: `application_id` (integer)
+- **Key Fields**: student_id, fellowship_id, stage_of_application, is_semi_finalist, is_finalist, destination_country
+- **Relationships**: Links `student` to `fellowship`
 
-### Advising Sessions
-- **Table**: `advising_sessions`
+### Advising Meetings
+
+- **Table**: `advising_meeting`
 - **Application Pages**: `/advising`
-- **Key Fields**: student_id, advisor_id, session_date, session_type, notes
+- **Primary Key**: `meeting_id` (integer)
+- **Key Fields**: student_id, advisor_id, meeting_date, meeting_mode, no_show, notes
 
-### Application Reviews
-- **Table**: `application_reviews`
-- **Purpose**: Multi-reviewer evaluation system
-- **Key Fields**: application_id, reviewer_id, score, comments
+### Advisors
 
-### Users/Staff
-- **Table**: `users`
-- **Purpose**: Advisors, reviewers, administrators
-- **Key Fields**: email, role, department
+- **Table**: `advisor`
+- **Primary Key**: `advisor_id` (integer)
+- **Key Fields**: advisor_name
+
+### Fellowship Thursday Attendance
+
+- **Table**: `fellowship_thursday`
+- **Primary Key**: `attendance_id` (integer)
+- **Key Fields**: student_id, attended, source_info
+
+### Scholarship History
+
+- **Table**: `scholarship_history`
+- **Primary Key**: `history_id` (integer)
+- **Key Fields**: student_id, fellowship_id
+
+> **Canonical reference**: See `docs/schema-reference.md` for the full schema with all constraints and business rules.
 
 ## Type Alignment
 
-### Before Type Generation
-
-Current application types (`types/index.ts`) use simplified structures.
-After generating from Supabase, you'll get exact database types in `types/database.ts`.
-
-### Recommended Approach
-
-1. Keep `types/database.ts` for database operations (auto-generated)
-2. Keep `types/index.ts` for application-level types
-3. Create mapping utilities between the two if needed
-
-Example:
-```typescript
-// Convert database type to app type
-import type { Database } from './database';
-import type { Student } from './index';
-
-type DbStudent = Database['public']['Tables']['students']['Row'];
-
-function dbStudentToAppStudent(dbStudent: DbStudent): Student {
-  return {
-    id: dbStudent.id,
-    full_name: `${dbStudent.first_name} ${dbStudent.last_name}`,
-    email: dbStudent.email,
-    gpa: dbStudent.gpa ?? undefined,
-    major: dbStudent.major ?? undefined,
-    graduation_year: dbStudent.expected_graduation?.getFullYear(),
-    created_at: dbStudent.created_at,
-  };
-}
-```
-
-## Features Implemented in Schema
-
-### ✅ Data Integrity
-- Primary keys (UUID)
-- Foreign key constraints
-- Unique constraints
-- Check constraints for enums
-- NOT NULL constraints
-
-### ✅ Performance
-- Indexes on foreign keys
-- Indexes on frequently queried fields (email, status, dates)
-- Indexes on search fields
-
-### ✅ Automatic Timestamps
-- `created_at` and `updated_at` on all tables
-- Automatic update triggers
-
-### ✅ Security
-- Row Level Security (RLS) enabled on all tables
-- Example policies provided
-- Ready for Supabase Auth integration
-
-### ✅ Relationships
-```
-students (1) ─→ (N) applications (N) ─→ (1) fellowships
-    │                     │
-    │                     └─→ (N) application_reviews
-    │
-    └─→ (N) advising_sessions (N) ─→ (1) users
-```
-
-## Next Integration Steps
-
-Once database is set up:
-
-### 1. Create Data Access Layer
-
-```typescript
-// lib/db/students.ts
-import { createServerClient } from '@/lib/supabase/server';
-
-export async function getStudents() {
-  const supabase = createServerClient();
-  const { data, error } = await supabase
-    .from('students')
-    .select('*')
-    .order('last_name');
-
-  if (error) throw error;
-  return data;
-}
-
-export async function getStudent(id: string) {
-  const supabase = createServerClient();
-  const { data, error } = await supabase
-    .from('students')
-    .select('*')
-    .eq('id', id)
-    .single();
-
-  if (error) throw error;
-  return data;
-}
-```
-
-### 2. Update Pages to Use Real Data
-
-Example for `/students` page:
-```typescript
-// app/(dashboard)/students/page.tsx
-import { getStudents } from '@/lib/db/students';
-
-export default async function StudentsPage() {
-  const students = await getStudents();
-
-  return (
-    <DashboardShell>
-      <PageHeader
-        title="Students"
-        description="Manage fellowship-eligible students."
-      />
-      {/* Render students data */}
-    </DashboardShell>
-  );
-}
-```
-
-### 3. Implement Authentication
-
-See Supabase Auth docs:
-- Email/password authentication
-- Social OAuth providers
-- Row Level Security policies
-- User session management
-
-### 4. Add Forms for CRUD Operations
-
-- Student profile forms
-- Fellowship creation/editing
-- Application submission
-- Advising session scheduling
+1. `types/database.ts` — auto-generated from Supabase; use for all database operations
+2. `types/index.ts` — application-level types; must mirror the DB schema exactly
+3. All table names are **singular** (`student` not `students`), all PKs are **integer sequences** (not UUIDs)
 
 ## Verification Checklist
 
 Before deploying to production:
 
 - [ ] All environment variables set
-- [ ] Database schema applied successfully
-- [ ] TypeScript types generated
-- [ ] Connection test passes
-- [ ] Sample data can be inserted
-- [ ] Sample data can be queried
-- [ ] Authentication works
-- [ ] RLS policies tested
+- [ ] Database schema applied successfully (`supabase/migrations/20260305000000_initial_schema.sql`)
+- [ ] TypeScript types regenerated: `pnpm run db:types`
+- [ ] Connection test passes: `pnpm run test:connection`
 - [ ] Application pages fetch real data
-- [ ] Forms can create/update records
-- [ ] Error handling implemented
-- [ ] Loading states implemented
+- [ ] Error handling and loading states implemented
 
 ## Troubleshooting
 
 ### Types not matching
+
 Run `pnpm run db:types` to regenerate after any schema changes.
 
 ### Permission errors
-Check RLS policies - may need to authenticate or adjust policies for development.
+
+Check RLS policies — may need to authenticate or adjust policies for development.
 
 ### Connection fails
+
 Verify `.env.local` has correct values and restart dev server.
 
 ### Tables not found
-Ensure migration was applied in Supabase dashboard SQL editor.
+
+Ensure migration was applied via Supabase Dashboard → SQL Editor.

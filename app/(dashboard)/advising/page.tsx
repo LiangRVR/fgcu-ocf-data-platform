@@ -117,7 +117,7 @@ export default async function AdvisingPage() {
                       </td>
                       <td className="whitespace-nowrap px-6 py-4">
                         <div className="text-sm text-slate-600">
-                          {new Date(meeting.meeting_date).toLocaleString()}
+                          {new Date(meeting.meeting_date).toLocaleDateString()}
                         </div>
                       </td>
                       <td className="whitespace-nowrap px-6 py-4">

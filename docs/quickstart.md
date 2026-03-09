@@ -123,12 +123,13 @@ You should see:
 ```
 ✅ Environment variables are configured
 ✅ Successfully connected to Supabase
-✅ Table 'students' exists
-✅ Table 'fellowships' exists
-✅ Table 'applications' exists
-✅ Table 'advising_sessions' exists
-✅ Table 'application_reviews' exists
-✅ Table 'users' exists
+✅ Table 'student' exists
+✅ Table 'advisor' exists
+✅ Table 'fellowship' exists
+✅ Table 'application' exists
+✅ Table 'advising_meeting' exists
+✅ Table 'fellowship_thursday' exists
+✅ Table 'scholarship_history' exists
 ✨ Connection Test Complete
 ```
 
@@ -171,13 +172,14 @@ Your app is now connected to Supabase! 🎉
 
 Your application now has:
 
-1. **6 Database Tables**:
-   - `students` - Student profiles and academic info
-   - `fellowships` - Fellowship opportunities
-   - `applications` - Application tracking
-   - `advising_sessions` - Advising appointments
-   - `application_reviews` - Multi-reviewer system
-   - `users` - Staff/advisor accounts
+1. **7 Database Tables**:
+   - `student` - Student profiles and academic info
+   - `advisor` - Advisor names
+   - `fellowship` - Fellowship programs
+   - `application` - Application tracking and pipeline stages
+   - `advising_meeting` - Advising session records
+   - `fellowship_thursday` - Weekly meeting attendance
+   - `scholarship_history` - Past scholarship awards
 
 2. **Type-Safe Database Access**:
    - Auto-generated TypeScript types
@@ -186,7 +188,7 @@ Your application now has:
 
 3. **Security Features**:
    - Row Level Security enabled
-   - UUID primary keys
+   - Integer sequence primary keys
    - Foreign key constraints
    - Input validation ready
 

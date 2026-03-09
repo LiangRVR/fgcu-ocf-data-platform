@@ -10,49 +10,51 @@ export interface NavItem {
   icon?: ComponentType<{ className?: string }>;
 }
 
-export interface User {
-  id: string;
-  email: string;
-  full_name?: string;
-  role?: "admin" | "advisor" | "viewer";
-  created_at?: string;
-}
+// ---------------------------------------------------------------------------
+// Application-level domain types — mirror the canonical DB schema exactly.
+// For raw query results, prefer Database["public"]["Tables"][table]["Row"]
+// from @/types/database instead.
+// ---------------------------------------------------------------------------
 
 export interface Student {
-  id: string;
+  student_id: number;
   full_name: string;
   email: string;
-  gpa?: number;
-  major?: string;
-  graduation_year?: number;
-  created_at?: string;
+  is_ch_student: boolean;
+  us_citizen: boolean;
+  major?: string | null;
+  minor?: string | null;
+  gpa?: number | null;
+  class_standing?: "Freshman" | "Sophomore" | "Junior" | "Senior" | "Graduate" | "Doctoral" | null;
+  age?: number | null;
+  gender?: "F" | "M" | "NB" | "NR" | null;
+  pronouns?: string | null;
+  race_ethnicity?: string | null;
+  languages?: string | null;
+  first_gen: boolean;
+  honors_college: boolean;
 }
 
 export interface Fellowship {
-  id: string;
-  name: string;
-  description?: string;
-  deadline?: string;
-  award_amount?: number;
-  external_url?: string;
-  is_active?: boolean;
-  created_at?: string;
+  fellowship_id: number;
+  fellowship_name: string;
 }
 
-export type ApplicationStatus =
-  | "draft"
-  | "in_progress"
-  | "submitted"
-  | "under_review"
-  | "awarded"
-  | "rejected";
+export type ApplicationStage =
+  | "Started"
+  | "Submitted"
+  | "Under Review"
+  | "Semi-Finalist"
+  | "Finalist"
+  | "Awarded"
+  | "Rejected";
 
 export interface Application {
-  id: string;
-  student_id: string;
-  fellowship_id: string;
-  status: ApplicationStatus;
-  notes?: string;
-  submitted_at?: string;
-  created_at?: string;
+  application_id: number;
+  student_id: number;
+  fellowship_id: number;
+  destination_country?: string | null;
+  stage_of_application: ApplicationStage;
+  is_semi_finalist: boolean;
+  is_finalist: boolean;
 }
