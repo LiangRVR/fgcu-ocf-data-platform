@@ -2,16 +2,21 @@
 
 ## Current Status
 
-### ✅ Completed
+### ✅ Completed (Code)
 
 - [x] Supabase client configuration (`lib/supabase/client.ts` and `lib/supabase/server.ts`)
 - [x] Environment variable setup (`.env.local`)
-- [x] Database schema design (`supabase/migrations/20260305000000_initial_schema.sql`)
-- [x] Schema documentation (`supabase/SCHEMA.md`)
+- [x] Initial schema migration (`supabase/migrations/20260305000000_initial_schema.sql`)
+- [x] Anon read policy migration (`supabase/migrations/20260305000001_allow_anon_read.sql`)
+- [x] Schema documentation (`docs/schema-reference.md`, `supabase/SCHEMA.md`)
+- [x] Auto-generated TypeScript types (`types/database.ts`)
+- [x] Application-level types (`types/index.ts`)
 - [x] Connection test utility (`scripts/test-connection.ts`)
-- [x] Supabase CLI installed
+- [x] All 8 dashboard pages query live Supabase data
+- [x] Add / Edit / Delete operations implemented on all main tables (students, applications, advising, fellowship thursday, scholarship history)
+- [x] Input validation (Zod) on all forms
 
-### 🔄 Pending Actions (User Required)
+### ⚠️ Required From You Before First Use
 
 1. **Add Supabase Credentials to `.env.local`**
    - Get your Project URL from: Supabase Dashboard → Settings → API
@@ -20,16 +25,15 @@
 
 2. **Apply Database Schema**
    - Go to Supabase Dashboard → SQL Editor
-   - Copy and run: `supabase/migrations/20260305000000_initial_schema.sql`
+   - Run `supabase/migrations/20260305000000_initial_schema.sql`
+   - Then run `supabase/migrations/20260305000001_allow_anon_read.sql`
    - Or use CLI: `npx supabase db push` (after linking project)
 
-3. **Generate TypeScript Types**
-   - After applying schema, run: `pnpm run db:types`
-   - Or manually: `npx supabase gen types typescript --project-id <your-id> > types/database.ts`
+3. **Generate TypeScript Types** (only needed if schema changes)
+   - Run: `pnpm run db:types`
 
 4. **Test Connection**
    - Run: `pnpm run test:connection`
-   - Verify all tables are accessible
 
 ## Schema Mapping
 
@@ -92,29 +96,16 @@ Our database schema aligns with the application needs:
 
 ## Verification Checklist
 
-Before deploying to production:
+Before using the application with real data:
 
-- [ ] All environment variables set
-- [ ] Database schema applied successfully (`supabase/migrations/20260305000000_initial_schema.sql`)
-- [ ] TypeScript types regenerated: `pnpm run db:types`
+- [ ] Supabase project created and credentials added to `.env.local`
+- [ ] Schema migration applied (`20260305000000_initial_schema.sql`)
+- [ ] Anon-read policy applied (`20260305000001_allow_anon_read.sql`)
+- [ ] TypeScript types regenerated if schema was modified: `pnpm run db:types`
 - [ ] Connection test passes: `pnpm run test:connection`
-- [ ] Application pages fetch real data
-- [ ] Error handling and loading states implemented
+- [ ] Dev server starts: `pnpm dev`
+- [ ] Dashboard loads with live (or empty) data
 
-## Troubleshooting
+### What Works Without Real Data
 
-### Types not matching
-
-Run `pnpm run db:types` to regenerate after any schema changes.
-
-### Permission errors
-
-Check RLS policies — may need to authenticate or adjust policies for development.
-
-### Connection fails
-
-Verify `.env.local` has correct values and restart dev server.
-
-### Tables not found
-
-Ensure migration was applied via Supabase Dashboard → SQL Editor.
+All pages gracefully handle empty tables — empty states are shown instead of errors. You do **not** need seed data to verify the connection.

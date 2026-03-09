@@ -4,40 +4,60 @@
 
 ✅ **Environment Configuration**
 - Created `.env.local` file for your Supabase credentials
-- Configured Supabase client for browser and server
+- Configured Supabase client for browser (`lib/supabase/client.ts`) and server (`lib/supabase/server.ts`)
 
 ✅ **Database Schema**
-- Designed comprehensive schema for OCF Fellowship Management
-- Created SQL migration in `supabase/migrations/20260305000000_initial_schema.sql`
-- Documented schema in `supabase/SCHEMA.md`
+- 7-table schema applied via two SQL migrations
+  - `supabase/migrations/20260305000000_initial_schema.sql` — creates all tables
+  - `supabase/migrations/20260305000001_allow_anon_read.sql` — grants anon SELECT on all tables
+- Documented in `docs/schema-reference.md` (canonical) and `supabase/SCHEMA.md` (quick reference)
+
+✅ **Live Data on All Pages**
+- Dashboard: 13 parallel Supabase queries — KPI counts, distributions, recent activity
+- Students: full list with CRUD, search, sort, filter, pagination, student detail page
+- Applications: live queries with student + fellowship joins, full CRUD, stage/finalist badges
+- Advising: live meetings with student + advisor joins, full CRUD, no-show indicator
+- Fellowship Thursday: attendance records with student join, full CRUD
+- Scholarship History: past awards with student + fellowship joins, full CRUD
+- Fellowships: list with per-fellowship application/finalist/awarded metrics derived from the `application` table
 
 ✅ **Professional UI/UX Design**
-- Modern dashboard with neutral slate sidebar and FGCU green accents
-- Interactive tables with search bars and action buttons
-- Statistics cards with colorful icons across all pages
-- Semantic status badges and engaging empty states
-- Responsive design for mobile and desktop
-- See [UI/UX Refactor Summary](UI_UX_REFACTOR.md) for details
+- Neutral slate sidebar with FGCU green active accents
+- Interactive tables with search, sort, filter, and action buttons
+- KPI cards with colorful icons across all pages
+- Semantic status badges and empty states
+- Responsive layout (mobile + desktop)
+- See [UI/UX Refactor Summary](UI_UX_REFACTOR.md) and [Students Dashboard Upgrade](STUDENTS_DASHBOARD_UPGRADE.md)
 
 ✅ **FGCU Design System**
 - Complete design guide with color palette, typography, and spacing
-- Google Fonts integration (Merriweather + Open Sans)
-- Tailwind CSS configuration with custom theme
-- See [FGCU Design Style Guide](DESIGN_GUIDE.md) for full details
+- Tailwind CSS v4 with custom theme
+- See [FGCU Design Style Guide](DESIGN_GUIDE.md)
+
+✅ **TypeScript Type Safety**
+- Auto-generated Supabase types in `types/database.ts`
+- Application-level domain types in `types/index.ts`
+- Full type coverage with strict mode
+
+✅ **Form Validation**
+- Zod schemas + React Hook Form on all add/edit forms
+- Login form with client-side validation
 
 ✅ **Development Tools**
-- Installed Supabase CLI for type generation
-- Created connection test script
-- Added npm scripts for database operations
+- Connection test script: `pnpm test:connection`
+- Type generation script: `pnpm db:types`
+- Supabase CLI installed
 
 ✅ **Documentation**
-- Complete setup guide in `supabase/README.md`
-- Schema verification checklist in `schema-verification.md`
-- Design system documentation in `DESIGN_GUIDE.md`
-- UI/UX refactor summary in `UI_UX_REFACTOR.md`
-- Updated main README.md with project info
+- `docs/schema-reference.md` — canonical schema with all constraints
+- `supabase/SCHEMA.md` — quick-reference table
+- `supabase/README.md` — setup guide
+- `docs/schema-verification.md` — setup checklist
+- `docs/DESIGN_GUIDE.md` — FGCU design system
+- `docs/UI_UX_REFACTOR.md` — UI transformation notes
+- `docs/STUDENTS_DASHBOARD_UPGRADE.md` — students page upgrade details
 
-## 🎯 Next Steps (Required)
+## ⚠️ Still Required From You
 
 ### 1. Get Supabase Credentials (5 minutes)
 
@@ -73,11 +93,8 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 1. Open your Supabase project dashboard
 2. Click **SQL Editor** in the left sidebar
 3. Click **New Query**
-4. Open `supabase/migrations/20260305000000_initial_schema.sql` in your code editor
-5. Copy the entire file contents
-6. Paste into the Supabase SQL Editor
-7. Click **Run** (bottom right)
-8. You should see "Success. No rows returned" ✅
+4. Open `supabase/migrations/20260305000000_initial_schema.sql`, copy its contents, paste and run — you should see "Success. No rows returned" ✅
+5. Repeat for `supabase/migrations/20260305000001_allow_anon_read.sql` — this grants the anonymous key read access to all tables ✅
 
 **Method B: Using Supabase CLI**
 
@@ -85,7 +102,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 # Link to your project (one-time)
 npx supabase link --project-ref YOUR_PROJECT_REF_ID
 
-# Push the migration
+# Push both migrations
 npx supabase db push
 ```
 
@@ -163,40 +180,59 @@ Your app is now connected to Supabase! 🎉
 
 ## 📚 Learn More
 
-- **[Supabase Setup Guide](supabase/README.md)** - Detailed setup instructions
-- **[Database Schema](supabase/SCHEMA.md)** - Complete schema documentation
-- **[Schema Verification](SCHEMA_VERIFICATION.md)** - Implementation checklist
+- **[Supabase Setup Guide](../supabase/README.md)** - Detailed setup instructions
+- **[Schema Reference](schema-reference.md)** - Complete schema with constraints and business rules
+- **[Schema Verification](schema-verification.md)** - Implementation checklist
 - **[Supabase Docs](https://supabase.com/docs)** - Official documentation
 
 ## 🎓 What You Have Now
 
-Your application now has:
+Your application has:
 
-1. **7 Database Tables**:
-   - `student` - Student profiles and academic info
-   - `advisor` - Advisor names
-   - `fellowship` - Fellowship programs
-   - `application` - Application tracking and pipeline stages
-   - `advising_meeting` - Advising session records
-   - `fellowship_thursday` - Weekly meeting attendance
-   - `scholarship_history` - Past scholarship awards
+1. **7 Database Tables** — fully documented in `docs/schema-reference.md`:
+   - `student` — student profiles and academic info
+   - `advisor` — advisor names
+   - `fellowship` — fellowship programs
+   - `application` — application tracking with stage pipeline
+   - `advising_meeting` — advising session records
+   - `fellowship_thursday` — weekly meeting attendance
+   - `scholarship_history` — past scholarship awards
 
-2. **Type-Safe Database Access**:
-   - Auto-generated TypeScript types
-   - Type-checked queries
+2. **8 Dashboard Pages** with live Supabase data:
+   - Dashboard (overview KPIs + distributions + recent activity)
+   - Students (full CRUD + search/sort/filter + detail page)
+   - Fellowships (metrics per fellowship)
+   - Applications (stage tracking)
+   - Advising (session records)
+   - Fellowship Thursday (attendance)
+   - Scholarship History (awards)
+   - Reports (placeholder — not yet built)
+
+3. **Type-Safe Database Access**:
+   - Auto-generated TypeScript types in `types/database.ts`
+   - Type-checked queries throughout
    - IntelliSense support
 
-3. **Security Features**:
-   - Row Level Security enabled
+4. **Security Features**:
+   - Row Level Security enabled (anon SELECT granted via migration)
    - Integer sequence primary keys
    - Foreign key constraints
-   - Input validation ready
+   - Zod input validation on all forms
 
-4. **Development Tools**:
-   - Connection testing
-   - Type generation
-   - Migration system
-   - Documentation
+5. **Development Tools**:
+   - `pnpm test:connection` — verify Supabase connection
+   - `pnpm db:types` — regenerate types after schema changes
+   - Migration system via Supabase CLI
+
+## 🔄 What Isn't Done Yet
+
+| Feature | Status | Notes |
+|---|---|---|
+| Supabase Auth | Stub | Login form + Zod validation are done; `signInWithPassword` call needs `@supabase/ssr` middleware |
+| Reports page | Placeholder | Empty state shown; charts/export logic not built |
+| Server-side pagination | Not started | All pagination is currently client-side |
+| CSV export | UI only | Buttons exist; export logic not implemented |
+| Bulk actions | Not started | Multi-select and bulk operations planned |
 
 ## ✨ Next Development Phase
 

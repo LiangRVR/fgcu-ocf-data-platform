@@ -130,13 +130,12 @@ If you're getting permission errors:
 ## Next Steps
 
 1. ✅ Configure environment variables
-2. ✅ Apply database schema
-3. ✅ Generate TypeScript types
-4. ✅ Verify connection
-5. 🔄 Implement authentication (see [Auth Setup Guide](../docs/AUTH_SETUP.md))
-6. 🔄 Customize RLS policies for your security requirements
-7. 🔄 Add seed data for development
-8. 🔄 Deploy to production
+2. ✅ Apply database schema (`20260305000000_initial_schema.sql`)
+3. ✅ Apply anon-read policy (`20260305000001_allow_anon_read.sql`)
+4. ✅ Generate TypeScript types
+5. ✅ Verify connection
+6. 🔄 Wire Supabase Auth — replace the mock gate in `lib/auth/mock.ts` with real `@supabase/ssr` session middleware
+7. 🔄 Customize RLS policies for authenticated users once auth is live
 
 ## Useful Commands
 

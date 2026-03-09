@@ -6,21 +6,23 @@ This folder contains detailed documentation for the OCF Fellowship Management Sy
 
 ### Getting Started
 
-- **[Quick Start Guide](quickstart.md)** - Step-by-step guide to get the application running with Supabase
+- **[Quick Start Guide](quickstart.md)** - Environment setup and Supabase connection
 
 ### Design & UI
 
 - **[FGCU Design Style Guide](DESIGN_GUIDE.md)** - Official design system, colors, typography, and component guidelines
-- **[UI/UX Refactor Summary](UI_UX_REFACTOR.md)** - Complete documentation of the professional dashboard transformation
+- **[UI/UX Refactor Summary](UI_UX_REFACTOR.md)** - Dashboard transformation details and file changelog
+- **[Students Dashboard Upgrade](STUDENTS_DASHBOARD_UPGRADE.md)** - Students page CRUD, sort, filter, and pagination details
 
 ### Database
 
-- **[Schema Verification](schema-verification.md)** - Checklist for verifying database schema implementation
-- **[Supabase Setup](../supabase/README.md)** - Detailed guide for setting up Supabase
-- **[Database Schema](../supabase/SCHEMA.md)** - Complete database schema documentation
+- **[Schema Reference](schema-reference.md)** — **Canonical schema** with all constraints, business rules, and TypeScript type locations
+- **[Schema Verification](schema-verification.md)** - Checklist for setting up and verifying the database
+- **[Supabase Setup](../supabase/README.md)** - Guide for creating a Supabase project and applying migrations
+- **[Schema Quick Reference](../supabase/SCHEMA.md)** - Table list and foreign key map
 
 ### Project Information
-- **[Main README](../README.md)** - Project overview, tech stack, and quick start
+- **[Main README](../README.md)** - Project overview, tech stack, features, and project structure
 - **[License](../LICENSE)** - License information
 
 ---
@@ -29,11 +31,10 @@ This folder contains detailed documentation for the OCF Fellowship Management Sy
 
 ### For New Developers
 
-1. Read the [Main README](../README.md) for project overview
-2. Follow the [Quick Start Guide](quickstart.md) to set up your environment
-3. Review the [FGCU Design Style Guide](DESIGN_GUIDE.md) for UI/UX guidelines
-4. Read the [UI/UX Refactor Summary](UI_UX_REFACTOR.md) to understand the design transformation
-5. Review the [Database Schema](../supabase/SCHEMA.md) to understand the data model
+1. Read the [Main README](../README.md) for project overview and feature status
+2. Follow the [Quick Start Guide](quickstart.md) to configure Supabase
+3. Review the [Schema Reference](schema-reference.md) to understand the data model
+4. Review the [FGCU Design Style Guide](DESIGN_GUIDE.md) for UI/UX guidelines
 
 ### For Database Setup
 
@@ -46,10 +47,10 @@ This folder contains detailed documentation for the OCF Fellowship Management Sy
 
 The application follows the official FGCU design system:
 
-- **Colors:** FGCU Green (#006747), FGCU Blue (#003B5C), FGCU Gold (#C99700)
-- **Typography:** Merriweather (headings) and Open Sans (body)
-- **Layout:** Neutral slate sidebar with FGCU green accents
-- **Components:** Professional admin dashboard patterns
+- **Colors:** FGCU Green (`#006747`), FGCU Blue (`#003B5C`), FGCU Gold (`#C99700`)
+- **Sidebar:** Neutral `bg-slate-900` — FGCU green used only for active nav items
+- **Accents:** FGCU green on primary buttons and active states
+- **Components:** shadcn/ui + Radix UI with custom FGCU theme
 
 See the [Design Style Guide](DESIGN_GUIDE.md) for complete details.
 
@@ -57,10 +58,7 @@ See the [Design Style Guide](DESIGN_GUIDE.md) for complete details.
 
 ## 📝 Need Help?
 
-If you encounter any issues:
-
-1. Check the [Supabase Setup Guide](../supabase/README.md) for troubleshooting
+1. Check the [Supabase Setup Guide](../supabase/README.md) for connection troubleshooting
 2. Review the [Schema Verification](schema-verification.md) checklist
 3. Run `pnpm run test:connection` to verify your Supabase connection
-4. Review the [UI/UX Refactor Summary](UI_UX_REFACTOR.md) for design implementation details
-5. Contact the development team for additional support
+4. Run `pnpm run db:types` after any schema change to regenerate TypeScript types

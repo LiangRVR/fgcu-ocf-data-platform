@@ -65,36 +65,47 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 ```
 ├── app/                    # Next.js App Router
 │   ├── (auth)/            # Authentication pages
-│   │   └── login/         # Login page
+│   │   └── login/         # Login page (form complete, auth stub pending)
 │   ├── (dashboard)/       # Protected dashboard pages
-│   │   ├── dashboard/     # Overview with statistics
-│   │   ├── students/      # Student management
-│   │   ├── fellowships/   # Fellowship opportunities
-│   │   ├── applications/  # Application tracking
-│   │   ├── advising/      # Advising sessions
-│   │   └── reports/       # Analytics and reports
+│   │   ├── dashboard/     # Live overview: KPIs, distributions, recent activity
+│   │   ├── students/      # Student list (CRUD, search, sort, filter, CSV export)
+│   │   │   └── [id]/      # Student detail page (profile + related records)
+│   │   ├── fellowships/   # Fellowship list with per-fellowship metrics
+│   │   ├── applications/  # Application tracking with stage pipeline
+│   │   ├── advising/      # Advising session records
+│   │   ├── fellowship-thursday/ # Weekly meeting attendance
+│   │   ├── scholarship-history/ # Past scholarship awards
+│   │   └── reports/       # Placeholder (charts not yet built)
 │   ├── api/               # API routes
+│   │   └── health/        # Health check endpoint
 │   └── globals.css        # FGCU design system styles
 ├── components/
+│   ├── advising/          # AdvisingTable (CRUD client component)
+│   ├── applications/      # ApplicationsTable (CRUD client component)
+│   ├── fellowship-thursday/ # FellowshipThursdayTable (CRUD client component)
+│   ├── scholarship-history/ # ScholarshipHistoryTable (CRUD client component)
+│   ├── students/          # StudentsTable (CRUD + sort + filter client component)
 │   ├── layout/            # Shell, sidebar, top bar, page header
 │   └── ui/                # shadcn/ui components (buttons, cards, badges, etc.)
 ├── lib/
-│   ├── auth/              # Authentication logic
-│   ├── config/            # Navigation and app config
+│   ├── auth/              # Mock auth gate (IS_AUTHED flag — replace with real session)
+│   ├── config/            # Navigation config (8 sidebar items)
 │   ├── supabase/          # Supabase clients (browser & server)
-│   ├── utils/             # Utility functions (cn, format)
-│   └── validators/        # Zod validation schemas
-├── types/                 # TypeScript types (Database, App)
+│   ├── utils/             # cn, format (formatDate, getInitials, formatCurrency)
+│   └── validators/        # Zod schemas (auth)
+├── types/                 # TypeScript types (Database auto-generated, App-level)
 ├── supabase/
-│   ├── migrations/        # SQL migrations
-│   ├── SCHEMA.md          # Database documentation
+│   ├── migrations/        # 20260305000000_initial_schema.sql, 20260305000001_allow_anon_read.sql
+│   ├── SCHEMA.md          # Quick-reference schema table
 │   └── README.md          # Supabase setup guide
 ├── docs/                  # Project documentation
 │   ├── DESIGN_GUIDE.md    # FGCU design system
-│   ├── UI_UX_REFACTOR.md  # UI transformation docs
-│   ├── quickstart.md      # Quick start guide
-│   └── schema-verification.md
-└── scripts/               # Utility scripts
+│   ├── UI_UX_REFACTOR.md  # UI transformation notes
+│   ├── STUDENTS_DASHBOARD_UPGRADE.md # Students page upgrade details
+│   ├── schema-reference.md # Canonical schema with all constraints
+│   ├── quickstart.md      # Environment + Supabase setup
+│   └── schema-verification.md # Database setup checklist
+└── scripts/               # test-connection.ts
 ```
 
 See the [full project structure details](docs/quickstart.md#project-structure) for more information.
@@ -116,34 +127,33 @@ For detailed instructions, see the [Supabase Setup Guide](supabase/README.md).
 
 ## 🎯 Features
 
-### Current
-- ✅ **Professional Dashboard UI** - Modern, neutral design with FGCU green accents
-- ✅ **Responsive Layout** - Adaptive sidebar and mobile-friendly tables
-- ✅ **Statistics Cards** - Real-time metrics with colorful icons
-- ✅ **Interactive Tables** - Hover states, search bars, action buttons
-- ✅ **Enhanced Empty States** - Engaging onboarding with CTAs
-- ✅ **Semantic Status Badges** - Color-coded indicators with borders
-- ✅ **FGCU Design System** - Consistent colors, typography, and spacing
-- ✅ **Database Schema** - Complete schema and migrations
-- ✅ **TypeScript Type Safety** - Full type coverage
-- ✅ **Form Validation** - Zod schemas for data validation
+### Implemented
+- ✅ **Live Dashboard** - 13 parallel Supabase queries: totals, finalists, semi-finalists, advising this month, no-shows, student flag distributions (CH / Honors / First-Gen), applications by stage, students by class standing, finalists by fellowship, recent meetings and applications
+- ✅ **Students** - Full CRUD (add / edit / delete with confirmation dialog), client-side search + status + major filters, multi-column sort, click-through to student detail page, CSV export, KPI cards, skeleton loading states
+- ✅ **Student Detail Page** - Full profile view with applications, advising meetings, Fellowship Thursday attendance, and scholarship history all loaded in parallel
+- ✅ **Applications** - Live queries with student + fellowship joins, full CRUD table, stage badges, finalist / semi-finalist flags
+- ✅ **Advising** - Live queries with student + advisor joins, full CRUD table, no-show badge, meeting mode
+- ✅ **Fellowship Thursday** - Live attendance records with student join, full CRUD table
+- ✅ **Scholarship History** - Live records with student + fellowship joins, full CRUD table
+- ✅ **Fellowships** - Live list with per-fellowship metrics (total applications, finalists, awarded) derived from the `application` table
+- ✅ **Professional Dashboard UI** - Neutral slate sidebar, FGCU green accents, responsive layout
+- ✅ **Semantic Status Badges** - Color-coded indicators throughout all tables
+- ✅ **FGCU Design System** - Consistent colors, typography, and spacing (see `docs/DESIGN_GUIDE.md`)
+- ✅ **Database Schema** - 7 tables, 2 SQL migrations, anon-read RLS policy
+- ✅ **TypeScript Type Safety** - Full type coverage, auto-generated Supabase types
+- ✅ **Form Validation** - Zod schemas + React Hook Form on all forms
+- ✅ **Toasts** - Sonner toast notifications on all mutations
 
 ### In Progress
-- 🔄 Supabase Auth integration
-- 🔄 Student management CRUD operations
-- 🔄 Fellowship opportunity management
-- 🔄 Application tracking and review workflow
-- 🔄 Advising session scheduling and calendar
+- 🔄 **Supabase Auth** - Login page and form are complete; `signInWithPassword` call is stubbed and needs wiring to `@supabase/ssr` session middleware
+- 🔄 **Reports page** - Page exists with placeholder empty state; charts and export logic not yet built
 
 ### Planned
-- 📋 Client-side search and filtering
-- 📋 Table sorting functionality
-- 📋 Real pagination with page size controls
-- 📋 Add/Edit modals and forms
-- 📋 Student profile pages
-- 📋 Data export (CSV/PDF)
-- 📋 Loading skeletons
-- 📋 Bulk actions
+- 📋 Server-side pagination (currently client-side)
+- 📋 Functional CSV / PDF export
+- 📋 Bulk actions (multi-select + bulk delete)
+- 📋 Real-time updates via Supabase subscriptions
+- 📋 Role-based access control once auth is live
 
 ---
 
