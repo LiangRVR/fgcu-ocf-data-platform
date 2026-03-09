@@ -4,6 +4,9 @@
 
 All table names are **singular**. All primary keys are **integer sequences** (never UUIDs). Every part of the application must follow this schema exactly.
 
+> For a compact one-page overview see [`supabase/SCHEMA.md`](../supabase/SCHEMA.md).
+> For open design decisions (email uniqueness, stage denormalization, etc.) see [`docs/schema-decisions.md`](./schema-decisions.md).
+
 ---
 
 ## Tables

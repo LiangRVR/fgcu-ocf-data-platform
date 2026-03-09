@@ -18,21 +18,48 @@
 
 
 -- ============================================================================
+-- Sequences
+--
+-- All backing sequences are declared first so that the DEFAULT nextval(…)
+-- expressions in each CREATE TABLE are valid at parse time.  This mirrors
+-- the output produced by pg_dump and is required for a clean apply on a
+-- fresh database.
+-- ============================================================================
+CREATE SEQUENCE IF NOT EXISTS public.advisor_advisor_id_seq
+    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+
+CREATE SEQUENCE IF NOT EXISTS public.fellowship_fellowship_id_seq
+    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+
+CREATE SEQUENCE IF NOT EXISTS public.student_student_id_seq
+    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+
+CREATE SEQUENCE IF NOT EXISTS public.application_application_id_seq
+    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+
+CREATE SEQUENCE IF NOT EXISTS public.advising_meeting_meeting_id_seq
+    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+
+CREATE SEQUENCE IF NOT EXISTS public.fellowship_thursday_attendance_id_seq
+    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+
+CREATE SEQUENCE IF NOT EXISTS public.scholarship_history_history_id_seq
+    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+
+
+-- ============================================================================
 -- advisor
 --
 -- Holds the list of OCF advisors who conduct advising meetings.
 -- advisor_name is unique so the same person cannot be entered twice.
 -- ============================================================================
 CREATE TABLE public.advisor (
-    advisor_id  integer    NOT NULL DEFAULT nextval('advisor_advisor_id_seq'::regclass),
+    advisor_id   integer          NOT NULL DEFAULT nextval('advisor_advisor_id_seq'::regclass),
     advisor_name character varying NOT NULL,
-    CONSTRAINT advisor_pkey PRIMARY KEY (advisor_id),
+    CONSTRAINT advisor_pkey             PRIMARY KEY (advisor_id),
     CONSTRAINT advisor_advisor_name_key UNIQUE (advisor_name)
 );
 
--- Sequence that backs advisor_id
-CREATE SEQUENCE IF NOT EXISTS public.advisor_advisor_id_seq
-    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
 ALTER SEQUENCE public.advisor_advisor_id_seq OWNED BY public.advisor.advisor_id;
 
 
@@ -45,12 +72,10 @@ ALTER SEQUENCE public.advisor_advisor_id_seq OWNED BY public.advisor.advisor_id;
 CREATE TABLE public.fellowship (
     fellowship_id   integer          NOT NULL DEFAULT nextval('fellowship_fellowship_id_seq'::regclass),
     fellowship_name character varying NOT NULL,
-    CONSTRAINT fellowship_pkey PRIMARY KEY (fellowship_id),
+    CONSTRAINT fellowship_pkey              PRIMARY KEY (fellowship_id),
     CONSTRAINT fellowship_fellowship_name_key UNIQUE (fellowship_name)
 );
 
-CREATE SEQUENCE IF NOT EXISTS public.fellowship_fellowship_id_seq
-    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
 ALTER SEQUENCE public.fellowship_fellowship_id_seq OWNED BY public.fellowship.fellowship_id;
 
 
@@ -99,8 +124,6 @@ CREATE TABLE public.student (
     )
 );
 
-CREATE SEQUENCE IF NOT EXISTS public.student_student_id_seq
-    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
 ALTER SEQUENCE public.student_student_id_seq OWNED BY public.student.student_id;
 
 -- Indexes on commonly filtered and looked-up columns
@@ -148,8 +171,6 @@ CREATE TABLE public.application (
     )
 );
 
-CREATE SEQUENCE IF NOT EXISTS public.application_application_id_seq
-    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
 ALTER SEQUENCE public.application_application_id_seq OWNED BY public.application.application_id;
 
 CREATE INDEX idx_application_student   ON public.application (student_id);
@@ -185,8 +206,6 @@ CREATE TABLE public.advising_meeting (
     )
 );
 
-CREATE SEQUENCE IF NOT EXISTS public.advising_meeting_meeting_id_seq
-    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
 ALTER SEQUENCE public.advising_meeting_meeting_id_seq OWNED BY public.advising_meeting.meeting_id;
 
 CREATE INDEX idx_advising_meeting_student ON public.advising_meeting (student_id);
@@ -219,8 +238,6 @@ CREATE TABLE public.fellowship_thursday (
     )
 );
 
-CREATE SEQUENCE IF NOT EXISTS public.fellowship_thursday_attendance_id_seq
-    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
 ALTER SEQUENCE public.fellowship_thursday_attendance_id_seq OWNED BY public.fellowship_thursday.attendance_id;
 
 CREATE INDEX idx_fellowship_thursday_student ON public.fellowship_thursday (student_id);
@@ -244,8 +261,6 @@ CREATE TABLE public.scholarship_history (
         FOREIGN KEY (fellowship_id) REFERENCES public.fellowship (fellowship_id)
 );
 
-CREATE SEQUENCE IF NOT EXISTS public.scholarship_history_history_id_seq
-    AS integer START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
 ALTER SEQUENCE public.scholarship_history_history_id_seq OWNED BY public.scholarship_history.history_id;
 
 CREATE INDEX idx_scholarship_history_student   ON public.scholarship_history (student_id);

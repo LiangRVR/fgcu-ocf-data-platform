@@ -37,8 +37,10 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 - **[FGCU Design Style Guide](docs/DESIGN_GUIDE.md)** - Official design system and style guidelines
 - **[UI/UX Refactor Summary](docs/UI_UX_REFACTOR.md)** - Complete UI/UX transformation documentation
 - **[Schema Verification](docs/schema-verification.md)** - Database setup checklist
+- **[Schema Reference](docs/schema-reference.md)** - Full schema with all constraints and business rules
+- **[Schema Design Decisions](docs/schema-decisions.md)** - Rationale for key data-model choices
 - **[Supabase Setup](supabase/README.md)** - Detailed database configuration
-- **[Database Schema](supabase/SCHEMA.md)** - Complete schema documentation
+- **[Database Schema](supabase/SCHEMA.md)** - One-page reference: tables, PKs, FKs, business rules
 
 ---
 
@@ -117,9 +119,11 @@ See the [full project structure details](docs/quickstart.md#project-structure) f
 The application uses Supabase for the backend. To set up the database:
 
 1. **Create a Supabase project** at [supabase.com](https://supabase.com)
-2. **Apply the schema**: Copy `supabase/migrations/20260305000000_initial_schema.sql` to Supabase SQL Editor
-3. **Generate types**: Run `pnpm run db:types`
-4. **Test connection**: Run `pnpm run test:connection`
+2. **Apply migration 1** — schema: paste `supabase/migrations/20260305000000_initial_schema.sql` into the SQL Editor and run
+3. **Apply migration 2** — RLS policies: paste `supabase/migrations/20260305000001_allow_anon_read.sql` and run
+   _(Both files are required. The second grants the anon key SELECT access — without it every query returns an empty result set.)_
+4. **Generate types**: Run `pnpm run db:types`
+5. **Test connection**: Run `pnpm run test:connection`
 
 For detailed instructions, see the [Supabase Setup Guide](supabase/README.md).
 
