@@ -4,6 +4,8 @@ import {
   Award,
   FileText,
   MessageSquare,
+  CalendarDays,
+  BookOpen,
   BarChart2,
 } from "lucide-react";
 import type { NavItem } from "@/types";
@@ -18,5 +20,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Fellowships", href: "/fellowships", icon: Award },
   { label: "Applications", href: "/applications", icon: FileText },
   { label: "Advising", href: "/advising", icon: MessageSquare },
+  { label: "Fellowship Thursday", href: "/fellowship-thursday", icon: CalendarDays },
+  { label: "Scholarship History", href: "/scholarship-history", icon: BookOpen },
   { label: "Reports", href: "/reports", icon: BarChart2 },
 ];
