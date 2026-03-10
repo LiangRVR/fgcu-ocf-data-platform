@@ -23,6 +23,7 @@ import {
 import Link from "next/link";
 import { createServerClient } from "@/lib/supabase/server";
 import type { Database } from "@/types/database";
+import { StudentInfoEditor } from "@/components/students/student-info-editor";
 
 type Student = Database["public"]["Tables"]["student"]["Row"];
 type Application = Database["public"]["Tables"]["application"]["Row"] & {
@@ -225,134 +226,8 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
       </div>
 
       <div className="space-y-6">
-        {/* Basic Information */}
-        <Card className="border-gray-200 shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-lg">Basic Information</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="text-sm font-medium text-slate-500">Full Name</label>
-                <p className="mt-1 text-sm text-slate-900">{student.full_name}</p>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-500">Email</label>
-                <div className="mt-1 flex items-center gap-2">
-                  <Mail className="h-4 w-4 text-slate-400" />
-                  <a
-                    href={`mailto:${student.email}`}
-                    className="text-sm text-blue-600 hover:underline"
-                  >
-                    {student.email}
-                  </a>
-                </div>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-500">Student ID</label>
-                <p className="mt-1 text-sm text-slate-900">{student.student_id}</p>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-500">Status</label>
-                <div className="mt-1">
-                  {student.is_ch_student ? (
-                    <Badge className="border-green-200 bg-green-100 text-green-800 hover:bg-green-100">
-                      CH Student
-                    </Badge>
-                  ) : (
-                    <Badge
-                      variant="secondary"
-                      className="border-gray-200 bg-gray-100 text-gray-700 hover:bg-gray-100"
-                    >
-                      Other
-                    </Badge>
-                  )}
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Academic Information */}
-        <Card className="border-gray-200 shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-lg">Academic Information</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              <div>
-                <label className="text-sm font-medium text-slate-500">Major</label>
-                <div className="mt-1 flex items-center gap-2">
-                  <GraduationCap className="h-4 w-4 text-slate-400" />
-                  <p className="text-sm text-slate-900">{student.major || "—"}</p>
-                </div>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-500">Minor</label>
-                <p className="mt-1 text-sm text-slate-900">{student.minor || "—"}</p>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-500">Class Standing</label>
-                <p className="mt-1 text-sm text-slate-900">{student.class_standing || "—"}</p>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-500">GPA</label>
-                <p className="mt-1 text-sm text-slate-900">
-                  {student.gpa ? student.gpa.toFixed(2) : "—"}
-                </p>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-500">Honors College</label>
-                <p className="mt-1 text-sm text-slate-900">
-                  {student.honors_college ? "Yes" : "No"}
-                </p>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-500">Languages</label>
-                <p className="mt-1 text-sm text-slate-900">{student.languages || "—"}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Personal Information */}
-        <Card className="border-gray-200 shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-lg">Personal Information</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              <div>
-                <label className="text-sm font-medium text-slate-500">Age</label>
-                <p className="mt-1 text-sm text-slate-900">{student.age || "—"}</p>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-500">Gender</label>
-                <p className="mt-1 text-sm text-slate-900">{student.gender || "—"}</p>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-500">Pronouns</label>
-                <p className="mt-1 text-sm text-slate-900">{student.pronouns || "—"}</p>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-500">Race/Ethnicity</label>
-                <p className="mt-1 text-sm text-slate-900">{student.race_ethnicity || "—"}</p>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-500">First Generation</label>
-                <p className="mt-1 text-sm text-slate-900">
-                  {student.first_gen ? "Yes" : "No"}
-                </p>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-500">US Citizen</label>
-                <p className="mt-1 text-sm text-slate-900">
-                  {student.us_citizen ? "Yes" : "No"}
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        {/* Basic / Academic / Personal — inline-editable */}
+        <StudentInfoEditor initialStudent={student} />
 
         {/* Applications Section */}
         <Card className="border-gray-200 shadow-sm">

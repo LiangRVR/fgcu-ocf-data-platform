@@ -4,7 +4,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import Link from "next/link";
-import { Plus, Search, Eye, Pencil, Trash2, Award } from "lucide-react";
+import { Plus, Search, Eye, Trash2, Award } from "lucide-react";
+import { FellowshipEditButton } from "@/components/fellowships/fellowship-edit-button";
 import { createServerClient } from "@/lib/supabase/server";
 import type { Database } from "@/types/database";
 
@@ -228,14 +229,10 @@ export default async function FellowshipsPage() {
                               <Eye className="h-4 w-4" />
                             </Button>
                           </Link>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-slate-600 hover:text-slate-900"
-                            title="Edit fellowship"
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </Button>
+                          <FellowshipEditButton
+                            fellowshipId={fellowship.fellowship_id}
+                            fellowshipName={fellowship.fellowship_name}
+                          />
                           <Button
                             variant="ghost"
                             size="icon"
