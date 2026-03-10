@@ -419,7 +419,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
 
         {/* Fellowship Thursday Attendance */}
         <Card className="border-gray-200 shadow-sm">
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="flex items-center gap-2 text-lg">
               <CalendarDays className="h-5 w-5 text-slate-400" />
               Fellowship Thursday
@@ -429,6 +429,12 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                 </span>
               )}
             </CardTitle>
+            <Link href={`/fellowship-thursday?add=1&student_id=${student.student_id}`}>
+              <Button size="sm" variant="outline" className="h-8 text-xs">
+                <CalendarPlus className="mr-1.5 h-3.5 w-3.5" />
+                Log Attendance
+              </Button>
+            </Link>
           </CardHeader>
           <CardContent>
             {fellowshipThursday.length === 0 ? (
@@ -436,7 +442,13 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                 <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gray-100">
                   <CalendarDays className="h-8 w-8 text-gray-400" />
                 </div>
-                <p className="text-sm text-slate-500">No Fellowship Thursday records.</p>
+                <p className="mb-3 text-sm text-slate-500">No Fellowship Thursday records.</p>
+                <Link href={`/fellowship-thursday?add=1&student_id=${student.student_id}`}>
+                  <Button size="sm" className="bg-[#006747] hover:bg-[#00563b]">
+                    <CalendarPlus className="mr-2 h-4 w-4" />
+                    Log First Attendance
+                  </Button>
+                </Link>
               </div>
             ) : (
               <div className="overflow-x-auto">

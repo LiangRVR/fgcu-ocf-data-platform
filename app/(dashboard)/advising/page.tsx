@@ -10,6 +10,7 @@ interface Props {
   searchParams: Promise<{
     add?: string;
     student_id?: string;
+    advisor_id?: string;
     no_show?: string;
   }>;
 }
@@ -76,6 +77,7 @@ export default async function AdvisingPage({ searchParams }: Props) {
   const params = await searchParams;
   const autoOpenAdd = params.add === "1";
   const defaultStudentId = params.student_id;
+  const defaultAdvisorId = params.advisor_id;
   const initialNoShowFilter = params.no_show === "yes" ? "yes" : undefined;
 
   const [meetings, students, advisors] = await Promise.all([
@@ -96,6 +98,7 @@ export default async function AdvisingPage({ searchParams }: Props) {
         advisors={advisors}
         autoOpenAdd={autoOpenAdd}
         defaultStudentId={defaultStudentId}
+        defaultAdvisorId={defaultAdvisorId}
         initialNoShowFilter={initialNoShowFilter}
       />
     </>

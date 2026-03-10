@@ -12,6 +12,7 @@ interface Props {
     student_id?: string;
     fellowship_id?: string;
     stage?: string;
+    fellowship?: string;
   }>;
 }
 
@@ -80,6 +81,7 @@ export default async function ApplicationsPage({ searchParams }: Props) {
   const defaultStudentId = params.student_id;
   const defaultFellowshipId = params.fellowship_id;
   const initialStageFilter = params.stage;
+  const initialSearchQuery = params.fellowship;
 
   const [applications, students, fellowships] = await Promise.all([
     getApplications(),
@@ -102,6 +104,7 @@ export default async function ApplicationsPage({ searchParams }: Props) {
         defaultStudentId={defaultStudentId}
         defaultFellowshipId={defaultFellowshipId}
         initialStageFilter={initialStageFilter}
+        initialSearchQuery={initialSearchQuery}
       />
     </>
   );

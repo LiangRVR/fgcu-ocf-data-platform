@@ -12,6 +12,10 @@ export const metadata: Metadata = { title: "Students" };
 
 type Student = Database["public"]["Tables"]["student"]["Row"];
 
+interface Props {
+  searchParams: Promise<{ standing?: string; flag?: string }>;
+}
+
 /**
  * Fetch all students from the database
  */
@@ -133,7 +137,13 @@ function KPICardsSkeleton() {
 /**
  * Students Content Component
  */
-async function StudentsContent() {
+async function StudentsContent({
+  initialStandingFilter,
+  initialStatusFilter,
+}: {
+  initialStandingFilter?: string;
+  initialStatusFilter?: string;
+}) {
   const [students, activeApplications, fellowshipsAvailable] = await Promise.all([
     getStudents(),
     getApplicationsCount(),
@@ -172,12 +182,17 @@ async function StudentsContent() {
       </div>
 
       {/* Students Table */}
-      <StudentsTable initialStudents={students} />
+      <StudentsTable
+        initialStudents={students}
+        initialStandingFilter={initialStandingFilter}
+        initialStatusFilter={initialStatusFilter}
+      />
     </>
   );
 }
 
-export default async function StudentsPage() {
+export default async function StudentsPage({ searchParams }: Props) {
+  const params = await searchParams;
   return (
     <>
       <PageHeader
@@ -202,7 +217,10 @@ export default async function StudentsPage() {
           </>
         }
       >
-        <StudentsContent />
+        <StudentsContent
+          initialStandingFilter={params.standing}
+          initialStatusFilter={params.flag}
+        />
       </Suspense>
     </>
   );

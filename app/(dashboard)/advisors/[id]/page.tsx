@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   Users,
   CalendarDays,
+  CalendarPlus,
   CheckCircle2,
   XCircle,
   User,
@@ -81,12 +82,20 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
         title={advisor.advisor_name}
         description={`Advisor ID: ${advisor.advisor_id}`}
       >
-        <Link href="/advising">
-          <Button variant="outline" size="sm">
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back to Advising
-          </Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link href={`/advising?add=1&advisor_id=${advisor.advisor_id}`}>
+            <Button size="sm" className="bg-[#006747] hover:bg-[#00563b]">
+              <CalendarPlus className="mr-2 h-4 w-4" />
+              Log Meeting
+            </Button>
+          </Link>
+          <Link href="/advising">
+            <Button variant="outline" size="sm">
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Back to Advising
+            </Button>
+          </Link>
+        </div>
       </PageHeader>
 
       {/* Summary stat strip */}
@@ -112,7 +121,7 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
 
       {/* Meetings Table */}
       <Card className="border-gray-200 shadow-sm">
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="flex items-center gap-2 text-lg">
             <CalendarDays className="h-5 w-5 text-slate-400" />
             Advising Meetings
@@ -122,6 +131,12 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
               </span>
             )}
           </CardTitle>
+          <Link href={`/advising?add=1&advisor_id=${advisor.advisor_id}`}>
+            <Button size="sm" variant="outline" className="h-8 text-xs">
+              <CalendarPlus className="mr-1.5 h-3.5 w-3.5" />
+              Log Meeting
+            </Button>
+          </Link>
         </CardHeader>
         <CardContent>
           {meetings.length === 0 ? (
@@ -129,7 +144,13 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
               <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gray-100">
                 <User className="h-8 w-8 text-gray-400" />
               </div>
-              <p className="text-sm text-slate-500">No meetings recorded for this advisor.</p>
+              <p className="mb-3 text-sm text-slate-500">No meetings recorded for this advisor.</p>
+              <Link href={`/advising?add=1&advisor_id=${advisor.advisor_id}`}>
+                <Button size="sm" className="bg-[#006747] hover:bg-[#00563b]">
+                  <CalendarPlus className="mr-2 h-4 w-4" />
+                  Log First Meeting
+                </Button>
+              </Link>
             </div>
           ) : (
             <div className="overflow-x-auto">

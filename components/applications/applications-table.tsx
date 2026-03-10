@@ -142,6 +142,7 @@ interface ApplicationsTableProps {
   defaultFellowshipId?: string;
   autoOpenAdd?: boolean;
   initialStageFilter?: string;
+  initialSearchQuery?: string;
 }
 
 const EMPTY_FORM = {
@@ -161,11 +162,12 @@ export function ApplicationsTable({
   defaultFellowshipId,
   autoOpenAdd,
   initialStageFilter,
+  initialSearchQuery,
 }: ApplicationsTableProps) {
   const [applications, setApplications] =
     useState<Application[]>(initialApplications);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [searchQuery, setSearchQuery] = useState(initialSearchQuery ?? "");
+  const [debouncedSearch, setDebouncedSearch] = useState(initialSearchQuery ?? "");
   const [stageFilter, setStageFilter] = useState<string>(initialStageFilter ?? "all");
 
   const [addOpen, setAddOpen] = useState(false);

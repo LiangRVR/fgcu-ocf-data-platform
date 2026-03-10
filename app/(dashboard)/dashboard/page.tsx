@@ -208,11 +208,13 @@ function DistributionList({
   rows,
   total,
   barColor,
+  getHref,
 }: {
   title: string;
   rows: Array<[string, number]>;
   total: number;
   barColor: string;
+  getHref?: (label: string) => string;
 }) {
   if (rows.length === 0) {
     return (
@@ -235,10 +237,13 @@ function DistributionList({
       <CardContent className="space-y-2.5">
         {rows.map(([label, count]) => {
           const pct = total > 0 ? Math.round((count / total) * 100) : 0;
-          return (
-            <div key={label}>
+          const href = getHref?.(label);
+          const inner = (
+            <div className={href ? "group cursor-pointer rounded-md p-1 -mx-1 transition-colors hover:bg-slate-50" : ""}>
               <div className="mb-1 flex items-center justify-between text-xs">
-                <span className="max-w-[70%] truncate font-medium text-slate-700">{label}</span>
+                <span className={`max-w-[70%] truncate font-medium ${href ? "text-slate-700 group-hover:text-[#006747]" : "text-slate-700"}`}>
+                  {label}
+                </span>
                 <span className="text-slate-500">
                   {count} <span className="text-slate-400">({pct}%)</span>
                 </span>
@@ -250,6 +255,13 @@ function DistributionList({
                 />
               </div>
             </div>
+          );
+          return href ? (
+            <Link key={label} href={href}>
+              {inner}
+            </Link>
+          ) : (
+            <div key={label}>{inner}</div>
           );
         })}
       </CardContent>
@@ -339,7 +351,7 @@ export default async function DashboardPage() {
             icon: GraduationCap,
             bg: "bg-sky-100",
             fg: "text-sky-600",
-            href: "/students",
+            href: "/students?flag=ch",
           },
           {
             label: "Honors College",
@@ -347,7 +359,7 @@ export default async function DashboardPage() {
             icon: Award,
             bg: "bg-yellow-100",
             fg: "text-yellow-600",
-            href: "/students",
+            href: "/students?flag=honors",
           },
           {
             label: "First-Generation",
@@ -355,7 +367,7 @@ export default async function DashboardPage() {
             icon: Users,
             bg: "bg-rose-100",
             fg: "text-rose-600",
-            href: "/students",
+            href: "/students?flag=first_gen",
           },
           {
             label: "Advising No-Shows",
@@ -401,18 +413,21 @@ export default async function DashboardPage() {
           rows={distributions.appsByStage}
           total={stats.totalApplications}
           barColor="bg-purple-500"
+          getHref={(label) => `/applications?stage=${encodeURIComponent(label)}`}
         />
         <DistributionList
           title="Students by Class Standing"
           rows={distributions.studentsByStanding}
           total={stats.totalStudents}
           barColor="bg-blue-500"
+          getHref={(label) => `/students?standing=${encodeURIComponent(label)}`}
         />
         <DistributionList
           title="Finalists by Fellowship"
           rows={distributions.finalistsByFellowship}
           total={stats.finalists}
           barColor="bg-green-500"
+          getHref={(label) => `/applications?stage=Finalist&fellowship=${encodeURIComponent(label)}`}
         />
       </div>
 

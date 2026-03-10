@@ -60,6 +60,7 @@ interface AdvisingTableProps {
   students: StudentRow[];
   advisors: AdvisorRow[];
   defaultStudentId?: string;
+  defaultAdvisorId?: string;
   autoOpenAdd?: boolean;
   initialNoShowFilter?: string;
 }
@@ -78,6 +79,7 @@ export function AdvisingTable({
   students,
   advisors,
   defaultStudentId,
+  defaultAdvisorId,
   autoOpenAdd,
   initialNoShowFilter,
 }: AdvisingTableProps) {
@@ -102,6 +104,7 @@ export function AdvisingTable({
       setForm((prev) => ({
         ...prev,
         ...(defaultStudentId ? { student_id: defaultStudentId } : {}),
+        ...(defaultAdvisorId ? { advisor_id: defaultAdvisorId } : {}),
       }));
       setAddOpen(true);
     }

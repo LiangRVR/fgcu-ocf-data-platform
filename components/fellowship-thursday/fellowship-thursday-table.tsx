@@ -54,6 +54,8 @@ type SourceInfo = (typeof SOURCE_OPTIONS)[number];
 interface FellowshipThursdayTableProps {
   initialRecords: FellowshipThursday[];
   students: StudentRow[];
+  defaultStudentId?: string;
+  autoOpenAdd?: boolean;
 }
 
 const EMPTY_FORM = {
@@ -65,6 +67,8 @@ const EMPTY_FORM = {
 export function FellowshipThursdayTable({
   initialRecords,
   students,
+  defaultStudentId,
+  autoOpenAdd,
 }: FellowshipThursdayTableProps) {
   const [records, setRecords] = useState<FellowshipThursday[]>(initialRecords);
   const [searchQuery, setSearchQuery] = useState("");
@@ -81,7 +85,17 @@ export function FellowshipThursdayTable({
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
 
-  // Debounce search
+  // Pre-fill and auto-open add dialog when arriving from a contextual link
+  useEffect(() => {
+    if (autoOpenAdd) {
+      setForm((prev) => ({
+        ...prev,
+        ...(defaultStudentId ? { student_id: defaultStudentId } : {}),
+      }));
+      setAddOpen(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
     return () => clearTimeout(timer);

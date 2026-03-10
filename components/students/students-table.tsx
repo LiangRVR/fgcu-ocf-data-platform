@@ -61,6 +61,8 @@ type SortDirection = "asc" | "desc" | null;
 
 interface StudentsTableProps {
   initialStudents: Student[];
+  initialStatusFilter?: string;
+  initialStandingFilter?: string;
 }
 
 const EMPTY_STUDENT_FORM = {
@@ -76,14 +78,28 @@ const EMPTY_STUDENT_FORM = {
   us_citizen: false,
 };
 
-export function StudentsTable({ initialStudents }: StudentsTableProps) {
+const CLASS_STANDINGS = [
+  "Freshman",
+  "Sophomore",
+  "Junior",
+  "Senior",
+  "Graduate",
+  "Doctoral",
+] as const;
+
+export function StudentsTable({
+  initialStudents,
+  initialStatusFilter,
+  initialStandingFilter,
+}: StudentsTableProps) {
   const router = useRouter();
 
   // State
   const [students, setStudents] = useState<Student[]>(initialStudents);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>(initialStatusFilter ?? "all");
+  const [standingFilter, setStandingFilter] = useState<string>(initialStandingFilter ?? "all");
   const [majorFilter, setMajorFilter] = useState<string>("all");
   const [sortField, setSortField] = useState<SortField | null>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>(null);
@@ -136,9 +152,17 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
 
     // Status filter
     if (statusFilter !== "all") {
-      filtered = filtered.filter((s) =>
-        statusFilter === "ch" ? s.is_ch_student : !s.is_ch_student
-      );
+      filtered = filtered.filter((s) => {
+        if (statusFilter === "ch") return s.is_ch_student;
+        if (statusFilter === "honors") return s.honors_college;
+        if (statusFilter === "first_gen") return s.first_gen;
+        return !s.is_ch_student;
+      });
+    }
+
+    // Class standing filter
+    if (standingFilter !== "all") {
+      filtered = filtered.filter((s) => s.class_standing === standingFilter);
     }
 
     // Major filter
@@ -171,6 +195,7 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
     students,
     debouncedSearch,
     statusFilter,
+    standingFilter,
     majorFilter,
     sortField,
     sortDirection,
@@ -370,6 +395,7 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
     setSearchQuery("");
     setDebouncedSearch("");
     setStatusFilter("all");
+    setStandingFilter("all");
     setMajorFilter("all");
     setSortField(null);
     setSortDirection(null);
@@ -418,7 +444,21 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
                   <SelectContent>
                     <SelectItem value="all">All statuses</SelectItem>
                     <SelectItem value="ch">CH Student</SelectItem>
+                    <SelectItem value="honors">Honors College</SelectItem>
+                    <SelectItem value="first_gen">First-Generation</SelectItem>
                     <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <Select value={standingFilter} onValueChange={setStandingFilter}>
+                  <SelectTrigger className="w-full sm:w-44">
+                    <SelectValue placeholder="All standings" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All standings</SelectItem>
+                    {CLASS_STANDINGS.map((s) => (
+                      <SelectItem key={s} value={s}>{s}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
 
@@ -473,11 +513,11 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
                   No students found
                 </h3>
                 <p className="mb-4 text-sm text-slate-500">
-                  {debouncedSearch || statusFilter !== "all" || majorFilter !== "all"
+                  {debouncedSearch || statusFilter !== "all" || standingFilter !== "all" || majorFilter !== "all"
                     ? "Try adjusting your filters or search query."
                     : "Get started by adding your first student."}
                 </p>
-                {(debouncedSearch || statusFilter !== "all" || majorFilter !== "all") && (
+                {(debouncedSearch || statusFilter !== "all" || standingFilter !== "all" || majorFilter !== "all") && (
                   <Button variant="outline" onClick={handleClearFilters}>
                     Clear filters
                   </Button>
