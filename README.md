@@ -133,7 +133,7 @@ For detailed instructions, see the [Supabase Setup Guide](supabase/README.md).
 
 ### Implemented
 - ✅ **Live Dashboard** - 13 parallel Supabase queries: totals, finalists, semi-finalists, advising this month, no-shows, student flag distributions (CH / Honors / First-Gen), applications by stage, students by class standing, finalists by fellowship, recent meetings and applications
-- ✅ **Students** - Full CRUD (add / edit / delete with confirmation dialog), client-side search + status + major filters, multi-column sort, click-through to student detail page, CSV export, KPI cards, skeleton loading states
+- ✅ **Students** - Full CRUD (add / edit / delete with confirmation dialog), client-side search + status + major filters, multi-column sort, click-through to student detail page, KPI cards, skeleton loading states
 - ✅ **Student Detail Page** - Full profile view with applications, advising meetings, Fellowship Thursday attendance, and scholarship history all loaded in parallel
 - ✅ **Applications** - Live queries with student + fellowship joins, full CRUD table, stage badges, finalist / semi-finalist flags
 - ✅ **Advising** - Live queries with student + advisor joins, full CRUD table, no-show badge, meeting mode
@@ -145,7 +145,7 @@ For detailed instructions, see the [Supabase Setup Guide](supabase/README.md).
 - ✅ **FGCU Design System** - Consistent colors, typography, and spacing (see `docs/DESIGN_GUIDE.md`)
 - ✅ **Database Schema** - 7 tables, 2 SQL migrations, anon-read RLS policy
 - ✅ **TypeScript Type Safety** - Full type coverage, auto-generated Supabase types
-- ✅ **Form Validation** - Zod schemas + React Hook Form on all forms
+- ✅ **Form Validation** - Zod schemas + React Hook Form on the login form; manual validation (field-level errors + consistency checks) on all CRUD dialogs throughout the dashboard
 - ✅ **Toasts** - Sonner toast notifications on all mutations
 
 ### In Progress
@@ -154,7 +154,7 @@ For detailed instructions, see the [Supabase Setup Guide](supabase/README.md).
 
 ### Planned
 - 📋 Server-side pagination (currently client-side)
-- 📋 Functional CSV / PDF export
+- 📋 CSV / PDF export (Students export button present; logic not yet implemented)
 - 📋 Bulk actions (multi-select + bulk delete)
 - 📋 Real-time updates via Supabase subscriptions
 - 📋 Role-based access control once auth is live

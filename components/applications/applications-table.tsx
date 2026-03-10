@@ -210,6 +210,27 @@ export function ApplicationsTable({
     });
   };
 
+  // When a flag checkbox is toggled, enforce cascade rules immediately:
+  //   - Checking "is_finalist" implicitly checks "is_semi_finalist"
+  //   - Unchecking "is_semi_finalist" implicitly unchecks "is_finalist"
+  const handleFlagChange = (
+    field: "is_semi_finalist" | "is_finalist",
+    checked: boolean
+  ) => {
+    setForm((prev) => {
+      const next = { ...prev, [field]: checked };
+      if (field === "is_finalist" && checked) next.is_semi_finalist = true;
+      if (field === "is_semi_finalist" && !checked) next.is_finalist = false;
+      return next;
+    });
+    // Clear any stale consistency error; submit-time validation will re-catch anything remaining
+    setFormErrors((prev) => {
+      const next = { ...prev };
+      delete next.consistency;
+      return next;
+    });
+  };
+
   const filteredApplications = useMemo(() => {
     let list = applications;
 
@@ -588,6 +609,7 @@ export function ApplicationsTable({
             students={students}
             fellowships={fellowships}
             onStageChange={handleStageChange}
+            onFlagChange={handleFlagChange}
           />
 
           <DialogFooter>
@@ -622,6 +644,7 @@ export function ApplicationsTable({
             students={students}
             fellowships={fellowships}
             onStageChange={handleStageChange}
+            onFlagChange={handleFlagChange}
           />
 
           <DialogFooter>
@@ -677,6 +700,7 @@ interface ApplicationFormProps {
   students: StudentRow[];
   fellowships: FellowshipRow[];
   onStageChange: (stage: Stage) => void;
+  onFlagChange: (field: "is_semi_finalist" | "is_finalist", checked: boolean) => void;
 }
 
 function ApplicationForm({
@@ -686,6 +710,7 @@ function ApplicationForm({
   students,
   fellowships,
   onStageChange,
+  onFlagChange,
 }: ApplicationFormProps) {
   return (
     <div className="grid gap-4 py-2">
@@ -780,9 +805,7 @@ function ApplicationForm({
             type="checkbox"
             className="h-4 w-4 rounded accent-[#006747]"
             checked={form.is_semi_finalist}
-            onChange={(e) =>
-              setForm((p) => ({ ...p, is_semi_finalist: e.target.checked }))
-            }
+            onChange={(e) => onFlagChange("is_semi_finalist", e.target.checked)}
           />
           <span className="text-sm font-medium text-slate-700">Semi-Finalist</span>
         </label>
@@ -791,9 +814,7 @@ function ApplicationForm({
             type="checkbox"
             className="h-4 w-4 rounded accent-[#006747]"
             checked={form.is_finalist}
-            onChange={(e) =>
-              setForm((p) => ({ ...p, is_finalist: e.target.checked }))
-            }
+            onChange={(e) => onFlagChange("is_finalist", e.target.checked)}
           />
           <span className="text-sm font-medium text-slate-700">Finalist</span>
         </label>
