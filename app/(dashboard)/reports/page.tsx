@@ -82,11 +82,11 @@ async function getReportsData() {
     .slice(0, 10);
 
   // ── 2. Fellowships with the most finalists ────────────────────────────────
-  const fellowshipFinalistMap = new Map<string, { name: string; finalists: number; total: number }>();
+  const fellowshipFinalistMap = new Map<string, { id: number; name: string; finalists: number; total: number }>();
   for (const a of applications) {
     const name = a.fellowship?.fellowship_name ?? `Fellowship ${a.fellowship_id}`;
     const key = String(a.fellowship_id);
-    const existing = fellowshipFinalistMap.get(key) ?? { name, finalists: 0, total: 0 };
+    const existing = fellowshipFinalistMap.get(key) ?? { id: a.fellowship_id, name, finalists: 0, total: 0 };
     existing.total += 1;
     if (a.is_finalist) existing.finalists += 1;
     fellowshipFinalistMap.set(key, existing);
@@ -109,11 +109,11 @@ async function getReportsData() {
   );
 
   // ── 5. No-show rates by advisor ───────────────────────────────────────────
-  const advisorMap = new Map<string, { name: string; total: number; noShows: number }>();
+  const advisorMap = new Map<string, { id: number | null; name: string; total: number; noShows: number }>();
   for (const m of meetings) {
     const name = m.advisor?.advisor_name ?? "Unassigned";
     const key = String(m.advisor_id ?? "none");
-    const existing = advisorMap.get(key) ?? { name, total: 0, noShows: 0 };
+    const existing = advisorMap.get(key) ?? { id: m.advisor_id ?? null, name, total: 0, noShows: 0 };
     existing.total += 1;
     if (m.no_show) existing.noShows += 1;
     advisorMap.set(key, existing);
@@ -265,9 +265,16 @@ export default async function ReportsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {data.fellowshipsByFinalists.map(({ name, total, finalists }) => (
+                    {data.fellowshipsByFinalists.map(({ id, name, total, finalists }) => (
                       <tr key={name} className="border-b border-gray-50 last:border-0">
-                        <td className="py-2 text-slate-700">{name}</td>
+                        <td className="py-2">
+                          <Link
+                            href={`/fellowships/${id}`}
+                            className="text-slate-700 hover:text-[#006747] hover:underline"
+                          >
+                            {name}
+                          </Link>
+                        </td>
                         <td className="py-2 text-center text-slate-500">{total}</td>
                         <td className="py-2 text-center">
                           <Badge variant="outline" className="border-green-200 bg-green-50 text-green-800">
@@ -308,9 +315,20 @@ export default async function ReportsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {data.advisorNoShows.map(({ name, total, noShows }) => (
+                    {data.advisorNoShows.map(({ id, name, total, noShows }) => (
                       <tr key={name} className="border-b border-gray-50 last:border-0">
-                        <td className="py-2 text-slate-700">{name}</td>
+                        <td className="py-2">
+                          {id != null ? (
+                            <Link
+                              href={`/advisors/${id}`}
+                              className="text-slate-700 hover:text-[#006747] hover:underline"
+                            >
+                              {name}
+                            </Link>
+                          ) : (
+                            <span className="text-slate-700">{name}</span>
+                          )}
+                        </td>
                         <td className="py-2 text-center text-slate-500">{total}</td>
                         <td className="py-2 text-center">
                           {noShows > 0 ? (
