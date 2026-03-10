@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import Link from "next/link";
 import { Plus, Search, Eye, Pencil, Trash2, Award } from "lucide-react";
 import { createServerClient } from "@/lib/supabase/server";
 import type { Database } from "@/types/database";
@@ -197,7 +198,12 @@ export default async function FellowshipsPage() {
                       className="transition-colors duration-150 hover:bg-gray-50"
                     >
                       <td className="whitespace-nowrap px-6 py-4">
-                        <div className="font-medium text-slate-900">{fellowship.fellowship_name}</div>
+                        <Link
+                          href={`/fellowships/${fellowship.fellowship_id}`}
+                          className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
+                        >
+                          {fellowship.fellowship_name}
+                        </Link>
                       </td>
                       <td className="whitespace-nowrap px-6 py-4 text-right">
                         <span className="text-sm font-medium text-slate-700">{fellowship.totalApplications}</span>
@@ -212,14 +218,16 @@ export default async function FellowshipsPage() {
                       </td>
                       <td className="whitespace-nowrap px-6 py-4">
                         <div className="flex items-center justify-end gap-2">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-slate-600 hover:text-slate-900"
-                            title="View fellowship"
-                          >
-                            <Eye className="h-4 w-4" />
-                          </Button>
+                          <Link href={`/fellowships/${fellowship.fellowship_id}`}>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-slate-600 hover:text-slate-900"
+                              title="View fellowship"
+                            >
+                              <Eye className="h-4 w-4" />
+                            </Button>
+                          </Link>
                           <Button
                             variant="ghost"
                             size="icon"

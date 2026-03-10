@@ -31,6 +31,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Search, Trash2, Plus, BookOpen } from "lucide-react";
+import Link from "next/link";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
 import type { Database } from "@/types/database";
@@ -55,6 +56,9 @@ interface ScholarshipHistoryTableProps {
   initialRecords: ScholarshipHistory[];
   students: StudentRow[];
   fellowships: FellowshipRow[];
+  defaultStudentId?: string;
+  defaultFellowshipId?: string;
+  autoOpenAdd?: boolean;
 }
 
 const EMPTY_FORM = {
@@ -66,6 +70,9 @@ export function ScholarshipHistoryTable({
   initialRecords,
   students,
   fellowships,
+  defaultStudentId,
+  defaultFellowshipId,
+  autoOpenAdd,
 }: ScholarshipHistoryTableProps) {
   const [records, setRecords] = useState<ScholarshipHistory[]>(initialRecords);
   const [searchQuery, setSearchQuery] = useState("");
@@ -78,6 +85,19 @@ export function ScholarshipHistoryTable({
   const [form, setForm] = useState(EMPTY_FORM);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
+
+  // Pre-fill and auto-open add dialog when arriving from a contextual link
+  useEffect(() => {
+    if (autoOpenAdd) {
+      setForm((prev) => ({
+        ...prev,
+        ...(defaultStudentId ? { student_id: defaultStudentId } : {}),
+        ...(defaultFellowshipId ? { fellowship_id: defaultFellowshipId } : {}),
+      }));
+      setAddOpen(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Debounce search
   useEffect(() => {
@@ -257,14 +277,20 @@ export function ScholarshipHistoryTable({
                       className="transition-colors duration-150 hover:bg-gray-50"
                     >
                       <td className="whitespace-nowrap px-6 py-4">
-                        <div className="font-medium text-slate-900">
+                        <Link
+                          href={`/students/${record.student_id}`}
+                          className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
+                        >
                           {record.student?.full_name ?? "—"}
-                        </div>
+                        </Link>
                       </td>
                       <td className="whitespace-nowrap px-6 py-4">
-                        <div className="text-sm text-slate-600">
+                        <Link
+                          href={`/fellowships/${record.fellowship_id}`}
+                          className="text-sm text-slate-600 hover:text-[#006747] hover:underline"
+                        >
                           {record.fellowship?.fellowship_name ?? "—"}
-                        </div>
+                        </Link>
                       </td>
                       <td className="whitespace-nowrap px-6 py-4">
                         <div className="flex items-center justify-end">

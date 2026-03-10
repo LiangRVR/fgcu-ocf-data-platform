@@ -6,6 +6,14 @@ import type { Database } from "@/types/database";
 
 export const metadata: Metadata = { title: "Advising" };
 
+interface Props {
+  searchParams: Promise<{
+    add?: string;
+    student_id?: string;
+    no_show?: string;
+  }>;
+}
+
 type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
   student: { full_name: string } | null;
   advisor: { advisor_name: string } | null;
@@ -64,7 +72,12 @@ async function getAdvisors(): Promise<AdvisorRow[]> {
   }
 }
 
-export default async function AdvisingPage() {
+export default async function AdvisingPage({ searchParams }: Props) {
+  const params = await searchParams;
+  const autoOpenAdd = params.add === "1";
+  const defaultStudentId = params.student_id;
+  const initialNoShowFilter = params.no_show === "yes" ? "yes" : undefined;
+
   const [meetings, students, advisors] = await Promise.all([
     getAdvisingMeetings(),
     getStudents(),
@@ -81,6 +94,9 @@ export default async function AdvisingPage() {
         initialMeetings={meetings}
         students={students}
         advisors={advisors}
+        autoOpenAdd={autoOpenAdd}
+        defaultStudentId={defaultStudentId}
+        initialNoShowFilter={initialNoShowFilter}
       />
     </>
   );

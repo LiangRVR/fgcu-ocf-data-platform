@@ -6,6 +6,15 @@ import type { Database } from "@/types/database";
 
 export const metadata: Metadata = { title: "Applications" };
 
+interface Props {
+  searchParams: Promise<{
+    add?: string;
+    student_id?: string;
+    fellowship_id?: string;
+    stage?: string;
+  }>;
+}
+
 type Application = Database["public"]["Tables"]["application"]["Row"] & {
   student: { full_name: string } | null;
   fellowship: { fellowship_name: string } | null;
@@ -65,7 +74,13 @@ async function getFellowships(): Promise<FellowshipRow[]> {
   }
 }
 
-export default async function ApplicationsPage() {
+export default async function ApplicationsPage({ searchParams }: Props) {
+  const params = await searchParams;
+  const autoOpenAdd = params.add === "1";
+  const defaultStudentId = params.student_id;
+  const defaultFellowshipId = params.fellowship_id;
+  const initialStageFilter = params.stage;
+
   const [applications, students, fellowships] = await Promise.all([
     getApplications(),
     getStudents(),
@@ -83,6 +98,10 @@ export default async function ApplicationsPage() {
         initialApplications={applications}
         students={students}
         fellowships={fellowships}
+        autoOpenAdd={autoOpenAdd}
+        defaultStudentId={defaultStudentId}
+        defaultFellowshipId={defaultFellowshipId}
+        initialStageFilter={initialStageFilter}
       />
     </>
   );

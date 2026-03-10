@@ -6,6 +6,14 @@ import type { Database } from "@/types/database";
 
 export const metadata: Metadata = { title: "Scholarship History" };
 
+interface Props {
+  searchParams: Promise<{
+    add?: string;
+    student_id?: string;
+    fellowship_id?: string;
+  }>;
+}
+
 type ScholarshipHistory =
   Database["public"]["Tables"]["scholarship_history"]["Row"] & {
     student: { full_name: string } | null;
@@ -65,7 +73,12 @@ async function getFellowships(): Promise<FellowshipRow[]> {
   }
 }
 
-export default async function ScholarshipHistoryPage() {
+export default async function ScholarshipHistoryPage({ searchParams }: Props) {
+  const params = await searchParams;
+  const autoOpenAdd = params.add === "1";
+  const defaultStudentId = params.student_id;
+  const defaultFellowshipId = params.fellowship_id;
+
   const [records, students, fellowships] = await Promise.all([
     getScholarshipHistory(),
     getStudents(),
@@ -82,6 +95,9 @@ export default async function ScholarshipHistoryPage() {
         initialRecords={records}
         students={students}
         fellowships={fellowships}
+        autoOpenAdd={autoOpenAdd}
+        defaultStudentId={defaultStudentId}
+        defaultFellowshipId={defaultFellowshipId}
       />
     </>
   );

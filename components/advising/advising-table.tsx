@@ -32,6 +32,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Search, Pencil, Trash2, CalendarPlus, Calendar } from "lucide-react";
+import Link from "next/link";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
 import type { Database } from "@/types/database";
@@ -58,6 +59,9 @@ interface AdvisingTableProps {
   initialMeetings: AdvisingMeeting[];
   students: StudentRow[];
   advisors: AdvisorRow[];
+  defaultStudentId?: string;
+  autoOpenAdd?: boolean;
+  initialNoShowFilter?: string;
 }
 
 const EMPTY_FORM = {
@@ -73,12 +77,15 @@ export function AdvisingTable({
   initialMeetings,
   students,
   advisors,
+  defaultStudentId,
+  autoOpenAdd,
+  initialNoShowFilter,
 }: AdvisingTableProps) {
   const [meetings, setMeetings] = useState<AdvisingMeeting[]>(initialMeetings);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [modeFilter, setModeFilter] = useState<string>("all");
-  const [noShowFilter, setNoShowFilter] = useState<string>("all");
+  const [noShowFilter, setNoShowFilter] = useState<string>(initialNoShowFilter ?? "all");
 
   const [addOpen, setAddOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -88,6 +95,18 @@ export function AdvisingTable({
   const [form, setForm] = useState(EMPTY_FORM);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
+
+  // Pre-fill and auto-open add dialog when arriving from a contextual link
+  useEffect(() => {
+    if (autoOpenAdd) {
+      setForm((prev) => ({
+        ...prev,
+        ...(defaultStudentId ? { student_id: defaultStudentId } : {}),
+      }));
+      setAddOpen(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Debounce search
   useEffect(() => {
@@ -365,14 +384,24 @@ export function AdvisingTable({
                       className="transition-colors duration-150 hover:bg-gray-50"
                     >
                       <td className="whitespace-nowrap px-6 py-4">
-                        <div className="font-medium text-slate-900">
+                        <Link
+                          href={`/students/${meeting.student_id}`}
+                          className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
+                        >
                           {meeting.student?.full_name ?? "—"}
-                        </div>
+                        </Link>
                       </td>
                       <td className="whitespace-nowrap px-6 py-4">
-                        <div className="text-sm text-slate-600">
-                          {meeting.advisor?.advisor_name ?? "—"}
-                        </div>
+                        {meeting.advisor_id ? (
+                          <Link
+                            href={`/advisors/${meeting.advisor_id}`}
+                            className="text-sm text-slate-600 hover:text-[#006747] hover:underline"
+                          >
+                            {meeting.advisor?.advisor_name ?? "—"}
+                          </Link>
+                        ) : (
+                          <span className="text-sm text-slate-400">—</span>
+                        )}
                       </td>
                       <td className="whitespace-nowrap px-6 py-4">
                         <div className="text-sm text-slate-600">

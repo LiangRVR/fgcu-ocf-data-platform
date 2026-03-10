@@ -9,6 +9,7 @@ import {
   GraduationCap,
   XCircle,
 } from "lucide-react";
+import Link from "next/link";
 import { PageHeader } from "@/components/layout/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -83,13 +84,13 @@ async function getDashboardData() {
       .eq("is_finalist", true),
     supabase
       .from("advising_meeting")
-      .select("meeting_id, meeting_date, meeting_mode, no_show, student(full_name)")
+      .select("meeting_id, meeting_date, meeting_mode, no_show, student_id, student(full_name)")
       .order("meeting_date", { ascending: false })
       .limit(5),
     supabase
       .from("application")
       .select(
-        "application_id, stage_of_application, is_finalist, is_semi_finalist, student(full_name), fellowship(fellowship_name)"
+        "application_id, stage_of_application, is_finalist, is_semi_finalist, student_id, fellowship_id, student(full_name), fellowship(fellowship_name)"
       )
       .order("application_id", { ascending: false })
       .limit(5),
@@ -121,6 +122,7 @@ async function getDashboardData() {
     meeting_date: string;
     meeting_mode: string;
     no_show: boolean;
+    student_id: number;
     student: { full_name: string } | null;
   };
 
@@ -129,6 +131,8 @@ async function getDashboardData() {
     stage_of_application: string;
     is_finalist: boolean;
     is_semi_finalist: boolean;
+    student_id: number;
+    fellowship_id: number;
     student: { full_name: string } | null;
     fellowship: { fellowship_name: string } | null;
   };
@@ -164,6 +168,7 @@ function StatCard({
   icon: Icon,
   bg,
   fg,
+  href,
 }: {
   title: string;
   value: number;
@@ -171,22 +176,30 @@ function StatCard({
   icon: React.ElementType;
   bg: string;
   fg: string;
+  href?: string;
 }) {
-  return (
-    <Card className="border-gray-200 shadow-sm">
-      <CardContent className="p-4">
-        <div className="flex items-center gap-3">
-          <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${bg}`}>
-            <Icon className={`h-5 w-5 ${fg}`} />
-          </div>
-          <div className="min-w-0">
-            <div className="text-2xl font-semibold text-slate-900">{value.toLocaleString()}</div>
-            <div className="truncate text-sm text-slate-500">{title}</div>
-            <div className="truncate text-xs text-slate-400">{sub}</div>
-          </div>
+  const inner = (
+    <CardContent className="p-4">
+      <div className="flex items-center gap-3">
+        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${bg}`}>
+          <Icon className={`h-5 w-5 ${fg}`} />
         </div>
-      </CardContent>
-    </Card>
+        <div className="min-w-0">
+          <div className="text-2xl font-semibold text-slate-900">{value.toLocaleString()}</div>
+          <div className="truncate text-sm text-slate-500">{title}</div>
+          <div className="truncate text-xs text-slate-400">{sub}</div>
+        </div>
+      </div>
+    </CardContent>
+  );
+  return href ? (
+    <Link href={href}>
+      <Card className="border-gray-200 shadow-sm transition-shadow hover:shadow-md cursor-pointer">
+        {inner}
+      </Card>
+    </Link>
+  ) : (
+    <Card className="border-gray-200 shadow-sm">{inner}</Card>
   );
 }
 
@@ -268,6 +281,7 @@ export default async function DashboardPage() {
           icon={Users}
           bg="bg-blue-100"
           fg="text-blue-600"
+          href="/students"
         />
         <StatCard
           title="Active Fellowships"
@@ -276,6 +290,7 @@ export default async function DashboardPage() {
           icon={Award}
           bg="bg-amber-100"
           fg="text-amber-600"
+          href="/fellowships"
         />
         <StatCard
           title="Total Applications"
@@ -284,6 +299,7 @@ export default async function DashboardPage() {
           icon={FileText}
           bg="bg-purple-100"
           fg="text-purple-600"
+          href="/applications"
         />
         <StatCard
           title="Finalists"
@@ -292,6 +308,7 @@ export default async function DashboardPage() {
           icon={Star}
           bg="bg-green-100"
           fg="text-green-600"
+          href="/applications?stage=Finalist"
         />
         <StatCard
           title="Semi-Finalists"
@@ -300,6 +317,7 @@ export default async function DashboardPage() {
           icon={UserCheck}
           bg="bg-teal-100"
           fg="text-teal-600"
+          href="/applications?stage=Semi-Finalist"
         />
         <StatCard
           title="Advising This Month"
@@ -308,6 +326,7 @@ export default async function DashboardPage() {
           icon={CalendarCheck}
           bg="bg-indigo-100"
           fg="text-indigo-600"
+          href="/advising"
         />
       </div>
 
@@ -320,6 +339,7 @@ export default async function DashboardPage() {
             icon: GraduationCap,
             bg: "bg-sky-100",
             fg: "text-sky-600",
+            href: "/students",
           },
           {
             label: "Honors College",
@@ -327,6 +347,7 @@ export default async function DashboardPage() {
             icon: Award,
             bg: "bg-yellow-100",
             fg: "text-yellow-600",
+            href: "/students",
           },
           {
             label: "First-Generation",
@@ -334,6 +355,7 @@ export default async function DashboardPage() {
             icon: Users,
             bg: "bg-rose-100",
             fg: "text-rose-600",
+            href: "/students",
           },
           {
             label: "Advising No-Shows",
@@ -341,14 +363,15 @@ export default async function DashboardPage() {
             icon: XCircle,
             bg: "bg-red-100",
             fg: "text-red-500",
+            href: "/advising?no_show=yes",
           },
-        ].map(({ label, count, icon: Icon, bg, fg }) => {
+        ].map(({ label, count, icon: Icon, bg, fg, href }) => {
           const pct =
             label !== "Advising No-Shows" && stats.totalStudentsForFlags > 0
               ? Math.round((count / stats.totalStudentsForFlags) * 100)
               : null;
-          return (
-            <Card key={label} className="border-gray-200 shadow-sm">
+          const card = (
+            <Card className={`border-gray-200 shadow-sm${href ? " cursor-pointer transition-shadow hover:shadow-md" : ""}`}>
               <CardContent className="flex items-center gap-3 p-4">
                 <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${bg}`}>
                   <Icon className={`h-4 w-4 ${fg}`} />
@@ -367,6 +390,7 @@ export default async function DashboardPage() {
               </CardContent>
             </Card>
           );
+          return href ? <Link key={label} href={href}>{card}</Link> : card;
         })}
       </div>
 
@@ -409,9 +433,12 @@ export default async function DashboardPage() {
                 {recent.meetings.map((m) => (
                   <li key={m.meeting_id} className="flex items-center justify-between py-2.5">
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-slate-800">
+                      <Link
+                        href={`/students/${m.student_id}`}
+                        className="truncate text-sm font-medium text-slate-800 hover:text-[#006747] hover:underline"
+                      >
                         {m.student?.full_name ?? "Unknown Student"}
-                      </p>
+                      </Link>
                       <p className="text-xs text-slate-500">
                         {formatDate(m.meeting_date)} · {m.meeting_mode}
                       </p>
@@ -443,19 +470,25 @@ export default async function DashboardPage() {
                 {recent.applications.map((a) => (
                   <li key={a.application_id} className="flex items-center justify-between py-2.5">
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-slate-800">
+                      <Link
+                        href={`/students/${a.student_id}`}
+                        className="block truncate text-sm font-medium text-slate-800 hover:text-[#006747] hover:underline"
+                      >
                         {a.student?.full_name ?? "Unknown Student"}
-                      </p>
-                      <p className="truncate text-xs text-slate-500">
+                      </Link>
+                      <Link
+                        href={`/fellowships/${a.fellowship_id}`}
+                        className="truncate text-xs text-slate-500 hover:text-[#006747] hover:underline"
+                      >
                         {a.fellowship?.fellowship_name ?? "Unknown Fellowship"}
-                      </p>
+                      </Link>
                     </div>
                     <div className="ml-2 flex shrink-0 flex-col items-end gap-1">
                       <Badge variant="outline" className="text-xs">
                         {a.stage_of_application}
                       </Badge>
                       {a.is_finalist && (
-                        <Badge variant="gold" className="text-xs">
+                        <Badge className="border-green-200 bg-green-100 text-xs text-green-800 hover:bg-green-100">
                           Finalist
                         </Badge>
                       )}
