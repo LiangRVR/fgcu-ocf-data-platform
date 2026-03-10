@@ -50,6 +50,7 @@ import {
   FileDown,
 } from "lucide-react";
 import { toast } from "sonner";
+import { supabaseBrowserClient } from "@/lib/supabase/client";
 import type { Database } from "@/types/database";
 
 type Student = Database["public"]["Tables"]["student"]["Row"];
@@ -60,6 +61,19 @@ type SortDirection = "asc" | "desc" | null;
 interface StudentsTableProps {
   initialStudents: Student[];
 }
+
+const EMPTY_STUDENT_FORM = {
+  full_name: "",
+  email: "",
+  student_id: "",
+  major: "",
+  class_standing: "",
+  gpa: "",
+  is_ch_student: false,
+  first_gen: false,
+  honors_college: false,
+  us_citizen: false,
+};
 
 export function StudentsTable({ initialStudents }: StudentsTableProps) {
   const router = useRouter();
@@ -76,22 +90,16 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
   const [pageSize, setPageSize] = useState(20);
   const [deleteStudentId, setDeleteStudentId] = useState<number | null>(null);
   const [addStudentOpen, setAddStudentOpen] = useState(false);
+  const [editStudentOpen, setEditStudentOpen] = useState(false);
+  const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   // Form state for add student
-  const [newStudent, setNewStudent] = useState({
-    full_name: "",
-    email: "",
-    student_id: "",
-    major: "",
-    class_standing: "",
-    gpa: "",
-    is_ch_student: false,
-    first_gen: false,
-    honors_college: false,
-    us_citizen: false,
-  });
+  const [newStudent, setNewStudent] = useState(EMPTY_STUDENT_FORM);
+  // Form state for edit student
+  const [editForm, setEditForm] = useState(EMPTY_STUDENT_FORM);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [editFormErrors, setEditFormErrors] = useState<Record<string, string>>({});
 
   // Debounce search
   useEffect(() => {
@@ -205,11 +213,17 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
 
     setIsLoading(true);
     try {
-      // TODO: Implement actual delete API call
-      // For now, just remove from local state
+      const { error } = await supabaseBrowserClient
+        .from("student")
+        .delete()
+        .eq("student_id", deleteStudentId);
+
+      if (error) throw error;
+
       setStudents((prev) => prev.filter((s) => s.student_id !== deleteStudentId));
       toast.success("Student deleted successfully");
-    } catch {
+    } catch (err) {
+      console.error(err);
       toast.error("Failed to delete student");
     } finally {
       setIsLoading(false);
@@ -217,81 +231,135 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
     }
   };
 
-  const validateForm = () => {
+  const validateStudentForm = (
+    data: typeof EMPTY_STUDENT_FORM,
+    isEdit = false,
+  ): Record<string, string> => {
     const errors: Record<string, string> = {};
 
-    if (!newStudent.full_name.trim()) {
-      errors.full_name = "Name is required";
-    }
+    if (!data.full_name.trim()) errors.full_name = "Name is required";
 
-    if (!newStudent.email.trim()) {
+    if (!data.email.trim()) {
       errors.email = "Email is required";
-    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newStudent.email)) {
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) {
       errors.email = "Invalid email format";
     }
 
-    if (!newStudent.student_id.trim()) {
-      errors.student_id = "Student ID is required";
-    } else if (!/^\d+$/.test(newStudent.student_id)) {
-      errors.student_id = "Student ID must be numeric";
+    if (!isEdit) {
+      if (!data.student_id.trim()) {
+        errors.student_id = "Student ID is required";
+      } else if (!/^\d+$/.test(data.student_id)) {
+        errors.student_id = "Student ID must be numeric";
+      }
     }
 
-    if (newStudent.gpa.trim()) {
-      const gpaNum = parseFloat(newStudent.gpa);
+    if (data.gpa.trim()) {
+      const gpaNum = parseFloat(data.gpa);
       if (isNaN(gpaNum) || gpaNum < 0 || gpaNum > 4.0) {
         errors.gpa = "GPA must be a number between 0.0 and 4.0";
       }
     }
 
-    setFormErrors(errors);
-    return Object.keys(errors).length === 0;
+    return errors;
   };
 
   const handleAddStudent = async () => {
-    if (!validateForm()) return;
+    const errors = validateStudentForm(newStudent);
+    setFormErrors(errors);
+    if (Object.keys(errors).length > 0) return;
 
     setIsLoading(true);
     try {
-      // TODO: Implement actual create API call
-      // For now, add to local state with mock ID
-      const newId = Math.max(...students.map((s) => s.student_id), 0) + 1;
-      const student: Student = {
-        student_id: newId,
-        full_name: newStudent.full_name,
-        email: newStudent.email,
-        major: newStudent.major || null,
-        class_standing: newStudent.class_standing || null,
-        gpa: newStudent.gpa ? parseFloat(newStudent.gpa) : null,
-        is_ch_student: newStudent.is_ch_student,
-        first_gen: newStudent.first_gen,
-        honors_college: newStudent.honors_college,
-        us_citizen: newStudent.us_citizen,
-        age: null,
-        gender: null,
-        languages: null,
-        minor: null,
-        pronouns: null,
-        race_ethnicity: null,
-      };
+      const { data, error } = await supabaseBrowserClient
+        .from("student")
+        .insert({
+          student_id: Number(newStudent.student_id),
+          full_name: newStudent.full_name,
+          email: newStudent.email,
+          major: newStudent.major || null,
+          class_standing: newStudent.class_standing || null,
+          gpa: newStudent.gpa ? parseFloat(newStudent.gpa) : null,
+          is_ch_student: newStudent.is_ch_student,
+          first_gen: newStudent.first_gen,
+          honors_college: newStudent.honors_college,
+          us_citizen: newStudent.us_citizen,
+        })
+        .select()
+        .single();
 
-      setStudents((prev) => [student, ...prev]);
+      if (error) throw error;
+
+      setStudents((prev) => [data as Student, ...prev]);
       toast.success("Student added successfully");
       setAddStudentOpen(false);
-      setNewStudent({
-        full_name: "",
-        email: "",
-        student_id: "",
-        major: "",
-        class_standing: "",
-        gpa: "",
-        is_ch_student: false,
-        first_gen: false,
-        honors_college: false,
-        us_citizen: false,
-      });
+      setNewStudent(EMPTY_STUDENT_FORM);
       setFormErrors({});
-    } catch {
+    } catch (err) {
+      console.error(err);
       toast.error("Failed to add student");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const openEdit = (student: Student) => {
+    setEditingStudent(student);
+    setEditForm({
+      full_name: student.full_name,
+      email: student.email,
+      student_id: String(student.student_id),
+      major: student.major ?? "",
+      class_standing: student.class_standing ?? "",
+      gpa: student.gpa != null ? String(student.gpa) : "",
+      is_ch_student: student.is_ch_student,
+      first_gen: student.first_gen,
+      honors_college: student.honors_college,
+      us_citizen: student.us_citizen,
+    });
+    setEditFormErrors({});
+    setEditStudentOpen(true);
+  };
+
+  const handleEditSubmit = async () => {
+    if (!editingStudent) return;
+    const errors = validateStudentForm(editForm, true);
+    setEditFormErrors(errors);
+    if (Object.keys(errors).length > 0) return;
+
+    setIsLoading(true);
+    try {
+      const { data, error } = await supabaseBrowserClient
+        .from("student")
+        .update({
+          full_name: editForm.full_name,
+          email: editForm.email,
+          major: editForm.major || null,
+          class_standing: editForm.class_standing || null,
+          gpa: editForm.gpa ? parseFloat(editForm.gpa) : null,
+          is_ch_student: editForm.is_ch_student,
+          first_gen: editForm.first_gen,
+          honors_college: editForm.honors_college,
+          us_citizen: editForm.us_citizen,
+        })
+        .eq("student_id", editingStudent.student_id)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      setStudents((prev) =>
+        prev.map((s) =>
+          s.student_id === editingStudent.student_id ? (data as Student) : s
+        )
+      );
+      toast.success("Student updated successfully");
+      setEditStudentOpen(false);
+      setEditingStudent(null);
+      setEditForm(EMPTY_STUDENT_FORM);
+      setEditFormErrors({});
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to update student");
     } finally {
       setIsLoading(false);
     }
@@ -563,7 +631,7 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
                                     size="icon"
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      toast.info("Edit functionality coming soon");
+                                      openEdit(student);
                                     }}
                                     className="h-8 w-8 text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                                   >
@@ -864,18 +932,7 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
               variant="outline"
               onClick={() => {
                 setAddStudentOpen(false);
-                setNewStudent({
-                  full_name: "",
-                  email: "",
-                  student_id: "",
-                  major: "",
-                  class_standing: "",
-                  gpa: "",
-                  is_ch_student: false,
-                  first_gen: false,
-                  honors_college: false,
-                  us_citizen: false,
-                });
+                setNewStudent(EMPTY_STUDENT_FORM);
                 setFormErrors({});
               }}
             >
@@ -887,6 +944,171 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
               className="bg-[#006747] hover:bg-[#00563b]"
             >
               {isLoading ? "Creating..." : "Create Student"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Student Dialog */}
+      <Dialog open={editStudentOpen} onOpenChange={setEditStudentOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Edit Student</DialogTitle>
+            <DialogDescription>
+              Update the student information below.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit_full_name">
+                Full Name <span className="text-red-500">*</span>
+              </Label>
+              <Input
+                id="edit_full_name"
+                value={editForm.full_name}
+                onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })}
+                placeholder="John Doe"
+              />
+              {editFormErrors.full_name && (
+                <p className="text-sm text-red-600">{editFormErrors.full_name}</p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="edit_email">
+                Email <span className="text-red-500">*</span>
+              </Label>
+              <Input
+                id="edit_email"
+                type="email"
+                value={editForm.email}
+                onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                placeholder="john.doe@fgcu.edu"
+              />
+              {editFormErrors.email && (
+                <p className="text-sm text-red-600">{editFormErrors.email}</p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="edit_student_id">Student ID</Label>
+              <Input
+                id="edit_student_id"
+                value={editForm.student_id}
+                disabled
+                className="bg-gray-50"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="edit_major">Major</Label>
+              <Input
+                id="edit_major"
+                value={editForm.major}
+                onChange={(e) => setEditForm({ ...editForm, major: e.target.value })}
+                placeholder="Computer Science"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="edit_class_standing">Class Standing</Label>
+                <Select
+                  value={editForm.class_standing}
+                  onValueChange={(v) => setEditForm({ ...editForm, class_standing: v })}
+                >
+                  <SelectTrigger id="edit_class_standing">
+                    <SelectValue placeholder="Select…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Freshman">Freshman</SelectItem>
+                    <SelectItem value="Sophomore">Sophomore</SelectItem>
+                    <SelectItem value="Junior">Junior</SelectItem>
+                    <SelectItem value="Senior">Senior</SelectItem>
+                    <SelectItem value="Graduate">Graduate</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="edit_gpa">GPA</Label>
+                <Input
+                  id="edit_gpa"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="4.0"
+                  value={editForm.gpa}
+                  onChange={(e) => setEditForm({ ...editForm, gpa: e.target.value })}
+                  placeholder="3.75"
+                />
+                {editFormErrors.gpa && (
+                  <p className="text-sm text-red-600">{editFormErrors.gpa}</p>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="edit_is_ch_student"
+                  checked={editForm.is_ch_student}
+                  onChange={(e) => setEditForm({ ...editForm, is_ch_student: e.target.checked })}
+                  className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
+                />
+                <Label htmlFor="edit_is_ch_student" className="cursor-pointer">CH Student</Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="edit_first_gen"
+                  checked={editForm.first_gen}
+                  onChange={(e) => setEditForm({ ...editForm, first_gen: e.target.checked })}
+                  className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
+                />
+                <Label htmlFor="edit_first_gen" className="cursor-pointer">First Generation</Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="edit_honors_college"
+                  checked={editForm.honors_college}
+                  onChange={(e) => setEditForm({ ...editForm, honors_college: e.target.checked })}
+                  className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
+                />
+                <Label htmlFor="edit_honors_college" className="cursor-pointer">Honors College</Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="edit_us_citizen"
+                  checked={editForm.us_citizen}
+                  onChange={(e) => setEditForm({ ...editForm, us_citizen: e.target.checked })}
+                  className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
+                />
+                <Label htmlFor="edit_us_citizen" className="cursor-pointer">US Citizen</Label>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setEditStudentOpen(false);
+                setEditingStudent(null);
+                setEditForm(EMPTY_STUDENT_FORM);
+                setEditFormErrors({});
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleEditSubmit}
+              disabled={isLoading}
+              className="bg-[#006747] hover:bg-[#00563b]"
+            >
+              {isLoading ? "Saving…" : "Save Changes"}
             </Button>
           </DialogFooter>
         </DialogContent>
