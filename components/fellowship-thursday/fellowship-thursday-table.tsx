@@ -32,6 +32,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Search, Pencil, Trash2, UserPlus, CalendarDays } from "lucide-react";
+import Link from "next/link";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
 import type { Database } from "@/types/database";
@@ -337,7 +338,17 @@ export function FellowshipThursdayTable({
                     >
                       <td className="whitespace-nowrap px-6 py-4">
                         <div className="font-medium text-slate-900">
-                          {record.student?.full_name ?? "—"}
+                          {record.student?.full_name ? (
+                            <Link
+                              href={`/students/${record.student_id}`}
+                              className="hover:text-[#006747] hover:underline"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {record.student.full_name}
+                            </Link>
+                          ) : (
+                            "—"
+                          )}
                         </div>
                       </td>
                       <td className="whitespace-nowrap px-6 py-4">

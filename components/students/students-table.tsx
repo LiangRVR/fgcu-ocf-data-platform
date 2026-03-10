@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -552,9 +553,13 @@ export function StudentsTable({ initialStudents }: StudentsTableProps) {
                           className="cursor-pointer transition-colors duration-150 hover:bg-gray-50"
                         >
                           <td className="whitespace-nowrap px-6 py-4">
-                            <div className="font-medium text-slate-900">
+                            <Link
+                              href={`/students/${student.student_id}`}
+                              className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
+                              onClick={(e) => e.stopPropagation()}
+                            >
                               {student.full_name}
-                            </div>
+                            </Link>
                           </td>
                           <td className="px-6 py-4">
                             <div className="max-w-xs truncate text-sm text-slate-600">
