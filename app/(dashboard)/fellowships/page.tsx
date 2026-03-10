@@ -14,6 +14,12 @@ export const metadata: Metadata = { title: "Fellowships" };
 type Fellowship = Database["public"]["Tables"]["fellowship"]["Row"];
 type Application = Database["public"]["Tables"]["application"]["Row"];
 
+type FellowshipView = "all" | "no-applicants";
+
+interface Props {
+  searchParams: Promise<{ view?: string }>;
+}
+
 interface FellowshipWithMetrics extends Fellowship {
   totalApplications: number;
   finalists: number;
@@ -66,7 +72,10 @@ async function getApplicationMetrics(): Promise<Application[]> {
   }
 }
 
-export default async function FellowshipsPage() {
+export default async function FellowshipsPage({ searchParams }: Props) {
+  const params = await searchParams;
+  const view = (params.view ?? "all") as FellowshipView;
+
   const [fellowships, applications] = await Promise.all([
     getFellowships(),
     getApplicationMetrics(),
@@ -100,6 +109,12 @@ export default async function FellowshipsPage() {
     })
   );
 
+  // Apply exception view filter
+  const visibleFellowships =
+    view === "no-applicants"
+      ? fellowshipsWithMetrics.filter((f) => f.totalApplications === 0)
+      : fellowshipsWithMetrics;
+
   // Summary stats across all fellowships
   const totalApplicationsAll = fellowshipsWithMetrics.reduce(
     (sum, f) => sum + f.totalApplications,
@@ -125,6 +140,42 @@ export default async function FellowshipsPage() {
           Add Fellowship
         </Button>
       </PageHeader>
+
+      {/* Exception view pill bar */}
+      <div className="mb-6 flex flex-wrap gap-2">
+        <Link
+          href="/fellowships"
+          className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+            view === "all"
+              ? "bg-slate-900 text-white border-slate-900"
+              : "border-gray-200 bg-white text-slate-600 hover:border-slate-400"
+          }`}
+        >
+          All Fellowships
+        </Link>
+        <Link
+          href="/fellowships?view=no-applicants"
+          className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+            view === "no-applicants"
+              ? "bg-amber-600 text-white border-amber-600"
+              : "border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-400"
+          }`}
+        >
+          No Applicants Yet
+          {view !== "no-applicants" && (
+            <span className="ml-1.5 tabular-nums">
+              ({fellowshipsWithMetrics.filter((f) => f.totalApplications === 0).length})
+            </span>
+          )}
+        </Link>
+      </div>
+
+      {view === "no-applicants" && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <span className="font-semibold">{visibleFellowships.length} fellowship{visibleFellowships.length !== 1 ? "s" : ""}</span> have no applications on record.
+          These may need additional promotion or outreach.
+        </div>
+      )}
 
       {/* Summary KPI Cards */}
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -168,17 +219,25 @@ export default async function FellowshipsPage() {
       {/* Fellowships Table */}
       <Card className="border-gray-200 shadow-sm">
         <CardContent className="p-0">
-          {fellowshipsWithMetrics.length === 0 ? (
+          {visibleFellowships.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16">
               <div className="mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-gray-100">
                 <Award className="h-10 w-10 text-gray-400" />
               </div>
-              <h3 className="mb-2 text-lg font-semibold text-slate-900">No fellowships found</h3>
-              <p className="mb-4 text-sm text-slate-500">Get started by adding your first fellowship opportunity.</p>
-              <Button className="bg-[#006747] hover:bg-[#00563b]">
-                <Plus className="mr-2 h-4 w-4" />
-                Add Fellowship
-              </Button>
+              <h3 className="mb-2 text-lg font-semibold text-slate-900">
+                {view === "no-applicants" ? "All fellowships have applicants" : "No fellowships found"}
+              </h3>
+              <p className="mb-4 text-sm text-slate-500">
+                {view === "no-applicants"
+                  ? "Every fellowship currently has at least one applicant — great!"
+                  : "Get started by adding your first fellowship opportunity."}
+              </p>
+              {view === "all" && (
+                <Button className="bg-[#006747] hover:bg-[#00563b]">
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add Fellowship
+                </Button>
+              )}
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -193,7 +252,7 @@ export default async function FellowshipsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 bg-white">
-                  {fellowshipsWithMetrics.map((fellowship) => (
+                  {visibleFellowships.map((fellowship) => (
                     <tr
                       key={fellowship.fellowship_id}
                       className="transition-colors duration-150 hover:bg-gray-50"
@@ -253,11 +312,11 @@ export default async function FellowshipsPage() {
       </Card>
 
       {/* Pagination */}
-      {fellowshipsWithMetrics.length > 0 && (
+      {visibleFellowships.length > 0 && (
         <div className="mt-4 flex items-center justify-between">
           <div className="text-sm text-slate-500">
-            Showing <span className="font-medium">1</span>–<span className="font-medium">{fellowshipsWithMetrics.length}</span> of{" "}
-            <span className="font-medium">{fellowshipsWithMetrics.length}</span> fellowships
+            Showing <span className="font-medium">1</span>–<span className="font-medium">{visibleFellowships.length}</span> of{" "}
+            <span className="font-medium">{visibleFellowships.length}</span> fellowships
           </div>
           <div className="flex gap-2">
             <Button variant="outline" size="sm" disabled>
