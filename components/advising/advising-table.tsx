@@ -617,14 +617,14 @@ function MeetingForm({ form, setForm, formErrors, students, advisors }: MeetingF
       <div className="grid gap-1.5">
         <Label htmlFor="advisor_id">Advisor</Label>
         <Select
-          value={form.advisor_id}
-          onValueChange={(v) => setForm((prev) => ({ ...prev, advisor_id: v }))}
+          value={form.advisor_id || "none"}
+          onValueChange={(v) => setForm((prev) => ({ ...prev, advisor_id: v === "none" ? "" : v }))}
         >
           <SelectTrigger id="advisor_id">
             <SelectValue placeholder="Select an advisor (optional)…" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">— None —</SelectItem>
+            <SelectItem value="none">— None —</SelectItem>
             {advisors.map((a) => (
               <SelectItem key={a.advisor_id} value={String(a.advisor_id)}>
                 {a.advisor_name}
