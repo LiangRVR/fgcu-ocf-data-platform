@@ -50,9 +50,11 @@ fields atomically. The rule is:
 | `stage_of_application` | `is_semi_finalist` | `is_finalist` |
 | --- | --- | --- |
 | `Semi-Finalist` | `true` | `false` |
-| `Finalist` | `false` | `true` |
-| `Awarded` | `false` | `true` |
+| `Finalist` | `true` | `true` |
+| `Awarded` | `true` | `true` |
 | anything else | `false` | `false` |
+
+> **Note:** A Finalist is by definition also a Semi-Finalist. The app enforces `is_semi_finalist = true` whenever `is_finalist = true` — both via the stage→flag auto-sync and the submit-time consistency check.
 
 **Optional future enforcement via trigger** (not yet applied):
 
@@ -60,7 +62,7 @@ fields atomically. The rule is:
 CREATE OR REPLACE FUNCTION sync_finalist_flags()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-  NEW.is_semi_finalist := NEW.stage_of_application = 'Semi-Finalist';
+  NEW.is_semi_finalist := NEW.stage_of_application IN ('Semi-Finalist', 'Finalist', 'Awarded');
   NEW.is_finalist       := NEW.stage_of_application IN ('Finalist', 'Awarded');
   RETURN NEW;
 END;

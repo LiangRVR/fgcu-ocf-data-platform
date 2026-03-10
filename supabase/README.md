@@ -31,6 +31,8 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 5. Paste into the SQL Editor
 6. Click **Run** to execute the migration
 7. Verify tables are created in **Table Editor**
+8. Repeat steps 3–6 for `supabase/migrations/20260305000001_allow_anon_read.sql` — grants anonymous key read access
+9. Repeat steps 3–6 for `supabase/migrations/20260305000002_allow_anon_write.sql` — grants anonymous key write access (required for all CRUD operations)
 
 ### Option B: Using Supabase CLI
 
@@ -38,7 +40,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 # Link to your project (one time)
 npx supabase link --project-ref <your-project-id>
 
-# Push the migration to your Supabase project
+# Push all three migrations to your Supabase project
 npx supabase db push
 ```
 
@@ -132,7 +134,8 @@ If you're getting permission errors:
 1. ✅ Configure environment variables
 2. ✅ Apply database schema (`20260305000000_initial_schema.sql`)
 3. ✅ Apply anon-read policy (`20260305000001_allow_anon_read.sql`)
-4. ✅ Generate TypeScript types
+4. ✅ Apply anon-write policy (`20260305000002_allow_anon_write.sql`)
+5. ✅ Generate TypeScript types
 5. ✅ Verify connection
 6. 🔄 Wire Supabase Auth — replace the mock gate in `lib/auth/mock.ts` with real `@supabase/ssr` session middleware
 7. 🔄 Customize RLS policies for authenticated users once auth is live

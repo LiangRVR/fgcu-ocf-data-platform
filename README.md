@@ -97,7 +97,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 │   └── validators/        # Zod schemas (auth)
 ├── types/                 # TypeScript types (Database auto-generated, App-level)
 ├── supabase/
-│   ├── migrations/        # 20260305000000_initial_schema.sql, 20260305000001_allow_anon_read.sql
+│   ├── migrations/        # 20260305000000_initial_schema.sql, 20260305000001_allow_anon_read.sql, 20260305000002_allow_anon_write.sql
 │   ├── SCHEMA.md          # Quick-reference schema table
 │   └── README.md          # Supabase setup guide
 ├── docs/                  # Project documentation
@@ -120,10 +120,11 @@ The application uses Supabase for the backend. To set up the database:
 
 1. **Create a Supabase project** at [supabase.com](https://supabase.com)
 2. **Apply migration 1** — schema: paste `supabase/migrations/20260305000000_initial_schema.sql` into the SQL Editor and run
-3. **Apply migration 2** — RLS policies: paste `supabase/migrations/20260305000001_allow_anon_read.sql` and run
-   _(Both files are required. The second grants the anon key SELECT access — without it every query returns an empty result set.)_
-4. **Generate types**: Run `pnpm run db:types`
-5. **Test connection**: Run `pnpm run test:connection`
+3. **Apply migration 2** — RLS read policies: paste `supabase/migrations/20260305000001_allow_anon_read.sql` and run
+4. **Apply migration 3** — RLS write policies: paste `supabase/migrations/20260305000002_allow_anon_write.sql` and run
+   _(All three files are required. Migration 2 grants the anon key SELECT access; migration 3 grants INSERT/UPDATE/DELETE so CRUD operations work.)_
+5. **Generate types**: Run `pnpm run db:types`
+6. **Test connection**: Run `pnpm run test:connection`
 
 For detailed instructions, see the [Supabase Setup Guide](supabase/README.md).
 

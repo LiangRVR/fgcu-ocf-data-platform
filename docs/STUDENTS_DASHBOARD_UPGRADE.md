@@ -31,7 +31,7 @@ Replaced floating search with comprehensive control bar:
   - Icon inside input field
 - **Status Filter**: Dropdown with "All statuses", "CH Student", "Other"
 - **Major Filter**: Dynamic dropdown populated from student data
-- **Action Buttons**: "Export CSV" and "Add Student"
+- **Action Buttons**: "Export CSV" (button present; export logic not yet implemented — shows a "coming soon" toast) and "Add Student"
 - **Responsive Layout**: Wraps properly on small screens
 
 ### 4. Interactive Table Features ✅

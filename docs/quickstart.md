@@ -7,9 +7,10 @@
 - Configured Supabase client for browser (`lib/supabase/client.ts`) and server (`lib/supabase/server.ts`)
 
 ✅ **Database Schema**
-- 7-table schema applied via two SQL migrations
+- 7-table schema applied via three SQL migrations
   - `supabase/migrations/20260305000000_initial_schema.sql` — creates all tables
-  - `supabase/migrations/20260305000001_allow_anon_read.sql` — grants anon SELECT on all tables
+  - `supabase/migrations/20260305000001_allow_anon_read.sql` — grants anon role SELECT on all tables
+  - `supabase/migrations/20260305000002_allow_anon_write.sql` — grants anon role INSERT/UPDATE/DELETE (required for all CRUD operations)
 - Documented in `docs/schema-reference.md` (canonical) and `supabase/SCHEMA.md` (quick reference)
 
 ✅ **Live Data on All Pages**
@@ -40,8 +41,8 @@
 - Full type coverage with strict mode
 
 ✅ **Form Validation**
-- Zod schemas + React Hook Form on all add/edit forms
-- Login form with client-side validation
+- Login form: Zod schema + React Hook Form with client-side validation
+- All CRUD dialogs: manual field-level validation with consistency checks (e.g. stage ↔ finalist flags)
 
 ✅ **Development Tools**
 - Connection test script: `pnpm test:connection`
@@ -94,7 +95,8 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 2. Click **SQL Editor** in the left sidebar
 3. Click **New Query**
 4. Open `supabase/migrations/20260305000000_initial_schema.sql`, copy its contents, paste and run — you should see "Success. No rows returned" ✅
-5. Repeat for `supabase/migrations/20260305000001_allow_anon_read.sql` — this grants the anonymous key read access to all tables ✅
+5. Repeat for `supabase/migrations/20260305000001_allow_anon_read.sql` — this grants the anonymous key **read** access to all tables ✅
+6. Repeat for `supabase/migrations/20260305000002_allow_anon_write.sql` — this grants the anonymous key **write** access (INSERT/UPDATE/DELETE) required for all CRUD operations ✅
 
 **Method B: Using Supabase CLI**
 
@@ -102,7 +104,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 # Link to your project (one-time)
 npx supabase link --project-ref YOUR_PROJECT_REF_ID
 
-# Push both migrations
+# Push all three migrations
 npx supabase db push
 ```
 

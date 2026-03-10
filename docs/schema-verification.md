@@ -8,13 +8,14 @@
 - [x] Environment variable setup (`.env.local`)
 - [x] Initial schema migration (`supabase/migrations/20260305000000_initial_schema.sql`)
 - [x] Anon read policy migration (`supabase/migrations/20260305000001_allow_anon_read.sql`)
+- [x] Anon write policy migration (`supabase/migrations/20260305000002_allow_anon_write.sql`)
 - [x] Schema documentation (`docs/schema-reference.md`, `supabase/SCHEMA.md`)
 - [x] Auto-generated TypeScript types (`types/database.ts`)
 - [x] Application-level types (`types/index.ts`)
 - [x] Connection test utility (`scripts/test-connection.ts`)
 - [x] All 8 dashboard pages query live Supabase data
 - [x] Add / Edit / Delete operations implemented on all main tables (students, applications, advising, fellowship thursday, scholarship history)
-- [x] Input validation (Zod) on all forms
+- [x] Form validation: Zod + React Hook Form on login form; manual field-level + consistency validation on all CRUD dialogs
 
 ### ⚠️ Required From You Before First Use
 
@@ -101,6 +102,7 @@ Before using the application with real data:
 - [ ] Supabase project created and credentials added to `.env.local`
 - [ ] Schema migration applied (`20260305000000_initial_schema.sql`)
 - [ ] Anon-read policy applied (`20260305000001_allow_anon_read.sql`)
+- [ ] Anon-write policy applied (`20260305000002_allow_anon_write.sql`)
 - [ ] TypeScript types regenerated if schema was modified: `pnpm run db:types`
 - [ ] Connection test passes: `pnpm run test:connection`
 - [ ] Dev server starts: `pnpm dev`
