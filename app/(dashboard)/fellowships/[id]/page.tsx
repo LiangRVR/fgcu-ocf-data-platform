@@ -121,7 +121,7 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
         title={fellowship.fellowship_name}
         description={`Fellowship ID: ${fellowship.fellowship_id}`}
       >
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Link href={`/applications?add=1&fellowship_id=${fellowship.fellowship_id}`}>
             <Button size="sm" className="bg-[#006747] hover:bg-[#00563b]">
               <FilePlus className="mr-2 h-4 w-4" />

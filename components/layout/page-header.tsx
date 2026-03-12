@@ -22,7 +22,7 @@ export function PageHeader({ title, description, children }: PageHeaderProps) {
         )}
       </div>
       {children && (
-        <div className="mt-3 flex shrink-0 items-center gap-2 sm:mt-0">{children}</div>
+        <div className="mt-3 flex shrink-0 flex-wrap items-center gap-2 sm:mt-0">{children}</div>
       )}
     </div>
   );

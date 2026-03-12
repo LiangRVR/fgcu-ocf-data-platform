@@ -31,7 +31,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Search, Pencil, Trash2, CalendarPlus, Calendar } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Search, Pencil, Trash2, CalendarPlus, Calendar, MoreHorizontal, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
@@ -97,6 +103,7 @@ export function AdvisingTable({
   const [form, setForm] = useState(EMPTY_FORM);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   // Pre-fill and auto-open add dialog when arriving from a contextual link
   useEffect(() => {
@@ -283,38 +290,56 @@ export function AdvisingTable({
       {/* Control Bar */}
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          <div className="relative w-full sm:w-72">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            <Input
-              placeholder="Search by student, advisor, notes…"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9"
-            />
+          <div className="flex items-center gap-2">
+            <div className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <Input
+                placeholder="Search by student, advisor, notes…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9"
+              />
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0 gap-1.5 xl:hidden"
+              onClick={() => setFiltersOpen((o) => !o)}
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+              Filters
+              {(modeFilter !== "all" || noShowFilter !== "all") && (
+                <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#006747] text-[10px] font-bold text-white">
+                  •
+                </span>
+              )}
+            </Button>
           </div>
-          <Select value={modeFilter} onValueChange={setModeFilter}>
-            <SelectTrigger className="w-full sm:w-36">
-              <SelectValue placeholder="All modes" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All modes</SelectItem>
-              {MEETING_MODES.map((m) => (
-                <SelectItem key={m} value={m}>
-                  {m}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={noShowFilter} onValueChange={setNoShowFilter}>
-            <SelectTrigger className="w-full sm:w-36">
-              <SelectValue placeholder="All attendance" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All attendance</SelectItem>
-              <SelectItem value="no">Attended</SelectItem>
-              <SelectItem value="yes">No-show</SelectItem>
-            </SelectContent>
-          </Select>
+          <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
+            <Select value={modeFilter} onValueChange={setModeFilter}>
+              <SelectTrigger className="w-full sm:w-36">
+                <SelectValue placeholder="All modes" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All modes</SelectItem>
+                {MEETING_MODES.map((m) => (
+                  <SelectItem key={m} value={m}>
+                    {m}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={noShowFilter} onValueChange={setNoShowFilter}>
+              <SelectTrigger className="w-full sm:w-36">
+                <SelectValue placeholder="All attendance" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All attendance</SelectItem>
+                <SelectItem value="no">Attended</SelectItem>
+                <SelectItem value="yes">No-show</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
         <Button
           size="sm"
@@ -353,7 +378,89 @@ export function AdvisingTable({
               )}
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+              {/* Mobile card list */}
+              <div className="md:hidden divide-y divide-gray-200">
+                {filteredMeetings.map((meeting) => (
+                  <div key={meeting.meeting_id} className="p-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <Link
+                          href={`/students/${meeting.student_id}`}
+                          className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
+                        >
+                          {meeting.student?.full_name ?? "—"}
+                        </Link>
+                        <div className="mt-0.5 text-sm text-slate-500">
+                          {new Date(meeting.meeting_date + "T00:00:00").toLocaleDateString(
+                            "en-US",
+                            { year: "numeric", month: "short", day: "numeric" }
+                          )}
+                          {meeting.advisor_id && (
+                            <span className="ml-1.5 text-slate-400">
+                              &middot;{" "}
+                              <Link
+                                href={`/advisors/${meeting.advisor_id}`}
+                                className="hover:text-[#006747] hover:underline"
+                              >
+                                {meeting.advisor?.advisor_name ?? "—"}
+                              </Link>
+                            </span>
+                          )}
+                        </div>
+                        {meeting.notes && (
+                          <div className="mt-0.5 truncate text-xs text-slate-400 max-w-xs">
+                            {meeting.notes}
+                          </div>
+                        )}
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          <Badge
+                            variant="secondary"
+                            className={`rounded-full border px-2 py-0.5 text-xs ${
+                              meeting.meeting_mode === "Virtual"
+                                ? "border-blue-200 bg-blue-100 text-blue-800"
+                                : "border-slate-200 bg-slate-100 text-slate-700"
+                            }`}
+                          >
+                            {meeting.meeting_mode}
+                          </Badge>
+                          {meeting.no_show ? (
+                            <Badge variant="destructive" className="rounded-full px-2 py-0.5 text-xs font-medium">
+                              No-show
+                            </Badge>
+                          ) : (
+                            <Badge variant="secondary" className="rounded-full border border-green-200 bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">
+                              Attended
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0 text-slate-500">
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => openEdit(meeting)}>
+                            <Pencil className="mr-2 h-4 w-4" />
+                            Edit
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="text-red-600 focus:text-red-600"
+                            onClick={() => setDeleteId(meeting.meeting_id)}
+                          >
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {/* Desktop table */}
+              <div className="hidden md:block overflow-x-auto">
               <table className="w-full">
                 <thead className="bg-gray-50">
                   <tr className="border-b border-gray-200">
@@ -474,7 +581,8 @@ export function AdvisingTable({
                   ))}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

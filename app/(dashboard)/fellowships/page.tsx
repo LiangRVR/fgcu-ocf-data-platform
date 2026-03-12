@@ -240,7 +240,47 @@ export default async function FellowshipsPage({ searchParams }: Props) {
               )}
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+              {/* Mobile card list */}
+              <div className="md:hidden divide-y divide-gray-200">
+                {visibleFellowships.map((fellowship) => (
+                  <div key={fellowship.fellowship_id} className="p-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <Link
+                          href={`/fellowships/${fellowship.fellowship_id}`}
+                          className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
+                        >
+                          {fellowship.fellowship_name}
+                        </Link>
+                        <div className="mt-1 flex flex-wrap gap-3 text-xs text-slate-500">
+                          <span><span className="font-medium text-slate-700">{fellowship.totalApplications}</span> apps</span>
+                          <span><span className="font-medium text-slate-700">{fellowship.finalists}</span> finalists</span>
+                          <span className={fellowship.awardedStudents > 0 ? "font-medium text-[#006747]" : ""}>
+                            <span className={`font-medium ${fellowship.awardedStudents > 0 ? "text-[#006747]" : "text-slate-700"}`}>{fellowship.awardedStudents}</span> awarded
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <Link href={`/fellowships/${fellowship.fellowship_id}`}>
+                          <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-600 hover:text-slate-900" title="View fellowship">
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                        </Link>
+                        <FellowshipEditButton
+                          fellowshipId={fellowship.fellowship_id}
+                          fellowshipName={fellowship.fellowship_name}
+                        />
+                        <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-600 hover:text-red-600" title="Delete fellowship">
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {/* Desktop table */}
+              <div className="hidden md:block overflow-x-auto">
               <table className="w-full">
                 <thead className="bg-gray-50">
                   <tr className="border-b border-gray-200">
@@ -306,7 +346,8 @@ export default async function FellowshipsPage({ searchParams }: Props) {
                   ))}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

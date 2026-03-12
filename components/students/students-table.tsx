@@ -40,6 +40,12 @@ import {
 } from "@/components/ui/tooltip";
 import { Label } from "@/components/ui/label";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Search,
   Eye,
   Pencil,
@@ -49,6 +55,8 @@ import {
   ChevronsUpDown,
   UserPlus,
   FileDown,
+  MoreHorizontal,
+  SlidersHorizontal,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
@@ -110,6 +118,7 @@ export function StudentsTable({
   const [editStudentOpen, setEditStudentOpen] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   // Form state for add student
   const [newStudent, setNewStudent] = useState(EMPTY_STUDENT_FORM);
@@ -425,56 +434,73 @@ export function StudentsTable({
         <Card className="border-gray-200 shadow-sm">
           <CardContent className="p-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              {/* Left: Search and Filters */}
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                <div className="relative w-full sm:w-80">
-                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                  <Input
-                    placeholder="Search students by name, email, or ID…"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-9"
-                  />
+              {/* Left: Search + filter toggle (mobile) / inline filters (desktop) */}
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1 sm:w-80">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <Input
+                      placeholder="Search students by name, email, or ID…"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="pl-9"
+                    />
+                  </div>
+                  {/* Filters toggle — mobile only */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0 gap-1.5 xl:hidden"
+                    onClick={() => setFiltersOpen((o) => !o)}
+                  >
+                    <SlidersHorizontal className="h-4 w-4" />
+                    Filters
+                    {(statusFilter !== "all" || standingFilter !== "all" || majorFilter !== "all") && (
+                      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#006747] text-[10px] font-bold text-white">•</span>
+                    )}
+                  </Button>
                 </div>
+                {/* Filter selects: collapsed on mobile, inline on sm+ */}
+                <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
+                  <Select value={statusFilter} onValueChange={setStatusFilter}>
+                    <SelectTrigger className="w-full sm:w-40">
+                      <SelectValue placeholder="All statuses" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All statuses</SelectItem>
+                      <SelectItem value="ch">CH Student</SelectItem>
+                      <SelectItem value="honors">Honors College</SelectItem>
+                      <SelectItem value="first_gen">First-Generation</SelectItem>
+                      <SelectItem value="other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
 
-                <Select value={statusFilter} onValueChange={setStatusFilter}>
-                  <SelectTrigger className="w-full sm:w-40">
-                    <SelectValue placeholder="All statuses" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All statuses</SelectItem>
-                    <SelectItem value="ch">CH Student</SelectItem>
-                    <SelectItem value="honors">Honors College</SelectItem>
-                    <SelectItem value="first_gen">First-Generation</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
-                  </SelectContent>
-                </Select>
+                  <Select value={standingFilter} onValueChange={setStandingFilter}>
+                    <SelectTrigger className="w-full sm:w-44">
+                      <SelectValue placeholder="All standings" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All standings</SelectItem>
+                      {CLASS_STANDINGS.map((s) => (
+                        <SelectItem key={s} value={s}>{s}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
 
-                <Select value={standingFilter} onValueChange={setStandingFilter}>
-                  <SelectTrigger className="w-full sm:w-44">
-                    <SelectValue placeholder="All standings" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All standings</SelectItem>
-                    {CLASS_STANDINGS.map((s) => (
-                      <SelectItem key={s} value={s}>{s}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-
-                <Select value={majorFilter} onValueChange={setMajorFilter}>
-                  <SelectTrigger className="w-full sm:w-40">
-                    <SelectValue placeholder="All majors" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All majors</SelectItem>
-                    {uniqueMajors.map((major) => (
-                      <SelectItem key={major} value={major}>
-                        {major}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  <Select value={majorFilter} onValueChange={setMajorFilter}>
+                    <SelectTrigger className="w-full sm:w-40">
+                      <SelectValue placeholder="All majors" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All majors</SelectItem>
+                      {uniqueMajors.map((major) => (
+                        <SelectItem key={major} value={major}>
+                          {major}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
               {/* Right: Actions */}
@@ -525,7 +551,74 @@ export function StudentsTable({
               </div>
             ) : (
               <>
-                <div className="overflow-x-auto">
+                {/* ── Mobile card list (below md) ───────────────── */}
+                <div className="md:hidden divide-y divide-gray-200">
+                  {paginatedStudents.map((student) => (
+                    <div key={student.student_id} className="p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <Link
+                            href={`/students/${student.student_id}`}
+                            className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
+                          >
+                            {student.full_name}
+                          </Link>
+                          <p className="mt-0.5 truncate text-sm text-slate-500">{student.email}</p>
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-slate-600">
+                            {student.class_standing && (
+                              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs">
+                                {student.class_standing}
+                              </span>
+                            )}
+                            {student.gpa != null && (
+                              <span>GPA {student.gpa.toFixed(2)}</span>
+                            )}
+                          </div>
+                          {(student.is_ch_student || student.first_gen || student.honors_college) && (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {student.is_ch_student && (
+                                <Badge className="rounded-full border border-green-200 bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 hover:bg-green-100">CH</Badge>
+                              )}
+                              {student.first_gen && (
+                                <Badge className="rounded-full border border-teal-200 bg-teal-100 px-2 py-0.5 text-xs font-medium text-teal-800 hover:bg-teal-100">First Gen</Badge>
+                              )}
+                              {student.honors_college && (
+                                <Badge className="rounded-full border border-amber-200 bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 hover:bg-amber-100">Honors</Badge>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0 text-slate-500">
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => handleRowClick(student.student_id)}>
+                              <Eye className="mr-2 h-4 w-4" />
+                              View
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => openEdit(student)}>
+                              <Pencil className="mr-2 h-4 w-4" />
+                              Edit
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={() => setDeleteStudentId(student.student_id)}
+                              className="text-red-600 focus:text-red-600"
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* ── Desktop table (md+) ───────────────────────── */}
+                <div className="hidden md:block overflow-x-auto">
                   <table className="w-full">
                     <thead className="bg-gray-50">
                       <tr className="border-b border-gray-200">
@@ -712,7 +805,7 @@ export function StudentsTable({
                       ))}
                     </tbody>
                   </table>
-                </div>
+                </div>{/* end hidden md:block */}
 
                 {/* Pagination */}
                 <div className="flex flex-col gap-3 border-t border-gray-200 bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6 sm:py-4">
@@ -721,22 +814,24 @@ export function StudentsTable({
                       Showing {startIndex}–{endIndex} of{" "}
                       {filteredAndSortedStudents.length}
                     </p>
-                    <Select
-                      value={String(pageSize)}
-                      onValueChange={(v) => {
-                        setPageSize(Number(v));
-                        setCurrentPage(1);
-                      }}
-                    >
-                      <SelectTrigger className="w-24">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="10">10 / page</SelectItem>
-                        <SelectItem value="20">20 / page</SelectItem>
-                        <SelectItem value="50">50 / page</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <div className="hidden sm:block">
+                      <Select
+                        value={String(pageSize)}
+                        onValueChange={(v) => {
+                          setPageSize(Number(v));
+                          setCurrentPage(1);
+                        }}
+                      >
+                        <SelectTrigger className="w-24">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="10">10 / page</SelectItem>
+                          <SelectItem value="20">20 / page</SelectItem>
+                          <SelectItem value="50">50 / page</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-2">
@@ -748,7 +843,7 @@ export function StudentsTable({
                     >
                       Previous
                     </Button>
-                    <div className="flex items-center gap-1">
+                    <div className="hidden items-center gap-1 sm:flex">
                       {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
                         let pageNum: number;
                         if (totalPages <= 5) {
@@ -778,6 +873,10 @@ export function StudentsTable({
                         );
                       })}
                     </div>
+                    {/* Mobile: show page indicator instead of numbered buttons */}
+                    <span className="text-sm text-slate-600 sm:hidden">
+                      {currentPage} / {totalPages}
+                    </span>
                     <Button
                       variant="outline"
                       size="sm"
@@ -871,7 +970,7 @@ export function StudentsTable({
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="class_standing">Class Standing</Label>
                 <Select
@@ -913,8 +1012,8 @@ export function StudentsTable({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex items-center gap-2">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label htmlFor="is_ch_student" className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
                   type="checkbox"
                   id="is_ch_student"
@@ -922,13 +1021,11 @@ export function StudentsTable({
                   onChange={(e) =>
                     setNewStudent({ ...newStudent, is_ch_student: e.target.checked })
                   }
-                  className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
+                  className="h-5 w-5 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
                 />
-                <Label htmlFor="is_ch_student" className="cursor-pointer">
-                  CH Student
-                </Label>
-              </div>
-              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-slate-700">CH Student</span>
+              </label>
+              <label htmlFor="first_gen" className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
                   type="checkbox"
                   id="first_gen"
@@ -936,13 +1033,11 @@ export function StudentsTable({
                   onChange={(e) =>
                     setNewStudent({ ...newStudent, first_gen: e.target.checked })
                   }
-                  className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
+                  className="h-5 w-5 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
                 />
-                <Label htmlFor="first_gen" className="cursor-pointer">
-                  First Generation
-                </Label>
-              </div>
-              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-slate-700">First Generation</span>
+              </label>
+              <label htmlFor="honors_college" className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
                   type="checkbox"
                   id="honors_college"
@@ -950,13 +1045,11 @@ export function StudentsTable({
                   onChange={(e) =>
                     setNewStudent({ ...newStudent, honors_college: e.target.checked })
                   }
-                  className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
+                  className="h-5 w-5 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
                 />
-                <Label htmlFor="honors_college" className="cursor-pointer">
-                  Honors College
-                </Label>
-              </div>
-              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-slate-700">Honors College</span>
+              </label>
+              <label htmlFor="us_citizen" className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
                   type="checkbox"
                   id="us_citizen"
@@ -964,12 +1057,10 @@ export function StudentsTable({
                   onChange={(e) =>
                     setNewStudent({ ...newStudent, us_citizen: e.target.checked })
                   }
-                  className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
+                  className="h-5 w-5 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
                 />
-                <Label htmlFor="us_citizen" className="cursor-pointer">
-                  US Citizen
-                </Label>
-              </div>
+                <span className="text-sm font-medium text-slate-700">US Citizen</span>
+              </label>
             </div>
           </div>
           <DialogFooter>
@@ -1055,7 +1146,7 @@ export function StudentsTable({
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="edit_class_standing">Class Standing</Label>
                 <Select
@@ -1093,47 +1184,47 @@ export function StudentsTable({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex items-center gap-2">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label htmlFor="edit_is_ch_student" className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
                   type="checkbox"
                   id="edit_is_ch_student"
                   checked={editForm.is_ch_student}
                   onChange={(e) => setEditForm({ ...editForm, is_ch_student: e.target.checked })}
-                  className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
+                  className="h-5 w-5 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
                 />
-                <Label htmlFor="edit_is_ch_student" className="cursor-pointer">CH Student</Label>
-              </div>
-              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-slate-700">CH Student</span>
+              </label>
+              <label htmlFor="edit_first_gen" className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
                   type="checkbox"
                   id="edit_first_gen"
                   checked={editForm.first_gen}
                   onChange={(e) => setEditForm({ ...editForm, first_gen: e.target.checked })}
-                  className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
+                  className="h-5 w-5 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
                 />
-                <Label htmlFor="edit_first_gen" className="cursor-pointer">First Generation</Label>
-              </div>
-              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-slate-700">First Generation</span>
+              </label>
+              <label htmlFor="edit_honors_college" className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
                   type="checkbox"
                   id="edit_honors_college"
                   checked={editForm.honors_college}
                   onChange={(e) => setEditForm({ ...editForm, honors_college: e.target.checked })}
-                  className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
+                  className="h-5 w-5 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
                 />
-                <Label htmlFor="edit_honors_college" className="cursor-pointer">Honors College</Label>
-              </div>
-              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-slate-700">Honors College</span>
+              </label>
+              <label htmlFor="edit_us_citizen" className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
                   type="checkbox"
                   id="edit_us_citizen"
                   checked={editForm.us_citizen}
                   onChange={(e) => setEditForm({ ...editForm, us_citizen: e.target.checked })}
-                  className="h-4 w-4 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
+                  className="h-5 w-5 rounded border-gray-300 text-[#006747] focus:ring-[#006747]"
                 />
-                <Label htmlFor="edit_us_citizen" className="cursor-pointer">US Citizen</Label>
-              </div>
+                <span className="text-sm font-medium text-slate-700">US Citizen</span>
+              </label>
             </div>
           </div>
           <DialogFooter>

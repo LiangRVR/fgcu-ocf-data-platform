@@ -588,7 +588,7 @@ export default async function ReportsPage() {
             </CardHeader>
             <CardContent className="space-y-5">
               {data.totals.ftAttendees > 0 && (
-                <div className="flex items-center gap-4 rounded-lg bg-slate-50 px-4 py-3 text-sm border border-gray-100">
+                <div className="flex flex-wrap items-center gap-4 rounded-lg bg-slate-50 px-4 py-3 text-sm border border-gray-100">
                   <div className="text-center">
                     <p className="text-lg font-bold text-slate-900">{data.totals.ftAttendees}</p>
                     <p className="text-xs text-slate-500">FT Attendees</p>
