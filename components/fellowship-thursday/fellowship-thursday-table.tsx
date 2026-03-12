@@ -330,16 +330,16 @@ export function FellowshipThursdayTable({
               <table className="w-full">
                 <thead className="bg-gray-50">
                   <tr className="border-b border-gray-200">
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Student
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Attended
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:table-cell sm:px-6 sm:py-3">
                       Source
                     </th>
-                    <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Actions
                     </th>
                   </tr>
@@ -350,7 +350,7 @@ export function FellowshipThursdayTable({
                       key={record.attendance_id}
                       className="transition-colors duration-150 hover:bg-gray-50"
                     >
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <div className="font-medium text-slate-900">
                           {record.student?.full_name ? (
                             <Link
@@ -365,7 +365,7 @@ export function FellowshipThursdayTable({
                           )}
                         </div>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         {record.attended ? (
                           <Badge
                             variant="secondary"
@@ -382,7 +382,7 @@ export function FellowshipThursdayTable({
                           </Badge>
                         )}
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="hidden whitespace-nowrap px-3 py-3 sm:table-cell sm:px-6 sm:py-4">
                         {record.source_info ? (
                           <Badge
                             variant="secondary"
@@ -400,7 +400,7 @@ export function FellowshipThursdayTable({
                           <span className="text-xs text-slate-300">—</span>
                         )}
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <div className="flex items-center justify-end gap-2">
                           <Button
                             variant="ghost"

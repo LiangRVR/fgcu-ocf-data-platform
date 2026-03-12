@@ -471,25 +471,25 @@ export function ApplicationsTable({
               <table className="w-full">
                 <thead className="bg-gray-50">
                   <tr className="border-b border-gray-200">
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Student
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Fellowship
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 md:table-cell">
                       Destination
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Stage
                     </th>
-                    <th className="px-6 py-3 text-center text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="hidden px-3 py-2 text-center text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 lg:table-cell">
                       Semi-Fin.
                     </th>
-                    <th className="px-6 py-3 text-center text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="hidden px-3 py-2 text-center text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 lg:table-cell">
                       Finalist
                     </th>
-                    <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Actions
                     </th>
                   </tr>
@@ -500,7 +500,7 @@ export function ApplicationsTable({
                       key={app.application_id}
                       className="transition-colors duration-150 hover:bg-gray-50"
                     >
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <Link
                           href={`/students/${app.student_id}`}
                           className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
@@ -508,7 +508,7 @@ export function ApplicationsTable({
                           {app.student?.full_name ?? "—"}
                         </Link>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <Link
                           href={`/fellowships/${app.fellowship_id}`}
                           className="text-sm text-slate-600 hover:text-[#006747] hover:underline"
@@ -516,12 +516,12 @@ export function ApplicationsTable({
                           {app.fellowship?.fellowship_name ?? "—"}
                         </Link>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="hidden whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4 md:table-cell">
                         <div className="text-sm text-slate-600">
                           {app.destination_country ?? "—"}
                         </div>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <Badge
                           variant="secondary"
                           className={`rounded-full border px-2 py-0.5 text-xs ${stageBadgeClass(app.stage_of_application)}`}
@@ -529,7 +529,7 @@ export function ApplicationsTable({
                           {app.stage_of_application}
                         </Badge>
                       </td>
-                      <td className="px-6 py-4 text-center">
+                      <td className="hidden px-3 py-3 text-center sm:px-6 sm:py-4 lg:table-cell">
                         {app.is_semi_finalist ? (
                           <Badge
                             variant="default"
@@ -541,7 +541,7 @@ export function ApplicationsTable({
                           <span className="text-xs text-slate-400">—</span>
                         )}
                       </td>
-                      <td className="px-6 py-4 text-center">
+                      <td className="hidden px-3 py-3 text-center sm:px-6 sm:py-4 lg:table-cell">
                         {app.is_finalist ? (
                           <Badge
                             variant="default"
@@ -553,7 +553,7 @@ export function ApplicationsTable({
                           <span className="text-xs text-slate-400">—</span>
                         )}
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <div className="flex items-center justify-end gap-2">
                           <Button
                             variant="ghost"

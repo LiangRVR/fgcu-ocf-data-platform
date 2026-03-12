@@ -25,7 +25,7 @@ export function DashboardShell({ children }: DashboardShellProps) {
       {/* Main content — offset by sidebar width on desktop */}
       <div className="lg:pl-64">
         <TopBar onMenuClick={() => setSidebarOpen(true)} />
-        <main className="mx-auto max-w-7xl px-8 py-6">
+        <main className="mx-auto max-w-7xl px-4 py-4 sm:px-6 sm:py-5 lg:px-8 lg:py-6">
           {children}
         </main>
       </div>

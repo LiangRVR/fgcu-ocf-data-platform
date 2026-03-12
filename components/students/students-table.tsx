@@ -531,19 +531,19 @@ export function StudentsTable({
                       <tr className="border-b border-gray-200">
                         <th
                           onClick={() => handleSort("full_name")}
-                          className="cursor-pointer px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-600 hover:text-gray-900"
+                          className="cursor-pointer px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-600 hover:text-gray-900 sm:px-6 sm:py-3"
                         >
                           <div className="flex items-center">
                             Name
                             <SortIcon field="full_name" />
                           </div>
                         </th>
-                        <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-600">
+                        <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-600 sm:px-6 sm:py-3 md:table-cell">
                           Email
                         </th>
                         <th
                           onClick={() => handleSort("student_id")}
-                          className="cursor-pointer px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-600 hover:text-gray-900"
+                          className="hidden cursor-pointer px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-600 hover:text-gray-900 sm:px-6 sm:py-3 lg:table-cell"
                         >
                           <div className="flex items-center">
                             Student ID
@@ -552,7 +552,7 @@ export function StudentsTable({
                         </th>
                         <th
                           onClick={() => handleSort("major")}
-                          className="cursor-pointer px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-600 hover:text-gray-900"
+                          className="hidden cursor-pointer px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-600 hover:text-gray-900 sm:px-6 sm:py-3 lg:table-cell"
                         >
                           <div className="flex items-center">
                             Major
@@ -561,7 +561,7 @@ export function StudentsTable({
                         </th>
                         <th
                           onClick={() => handleSort("gpa")}
-                          className="cursor-pointer px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-600 hover:text-gray-900"
+                          className="hidden cursor-pointer px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-600 hover:text-gray-900 sm:px-6 sm:py-3 sm:table-cell"
                         >
                           <div className="flex items-center">
                             GPA
@@ -570,17 +570,17 @@ export function StudentsTable({
                         </th>
                         <th
                           onClick={() => handleSort("class_standing")}
-                          className="cursor-pointer px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-600 hover:text-gray-900"
+                          className="cursor-pointer px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-600 hover:text-gray-900 sm:px-6 sm:py-3"
                         >
                           <div className="flex items-center">
                             Class Standing
                             <SortIcon field="class_standing" />
                           </div>
                         </th>
-                        <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-600">
+                        <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-600 sm:px-6 sm:py-3 xl:table-cell">
                           Tags
                         </th>
-                        <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-600">
+                        <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-600 sm:px-6 sm:py-3">
                           Actions
                         </th>
                       </tr>
@@ -592,7 +592,7 @@ export function StudentsTable({
                           onClick={() => handleRowClick(student.student_id)}
                           className="cursor-pointer transition-colors duration-150 hover:bg-gray-50"
                         >
-                          <td className="whitespace-nowrap px-6 py-4">
+                          <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                             <Link
                               href={`/students/${student.student_id}`}
                               className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
@@ -601,32 +601,32 @@ export function StudentsTable({
                               {student.full_name}
                             </Link>
                           </td>
-                          <td className="px-6 py-4">
+                          <td className="hidden px-3 py-3 sm:px-6 sm:py-4 md:table-cell">
                             <div className="max-w-xs truncate text-sm text-slate-600">
                               {student.email}
                             </div>
                           </td>
-                          <td className="whitespace-nowrap px-6 py-4">
+                          <td className="hidden whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4 lg:table-cell">
                             <div className="text-sm text-slate-600">
                               {student.student_id}
                             </div>
                           </td>
-                          <td className="whitespace-nowrap px-6 py-4">
+                          <td className="hidden whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4 lg:table-cell">
                             <div className="text-sm text-slate-600">
                               {student.major || "—"}
                             </div>
                           </td>
-                          <td className="whitespace-nowrap px-6 py-4">
+                          <td className="hidden whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4 sm:table-cell">
                             <div className="text-sm text-slate-600">
                               {student.gpa != null ? student.gpa.toFixed(2) : "—"}
                             </div>
                           </td>
-                          <td className="whitespace-nowrap px-6 py-4">
+                          <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                             <div className="text-sm text-slate-600">
                               {student.class_standing || "—"}
                             </div>
                           </td>
-                          <td className="whitespace-nowrap px-6 py-4">
+                          <td className="hidden whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4 xl:table-cell">
                             <div className="flex flex-wrap gap-1">
                               {student.is_ch_student && (
                                 <Badge className="rounded-full border border-green-200 bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 hover:bg-green-100">
@@ -648,7 +648,7 @@ export function StudentsTable({
                               )}
                             </div>
                           </td>
-                          <td className="whitespace-nowrap px-6 py-4">
+                          <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                             <div className="flex items-center justify-end gap-1">
                               <Tooltip>
                                 <TooltipTrigger asChild>
@@ -715,11 +715,11 @@ export function StudentsTable({
                 </div>
 
                 {/* Pagination */}
-                <div className="flex items-center justify-between border-t border-gray-200 bg-white px-6 py-4">
+                <div className="flex flex-col gap-3 border-t border-gray-200 bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6 sm:py-4">
                   <div className="flex items-center gap-4">
                     <p className="text-sm text-slate-600">
                       Showing {startIndex}–{endIndex} of{" "}
-                      {filteredAndSortedStudents.length} students
+                      {filteredAndSortedStudents.length}
                     </p>
                     <Select
                       value={String(pageSize)}

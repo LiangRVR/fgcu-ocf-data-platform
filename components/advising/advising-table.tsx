@@ -357,25 +357,25 @@ export function AdvisingTable({
               <table className="w-full">
                 <thead className="bg-gray-50">
                   <tr className="border-b border-gray-200">
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Student
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 md:table-cell">
                       Advisor
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Date
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 sm:table-cell">
                       Mode
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       No-Show
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 lg:table-cell">
                       Notes
                     </th>
-                    <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Actions
                     </th>
                   </tr>
@@ -386,7 +386,7 @@ export function AdvisingTable({
                       key={meeting.meeting_id}
                       className="transition-colors duration-150 hover:bg-gray-50"
                     >
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <Link
                           href={`/students/${meeting.student_id}`}
                           className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
@@ -394,7 +394,7 @@ export function AdvisingTable({
                           {meeting.student?.full_name ?? "—"}
                         </Link>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="hidden whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4 md:table-cell">
                         {meeting.advisor_id ? (
                           <Link
                             href={`/advisors/${meeting.advisor_id}`}
@@ -406,7 +406,7 @@ export function AdvisingTable({
                           <span className="text-sm text-slate-400">—</span>
                         )}
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <div className="text-sm text-slate-600">
                           {new Date(meeting.meeting_date + "T00:00:00").toLocaleDateString(
                             "en-US",
@@ -414,7 +414,7 @@ export function AdvisingTable({
                           )}
                         </div>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="hidden whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4 sm:table-cell">
                         <Badge
                           variant="secondary"
                           className={`rounded-full border px-2 py-0.5 text-xs ${
@@ -426,7 +426,7 @@ export function AdvisingTable({
                           {meeting.meeting_mode}
                         </Badge>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         {meeting.no_show ? (
                           <Badge
                             variant="destructive"
@@ -443,12 +443,12 @@ export function AdvisingTable({
                           </Badge>
                         )}
                       </td>
-                      <td className="max-w-xs px-6 py-4">
+                      <td className="hidden max-w-xs px-3 py-3 sm:px-6 sm:py-4 lg:table-cell">
                         <div className="truncate text-sm text-slate-500">
                           {meeting.notes ? meeting.notes : <span className="text-slate-300">—</span>}
                         </div>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <div className="flex items-center justify-end gap-2">
                           <Button
                             variant="ghost"

@@ -3,6 +3,11 @@
 
 @import "tailwindcss";
 
+/* ── Prevent horizontal overflow on mobile ────────────────── */
+html, body {
+  overflow-x: hidden;
+}
+
 /* ── shadcn/ui CSS variables ─────────────────────────────────── */
 :root {
   /* FGCU Brand Colors */

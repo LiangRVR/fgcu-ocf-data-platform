@@ -259,13 +259,13 @@ export function ScholarshipHistoryTable({
               <table className="w-full">
                 <thead className="bg-gray-50">
                   <tr className="border-b border-gray-200">
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Student
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Fellowship / Scholarship
                     </th>
-                    <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Actions
                     </th>
                   </tr>
@@ -276,7 +276,7 @@ export function ScholarshipHistoryTable({
                       key={record.history_id}
                       className="transition-colors duration-150 hover:bg-gray-50"
                     >
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <Link
                           href={`/students/${record.student_id}`}
                           className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
@@ -284,7 +284,7 @@ export function ScholarshipHistoryTable({
                           {record.student?.full_name ?? "—"}
                         </Link>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <Link
                           href={`/fellowships/${record.fellowship_id}`}
                           className="text-sm text-slate-600 hover:text-[#006747] hover:underline"
@@ -292,7 +292,7 @@ export function ScholarshipHistoryTable({
                           {record.fellowship?.fellowship_name ?? "—"}
                         </Link>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <div className="flex items-center justify-end">
                           <Button
                             variant="ghost"
