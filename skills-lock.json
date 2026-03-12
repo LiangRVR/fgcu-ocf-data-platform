@@ -1,6 +1,11 @@
 {
   "version": 1,
   "skills": {
+    "agent-browser": {
+      "source": "vercel-labs/agent-browser",
+      "sourceType": "github",
+      "computedHash": "234f541bf6e9ac5316efa1a35ef971fd342b32d976578852c016ceb442000a81"
+    },
     "api-design-principles": {
       "source": "wshobson/agents",
       "sourceType": "github",
@@ -16,15 +21,45 @@
       "sourceType": "github",
       "computedHash": "2b0bf6b1f48f9da0102a5fecae026f18acd13981746a4593b9750cd9e0579f9b"
     },
+    "frontend-design": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "computedHash": "063a0e6448123cd359ad0044cc46b0e490cc7964d45ef4bb9fd842bd2ffbca67"
+    },
     "next-best-practices": {
       "source": "vercel-labs/next-skills",
       "sourceType": "github",
       "computedHash": "515ba75178bd44875812d9a560bdf14651f86709f89cf1d4f209638e879807f3"
     },
+    "responsiveness-check": {
+      "source": "jezweb/claude-skills",
+      "sourceType": "github",
+      "computedHash": "7b7e74472ecdfb8fa1b2a5d00af7c6caa4a1969e5f38367b314e13e6a77700de"
+    },
     "supabase-postgres-best-practices": {
       "source": "supabase/agent-skills",
       "sourceType": "github",
       "computedHash": "9c87c315aed143ee3b34bec8117100f5035e0df09e6b23e1ecc772cff434c9ad"
+    },
+    "tailwind-design-system": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "computedHash": "7ff2f4650597e98ca4cd8f01231fb432ab4d187d6b12e641485aa871a04448cc"
+    },
+    "tailwind-responsive-design": {
+      "source": "thebushidocollective/han",
+      "sourceType": "github",
+      "computedHash": "be0e7e40bdd242626c000a68ee022a7820202e9c03e764bf7ed92ea94f41e14e"
+    },
+    "tailwindcss-advanced-layouts": {
+      "source": "josiahsiegel/claude-plugin-marketplace",
+      "sourceType": "github",
+      "computedHash": "fa08c5757b8f24df2d412543d370bc25d8c14eadeb27be4112b2354323f5889f"
+    },
+    "ui-ux-pro-max": {
+      "source": "nextlevelbuilder/ui-ux-pro-max-skill",
+      "sourceType": "github",
+      "computedHash": "0a413bf988d06481f69bb81df2070741c3ba12dd9f1be2706d57f259c905992d"
     },
     "vercel-cli": {
       "source": "vercel/vercel",
