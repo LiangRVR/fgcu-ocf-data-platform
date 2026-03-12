@@ -240,15 +240,55 @@ export default async function FellowshipsPage({ searchParams }: Props) {
               )}
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+              {/* Mobile card list */}
+              <div className="md:hidden divide-y divide-gray-200">
+                {visibleFellowships.map((fellowship) => (
+                  <div key={fellowship.fellowship_id} className="p-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <Link
+                          href={`/fellowships/${fellowship.fellowship_id}`}
+                          className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
+                        >
+                          {fellowship.fellowship_name}
+                        </Link>
+                        <div className="mt-1 flex flex-wrap gap-3 text-xs text-slate-500">
+                          <span><span className="font-medium text-slate-700">{fellowship.totalApplications}</span> apps</span>
+                          <span><span className="font-medium text-slate-700">{fellowship.finalists}</span> finalists</span>
+                          <span className={fellowship.awardedStudents > 0 ? "font-medium text-[#006747]" : ""}>
+                            <span className={`font-medium ${fellowship.awardedStudents > 0 ? "text-[#006747]" : "text-slate-700"}`}>{fellowship.awardedStudents}</span> awarded
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <Link href={`/fellowships/${fellowship.fellowship_id}`}>
+                          <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-600 hover:text-slate-900" title="View fellowship">
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                        </Link>
+                        <FellowshipEditButton
+                          fellowshipId={fellowship.fellowship_id}
+                          fellowshipName={fellowship.fellowship_name}
+                        />
+                        <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-600 hover:text-red-600" title="Delete fellowship">
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {/* Desktop table */}
+              <div className="hidden md:block overflow-x-auto">
               <table className="w-full">
                 <thead className="bg-gray-50">
                   <tr className="border-b border-gray-200">
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">Name</th>
-                    <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500">Applications</th>
-                    <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500">Finalists</th>
-                    <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500">Awarded</th>
-                    <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500">Actions</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">Name</th>
+                    <th className="hidden px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-500 sm:table-cell sm:px-6 sm:py-3">Applications</th>
+                    <th className="hidden px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 md:table-cell">Finalists</th>
+                    <th className="hidden px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 md:table-cell">Awarded</th>
+                    <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 bg-white">
@@ -257,7 +297,7 @@ export default async function FellowshipsPage({ searchParams }: Props) {
                       key={fellowship.fellowship_id}
                       className="transition-colors duration-150 hover:bg-gray-50"
                     >
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <Link
                           href={`/fellowships/${fellowship.fellowship_id}`}
                           className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
@@ -265,18 +305,18 @@ export default async function FellowshipsPage({ searchParams }: Props) {
                           {fellowship.fellowship_name}
                         </Link>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4 text-right">
+                      <td className="hidden whitespace-nowrap px-3 py-3 text-right sm:table-cell sm:px-6 sm:py-4">
                         <span className="text-sm font-medium text-slate-700">{fellowship.totalApplications}</span>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4 text-right">
+                      <td className="hidden whitespace-nowrap px-3 py-3 text-right sm:px-6 sm:py-4 md:table-cell">
                         <span className="text-sm font-medium text-slate-700">{fellowship.finalists}</span>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4 text-right">
+                      <td className="hidden whitespace-nowrap px-3 py-3 text-right sm:px-6 sm:py-4 md:table-cell">
                         <span className={`text-sm font-medium ${fellowship.awardedStudents > 0 ? "text-[#006747]" : "text-slate-700"}`}>
                           {fellowship.awardedStudents}
                         </span>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <div className="flex items-center justify-end gap-2">
                           <Link href={`/fellowships/${fellowship.fellowship_id}`}>
                             <Button
@@ -306,7 +346,8 @@ export default async function FellowshipsPage({ searchParams }: Props) {
                   ))}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

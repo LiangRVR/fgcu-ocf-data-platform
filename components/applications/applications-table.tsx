@@ -32,11 +32,19 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Search,
   Pencil,
   Trash2,
   FilePlus,
   FileText,
+  MoreHorizontal,
+  SlidersHorizontal,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -178,6 +186,7 @@ export function ApplicationsTable({
   const [form, setForm] = useState(EMPTY_FORM);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   // Pre-fill and auto-open add dialog when arriving from a contextual link
   useEffect(() => {
@@ -407,28 +416,46 @@ export function ApplicationsTable({
       {/* Control Bar */}
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          <div className="relative w-full sm:w-72">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            <Input
-              placeholder="Search by student, fellowship, country…"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9"
-            />
+          <div className="flex items-center gap-2">
+            <div className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <Input
+                placeholder="Search by student, fellowship, country…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9"
+              />
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0 gap-1.5 xl:hidden"
+              onClick={() => setFiltersOpen((o) => !o)}
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+              Filters
+              {stageFilter !== "all" && (
+                <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#006747] text-[10px] font-bold text-white">
+                  •
+                </span>
+              )}
+            </Button>
           </div>
-          <Select value={stageFilter} onValueChange={setStageFilter}>
-            <SelectTrigger className="w-full sm:w-44">
-              <SelectValue placeholder="All stages" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All stages</SelectItem>
-              {STAGES.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {s}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
+            <Select value={stageFilter} onValueChange={setStageFilter}>
+              <SelectTrigger className="w-full sm:w-44">
+                <SelectValue placeholder="All stages" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All stages</SelectItem>
+                {STAGES.map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {s}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
         <Button
           size="sm"
@@ -467,29 +494,97 @@ export function ApplicationsTable({
               )}
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+              {/* Mobile card list */}
+              <div className="md:hidden divide-y divide-gray-200">
+                {filteredApplications.map((app) => (
+                  <div key={app.application_id} className="p-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <Link
+                          href={`/students/${app.student_id}`}
+                          className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
+                        >
+                          {app.student?.full_name ?? "—"}
+                        </Link>
+                        <div className="mt-0.5 text-sm text-slate-500">
+                          <Link
+                            href={`/fellowships/${app.fellowship_id}`}
+                            className="hover:text-[#006747] hover:underline"
+                          >
+                            {app.fellowship?.fellowship_name ?? "—"}
+                          </Link>
+                        </div>
+                        {app.destination_country && (
+                          <div className="mt-0.5 text-xs text-slate-400">{app.destination_country}</div>
+                        )}
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          <Badge
+                            variant="secondary"
+                            className={`rounded-full border px-2 py-0.5 text-xs ${stageBadgeClass(app.stage_of_application)}`}
+                          >
+                            {app.stage_of_application}
+                          </Badge>
+                          {app.is_semi_finalist && (
+                            <Badge variant="default" className="rounded-full border border-purple-200 bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800 hover:bg-purple-100">
+                              Semi-Fin.
+                            </Badge>
+                          )}
+                          {app.is_finalist && (
+                            <Badge variant="default" className="rounded-full border border-green-200 bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 hover:bg-green-100">
+                              Finalist
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0 text-slate-500">
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => openEdit(app)}>
+                            <Pencil className="mr-2 h-4 w-4" />
+                            Edit
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="text-red-600 focus:text-red-600"
+                            onClick={() => setDeleteId(app.application_id)}
+                          >
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {/* Desktop table */}
+              <div className="hidden md:block overflow-x-auto">
               <table className="w-full">
                 <thead className="bg-gray-50">
                   <tr className="border-b border-gray-200">
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Student
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Fellowship
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 md:table-cell">
                       Destination
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Stage
                     </th>
-                    <th className="px-6 py-3 text-center text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="hidden px-3 py-2 text-center text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 lg:table-cell">
                       Semi-Fin.
                     </th>
-                    <th className="px-6 py-3 text-center text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="hidden px-3 py-2 text-center text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 lg:table-cell">
                       Finalist
                     </th>
-                    <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Actions
                     </th>
                   </tr>
@@ -500,7 +595,7 @@ export function ApplicationsTable({
                       key={app.application_id}
                       className="transition-colors duration-150 hover:bg-gray-50"
                     >
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <Link
                           href={`/students/${app.student_id}`}
                           className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
@@ -508,7 +603,7 @@ export function ApplicationsTable({
                           {app.student?.full_name ?? "—"}
                         </Link>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <Link
                           href={`/fellowships/${app.fellowship_id}`}
                           className="text-sm text-slate-600 hover:text-[#006747] hover:underline"
@@ -516,12 +611,12 @@ export function ApplicationsTable({
                           {app.fellowship?.fellowship_name ?? "—"}
                         </Link>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="hidden whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4 md:table-cell">
                         <div className="text-sm text-slate-600">
                           {app.destination_country ?? "—"}
                         </div>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <Badge
                           variant="secondary"
                           className={`rounded-full border px-2 py-0.5 text-xs ${stageBadgeClass(app.stage_of_application)}`}
@@ -529,7 +624,7 @@ export function ApplicationsTable({
                           {app.stage_of_application}
                         </Badge>
                       </td>
-                      <td className="px-6 py-4 text-center">
+                      <td className="hidden px-3 py-3 text-center sm:px-6 sm:py-4 lg:table-cell">
                         {app.is_semi_finalist ? (
                           <Badge
                             variant="default"
@@ -541,7 +636,7 @@ export function ApplicationsTable({
                           <span className="text-xs text-slate-400">—</span>
                         )}
                       </td>
-                      <td className="px-6 py-4 text-center">
+                      <td className="hidden px-3 py-3 text-center sm:px-6 sm:py-4 lg:table-cell">
                         {app.is_finalist ? (
                           <Badge
                             variant="default"
@@ -553,7 +648,7 @@ export function ApplicationsTable({
                           <span className="text-xs text-slate-400">—</span>
                         )}
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <div className="flex items-center justify-end gap-2">
                           <Button
                             variant="ghost"
@@ -579,7 +674,8 @@ export function ApplicationsTable({
                   ))}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
@@ -799,20 +895,20 @@ function ApplicationForm({
       </div>
 
       {/* Semi-Finalist / Finalist flags */}
-      <div className="grid grid-cols-2 gap-4">
-        <label className="flex cursor-pointer items-center gap-2 rounded-md border border-gray-200 px-3 py-2 hover:bg-gray-50">
+      <div className="grid gap-4 sm:grid-cols-2">
+        <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-md border border-gray-200 px-3 py-2 hover:bg-gray-50">
           <input
             type="checkbox"
-            className="h-4 w-4 rounded accent-[#006747]"
+            className="h-5 w-5 rounded accent-[#006747]"
             checked={form.is_semi_finalist}
             onChange={(e) => onFlagChange("is_semi_finalist", e.target.checked)}
           />
           <span className="text-sm font-medium text-slate-700">Semi-Finalist</span>
         </label>
-        <label className="flex cursor-pointer items-center gap-2 rounded-md border border-gray-200 px-3 py-2 hover:bg-gray-50">
+        <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-md border border-gray-200 px-3 py-2 hover:bg-gray-50">
           <input
             type="checkbox"
-            className="h-4 w-4 rounded accent-[#006747]"
+            className="h-5 w-5 rounded accent-[#006747]"
             checked={form.is_finalist}
             onChange={(e) => onFlagChange("is_finalist", e.target.checked)}
           />

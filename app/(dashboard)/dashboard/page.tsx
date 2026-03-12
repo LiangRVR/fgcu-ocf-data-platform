@@ -407,7 +407,7 @@ export default async function DashboardPage() {
       </div>
 
       {/* ── Distributions ── */}
-      <div className="mb-4 grid gap-4 lg:grid-cols-3">
+      <div className="mb-4 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <DistributionList
           title="Applications by Stage"
           rows={distributions.appsByStage}
@@ -432,7 +432,7 @@ export default async function DashboardPage() {
       </div>
 
       {/* ── Recent activity ── */}
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 md:grid-cols-2">
         {/* Recent advising meetings */}
         <Card className="border-gray-200 shadow-sm">
           <CardHeader className="pb-2">

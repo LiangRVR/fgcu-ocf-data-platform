@@ -121,7 +121,7 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
         title={fellowship.fellowship_name}
         description={`Fellowship ID: ${fellowship.fellowship_id}`}
       >
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Link href={`/applications?add=1&fellowship_id=${fellowship.fellowship_id}`}>
             <Button size="sm" className="bg-[#006747] hover:bg-[#00563b]">
               <FilePlus className="mr-2 h-4 w-4" />
@@ -199,19 +199,19 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-gray-200 bg-gray-50">
-                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                      <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-4 sm:py-3">
                         Student
                       </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                      <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-4 sm:py-3">
                         Stage
                       </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                      <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-4 sm:py-3 md:table-cell">
                         Destination
                       </th>
-                      <th className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wide text-gray-500">
+                      <th className="hidden px-3 py-2 text-center text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-4 sm:py-3 lg:table-cell">
                         Semi-Fin.
                       </th>
-                      <th className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wide text-gray-500">
+                      <th className="hidden px-3 py-2 text-center text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-4 sm:py-3 lg:table-cell">
                         Finalist
                       </th>
                     </tr>
@@ -219,7 +219,7 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
                   <tbody className="divide-y divide-gray-100 bg-white">
                     {applications.map((app) => (
                       <tr key={app.application_id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 font-medium">
+                        <td className="px-3 py-2 font-medium sm:px-4 sm:py-3">
                           <Link
                             href={`/students/${app.student_id}`}
                             className="text-slate-900 hover:text-[#006747] hover:underline"
@@ -227,7 +227,7 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
                             {app.student?.full_name ?? `Student #${app.student_id}`}
                           </Link>
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-3 py-2 sm:px-4 sm:py-3">
                           <Badge
                             variant="secondary"
                             className={`rounded-full border px-2 py-0.5 text-xs ${stageBadgeClass(app.stage_of_application)}`}
@@ -235,10 +235,10 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
                             {app.stage_of_application}
                           </Badge>
                         </td>
-                        <td className="px-4 py-3 text-slate-600">
+                        <td className="hidden px-3 py-2 text-slate-600 sm:px-4 sm:py-3 md:table-cell">
                           {app.destination_country ?? "—"}
                         </td>
-                        <td className="px-4 py-3 text-center">
+                        <td className="hidden px-3 py-2 text-center sm:px-4 sm:py-3 lg:table-cell">
                           {app.is_semi_finalist ? (
                             <Badge className="rounded-full border border-purple-200 bg-purple-100 px-2 py-0.5 text-xs text-purple-800 hover:bg-purple-100">
                               Yes
@@ -247,7 +247,7 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
                             <span className="text-xs text-slate-400">—</span>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-center">
+                        <td className="hidden px-3 py-2 text-center sm:px-4 sm:py-3 lg:table-cell">
                           {app.is_finalist ? (
                             <Badge className="rounded-full border border-green-200 bg-green-100 px-2 py-0.5 text-xs text-green-800 hover:bg-green-100">
                               Yes

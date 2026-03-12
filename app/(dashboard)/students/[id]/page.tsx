@@ -179,7 +179,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
   return (
     <>
       <PageHeader title={student.full_name} description={`Student ID: ${student.student_id}`}>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Link href={`/applications?add=1&student_id=${student.student_id}`}>
             <Button size="sm" className="bg-[#006747] hover:bg-[#00563b]">
               <FilePlus className="mr-2 h-4 w-4" />
@@ -202,7 +202,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
       </PageHeader>
 
       {/* Summary stat strip */}
-      <div className="mb-6 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      <div className="mb-6 grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
         {[
           { label: "Applications", value: applications.length, icon: Award, color: "text-purple-600", bg: "bg-purple-50" },
           { label: "Finalists", value: finalistCount, icon: Star, color: "text-green-600", bg: "bg-green-50" },
@@ -270,8 +270,8 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                     <tr className="border-b border-gray-100">
                       <th className="pb-3 text-left font-medium text-slate-500">Fellowship</th>
                       <th className="pb-3 text-left font-medium text-slate-500">Stage</th>
-                      <th className="pb-3 text-left font-medium text-slate-500">Destination</th>
-                      <th className="pb-3 text-left font-medium text-slate-500">Status</th>
+                      <th className="hidden pb-3 text-left font-medium text-slate-500 md:table-cell">Destination</th>
+                      <th className="hidden pb-3 text-left font-medium text-slate-500 sm:table-cell">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
@@ -288,10 +288,10 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                         <td className="py-3 pr-4 text-slate-700">
                           {app.stage_of_application || "—"}
                         </td>
-                        <td className="py-3 pr-4 text-slate-700">
+                        <td className="hidden py-3 pr-4 text-slate-700 md:table-cell">
                           {app.destination_country || "—"}
                         </td>
-                        <td className="py-3">
+                        <td className="hidden py-3 sm:table-cell">
                           <div className="flex flex-wrap gap-1">
                             {app.is_finalist && (
                               <Badge className="border-blue-200 bg-blue-100 text-blue-800 hover:bg-blue-100">
@@ -361,10 +361,10 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                   <thead>
                     <tr className="border-b border-gray-100">
                       <th className="pb-3 text-left font-medium text-slate-500">Date</th>
-                      <th className="pb-3 text-left font-medium text-slate-500">Mode</th>
-                      <th className="pb-3 text-left font-medium text-slate-500">Advisor</th>
+                      <th className="hidden pb-3 text-left font-medium text-slate-500 sm:table-cell">Mode</th>
+                      <th className="hidden pb-3 text-left font-medium text-slate-500 md:table-cell">Advisor</th>
                       <th className="pb-3 text-left font-medium text-slate-500">No-Show</th>
-                      <th className="pb-3 text-left font-medium text-slate-500">Notes</th>
+                      <th className="hidden pb-3 text-left font-medium text-slate-500 lg:table-cell">Notes</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
@@ -377,10 +377,10 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                             day: "numeric",
                           })}
                         </td>
-                        <td className="py-3 pr-4 text-slate-700">
+                        <td className="hidden py-3 pr-4 text-slate-700 sm:table-cell">
                           {meeting.meeting_mode}
                         </td>
-                        <td className="py-3 pr-4">
+                        <td className="hidden py-3 pr-4 md:table-cell">
                           {meeting.advisor_id ? (
                             <Link
                               href={`/advisors/${meeting.advisor_id}`}
@@ -405,7 +405,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                             </span>
                           )}
                         </td>
-                        <td className="max-w-xs py-3 text-slate-600">
+                        <td className="hidden max-w-xs py-3 text-slate-600 lg:table-cell">
                           {meeting.notes || <span className="text-slate-400">—</span>}
                         </td>
                       </tr>

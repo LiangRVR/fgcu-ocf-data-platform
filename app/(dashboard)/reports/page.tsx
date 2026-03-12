@@ -250,8 +250,7 @@ export default async function ReportsPage() {
           ))}
         </div>
 
-        {/* ── R1 + R3: Stage pipeline & Class standing ──────────────────────── */}
-        <div className="grid gap-6 lg:grid-cols-2">
+        <div className="grid gap-6 md:grid-cols-2">
 
           {/* R1: Applications by Stage */}
           <Card className="border-gray-200 shadow-sm">
@@ -346,10 +345,10 @@ export default async function ReportsPage() {
                     <tr className="border-b border-gray-100">
                       <th className="pb-2 text-left font-medium text-slate-500">Fellowship</th>
                       <th className="pb-2 text-center font-medium text-slate-500">Apps</th>
-                      <th className="pb-2 text-center font-medium text-slate-500">Semi-Finalists</th>
+                      <th className="hidden pb-2 text-center font-medium text-slate-500 md:table-cell">Semi-Finalists</th>
                       <th className="pb-2 text-center font-medium text-slate-500">Finalists</th>
-                      <th className="pb-2 text-center font-medium text-slate-500">Awarded</th>
-                      <th className="pb-2 text-right font-medium text-slate-500">Finalist Rate</th>
+                      <th className="hidden pb-2 text-center font-medium text-slate-500 sm:table-cell">Awarded</th>
+                      <th className="hidden pb-2 text-right font-medium text-slate-500 sm:table-cell">Finalist Rate</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -364,7 +363,7 @@ export default async function ReportsPage() {
                           </Link>
                         </td>
                         <td className="py-2 text-center text-slate-500">{total}</td>
-                        <td className="py-2 text-center">
+                        <td className="hidden py-2 text-center md:table-cell">
                           {semiFinalists > 0 ? (
                             <Badge variant="outline" className="border-purple-200 bg-purple-50 text-purple-800">
                               {semiFinalists}
@@ -382,7 +381,7 @@ export default async function ReportsPage() {
                             <span className="text-slate-300">—</span>
                           )}
                         </td>
-                        <td className="py-2 text-center">
+                        <td className="hidden py-2 text-center sm:table-cell">
                           {awarded > 0 ? (
                             <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-800 font-semibold">
                               {awarded}
@@ -391,7 +390,7 @@ export default async function ReportsPage() {
                             <span className="text-slate-300">—</span>
                           )}
                         </td>
-                        <td className="py-2 text-right text-slate-500">
+                        <td className="hidden py-2 text-right text-slate-500 sm:table-cell">
                           {total > 0 ? `${Math.round((finalists / total) * 100)}%` : "—"}
                         </td>
                       </tr>
@@ -423,9 +422,9 @@ export default async function ReportsPage() {
                     <tr className="border-b border-gray-100">
                       <th className="pb-2 text-left font-medium text-slate-500">Advisor</th>
                       <th className="pb-2 text-center font-medium text-slate-500">Meetings</th>
-                      <th className="pb-2 text-center font-medium text-slate-500">Attended</th>
+                      <th className="hidden pb-2 text-center font-medium text-slate-500 sm:table-cell">Attended</th>
                       <th className="pb-2 text-center font-medium text-slate-500">No-Shows</th>
-                      <th className="pb-2 text-right font-medium text-slate-500">No-Show Rate</th>
+                      <th className="hidden pb-2 text-right font-medium text-slate-500 sm:table-cell">No-Show Rate</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -447,7 +446,7 @@ export default async function ReportsPage() {
                             )}
                           </td>
                           <td className="py-2 text-center font-medium text-slate-700">{total}</td>
-                          <td className="py-2 text-center text-slate-500">{attended}</td>
+                          <td className="hidden py-2 text-center text-slate-500 sm:table-cell">{attended}</td>
                           <td className="py-2 text-center">
                             {noShows > 0 ? (
                               <Badge variant="outline" className="border-red-200 bg-red-50 text-red-700">
@@ -457,7 +456,7 @@ export default async function ReportsPage() {
                               <span className="text-slate-300">0</span>
                             )}
                           </td>
-                          <td className="py-2 text-right">
+                          <td className="hidden py-2 text-right sm:table-cell">
                             <span className={rate >= 30 ? "font-semibold text-red-600" : "text-slate-500"}>
                               {total > 0 ? `${rate}%` : "—"}
                             </span>
@@ -495,7 +494,7 @@ export default async function ReportsPage() {
                   return (
                     <div key={month}>
                       <div className="flex items-center justify-between text-sm mb-1.5">
-                        <span className="font-medium text-slate-700 w-24">{formatMonth(month)}</span>
+                        <span className="font-medium text-slate-700 w-20 shrink-0 sm:w-24">{formatMonth(month)}</span>
                         <div className="flex gap-4 text-xs text-slate-500">
                           <span>{attended} attended</span>
                           <span className={noShows > 0 ? "text-red-500 font-medium" : ""}>
@@ -535,7 +534,7 @@ export default async function ReportsPage() {
         </Card>
 
         {/* ── R6 + R7: Gap & Funnel reports ─────────────────────────────────── */}
-        <div className="grid gap-6 lg:grid-cols-2">
+        <div className="grid gap-6 md:grid-cols-2">
 
           {/* R6: Students with advising but no application */}
           <Card className="border-gray-200 shadow-sm">
@@ -589,7 +588,7 @@ export default async function ReportsPage() {
             </CardHeader>
             <CardContent className="space-y-5">
               {data.totals.ftAttendees > 0 && (
-                <div className="flex items-center gap-4 rounded-lg bg-slate-50 px-4 py-3 text-sm border border-gray-100">
+                <div className="flex flex-wrap items-center gap-4 rounded-lg bg-slate-50 px-4 py-3 text-sm border border-gray-100">
                   <div className="text-center">
                     <p className="text-lg font-bold text-slate-900">{data.totals.ftAttendees}</p>
                     <p className="text-xs text-slate-500">FT Attendees</p>

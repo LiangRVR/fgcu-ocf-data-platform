@@ -30,7 +30,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Search, Trash2, Plus, BookOpen } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Search, Trash2, Plus, BookOpen, MoreHorizontal, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
@@ -85,6 +91,7 @@ export function ScholarshipHistoryTable({
   const [form, setForm] = useState(EMPTY_FORM);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   // Pre-fill and auto-open add dialog when arriving from a contextual link
   useEffect(() => {
@@ -195,28 +202,46 @@ export function ScholarshipHistoryTable({
       {/* Control Bar */}
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          <div className="relative w-full sm:w-72">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            <Input
-              placeholder="Search by student or fellowship…"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9"
-            />
+          <div className="flex items-center gap-2">
+            <div className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <Input
+                placeholder="Search by student or fellowship…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9"
+              />
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0 gap-1.5 xl:hidden"
+              onClick={() => setFiltersOpen((o) => !o)}
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+              Filters
+              {fellowshipFilter !== "all" && (
+                <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#006747] text-[10px] font-bold text-white">
+                  •
+                </span>
+              )}
+            </Button>
           </div>
-          <Select value={fellowshipFilter} onValueChange={setFellowshipFilter}>
-            <SelectTrigger className="w-full sm:w-48">
-              <SelectValue placeholder="All fellowships" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All fellowships</SelectItem>
-              {fellowships.map((f) => (
-                <SelectItem key={f.fellowship_id} value={String(f.fellowship_id)}>
-                  {f.fellowship_name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
+            <Select value={fellowshipFilter} onValueChange={setFellowshipFilter}>
+              <SelectTrigger className="w-full sm:w-48">
+                <SelectValue placeholder="All fellowships" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All fellowships</SelectItem>
+                {fellowships.map((f) => (
+                  <SelectItem key={f.fellowship_id} value={String(f.fellowship_id)}>
+                    {f.fellowship_name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
         <Button
           size="sm"
@@ -255,17 +280,53 @@ export function ScholarshipHistoryTable({
               )}
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+              {/* Mobile card list */}
+              <div className="md:hidden divide-y divide-gray-200">
+                {filteredRecords.map((record) => (
+                  <div key={record.history_id} className="p-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <Link
+                          href={`/students/${record.student_id}`}
+                          className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
+                        >
+                          {record.student?.full_name ?? "—"}
+                        </Link>
+                        <div className="mt-0.5 text-sm text-slate-500">
+                          <Link
+                            href={`/fellowships/${record.fellowship_id}`}
+                            className="hover:text-[#006747] hover:underline"
+                          >
+                            {record.fellowship?.fellowship_name ?? "—"}
+                          </Link>
+                        </div>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 shrink-0 text-slate-500 hover:text-red-600"
+                        title="Delete record"
+                        onClick={() => setDeleteId(record.history_id)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {/* Desktop table */}
+              <div className="hidden md:block overflow-x-auto">
               <table className="w-full">
                 <thead className="bg-gray-50">
                   <tr className="border-b border-gray-200">
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Student
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Fellowship / Scholarship
                     </th>
-                    <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
                       Actions
                     </th>
                   </tr>
@@ -276,7 +337,7 @@ export function ScholarshipHistoryTable({
                       key={record.history_id}
                       className="transition-colors duration-150 hover:bg-gray-50"
                     >
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <Link
                           href={`/students/${record.student_id}`}
                           className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
@@ -284,7 +345,7 @@ export function ScholarshipHistoryTable({
                           {record.student?.full_name ?? "—"}
                         </Link>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <Link
                           href={`/fellowships/${record.fellowship_id}`}
                           className="text-sm text-slate-600 hover:text-[#006747] hover:underline"
@@ -292,7 +353,7 @@ export function ScholarshipHistoryTable({
                           {record.fellowship?.fellowship_name ?? "—"}
                         </Link>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
+                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <div className="flex items-center justify-end">
                           <Button
                             variant="ghost"
@@ -309,7 +370,8 @@ export function ScholarshipHistoryTable({
                   ))}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
