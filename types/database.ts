@@ -63,14 +63,32 @@ export type Database = {
         Row: {
           advisor_id: number
           advisor_name: string
+          auth_user_id: string | null
+          created_at: string
+          email: string | null
+          is_active: boolean
+          last_login_at: string | null
+          role: string
         }
         Insert: {
           advisor_id?: number
           advisor_name: string
+          auth_user_id?: string | null
+          created_at?: string
+          email?: string | null
+          is_active?: boolean
+          last_login_at?: string | null
+          role?: string
         }
         Update: {
           advisor_id?: number
           advisor_name?: string
+          auth_user_id?: string | null
+          created_at?: string
+          email?: string | null
+          is_active?: boolean
+          last_login_at?: string | null
+          role?: string
         }
         Relationships: []
       }
@@ -258,7 +276,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      is_active_advisor: {
+        Args: Record<PropertyKey, never>
+        Returns: boolean
+      }
     }
     Enums: {
       [_ in never]: never

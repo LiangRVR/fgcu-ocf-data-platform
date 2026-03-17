@@ -75,23 +75,30 @@ CREATE TRIGGER trg_sync_finalist_flags
 
 ---
 
-## 3. `advisor.email` — Not Included (current decision: defer)
+## 3. `advisor` as the app user table
 
-**Current state:** `advisor` stores only `advisor_id` and `advisor_name`.
+**Current state:** `advisor` now serves both as the staff profile table and the
+authorization anchor for Supabase Auth.
 
-**Why omitted:** The OCF is a small, known team. Email was not needed for the
-first phase (read/display) of the platform.
+**Why this design:** The OCF workflow is shared across staff. Advisors need full
+shared access to students, applications, fellowships, and advising history.
+Creating a separate `users` table would add extra joins without solving a real
+problem at the current project size.
 
-**When to add it:** If the platform grows to send automated notifications
-(meeting reminders, application status updates), add a column then:
+**Implementation shape:**
 
 ```sql
 ALTER TABLE public.advisor
-  ADD COLUMN advisor_email character varying UNIQUE;
+  ADD COLUMN email text,
+  ADD COLUMN auth_user_id uuid,
+  ADD COLUMN is_active boolean NOT NULL DEFAULT true,
+  ADD COLUMN role text NOT NULL DEFAULT 'advisor',
+  ADD COLUMN created_at timestamptz NOT NULL DEFAULT now(),
+  ADD COLUMN last_login_at timestamptz;
 ```
 
-At that point, `advisor_name` should remain UNIQUE so the dropdown list stays
-unambiguous even if the email column is NULL for legacy rows.
+**Operating rule:** keep `advisor_name` UNIQUE, keep `advisor_id` as the integer
+business PK, and set `is_active = false` instead of deleting former staff.
 
 ---
 

@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { createBrowserClient } from "@supabase/ssr";
 import type { Database } from "@/types/database";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -16,7 +16,7 @@ if (!supabaseUrl || !supabaseAnonKey) {
  * Browser-side Supabase client.
  * Import this in Client Components and browser utilities.
  */
-export const supabaseBrowserClient = createClient<Database>(
+export const supabaseBrowserClient = createBrowserClient<Database>(
   supabaseUrl ?? "https://placeholder.supabase.co",
   supabaseAnonKey ?? "placeholder-anon-key"
 );

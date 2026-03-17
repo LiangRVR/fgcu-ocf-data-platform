@@ -38,12 +38,24 @@ Stores FGCU student profiles managed by the OCF.
 
 ### `advisor`
 
-Advisor names referenced by advising meetings.
+Staff profile and authorization anchor for OCF application users.
 
 | Column | Type | Nullable | Default | Notes |
 | --- | --- | --- | --- | --- |
 | `advisor_id` | integer | NO | nextval | **Primary key** |
 | `advisor_name` | varchar | NO | | UNIQUE |
+| `email` | text | YES | | Unique when populated; backfill confirmed FGCU emails before enforcing `NOT NULL` on a populated database |
+| `auth_user_id` | uuid | YES | | Unique Supabase Auth user link |
+| `is_active` | boolean | NO | `true` | Inactive advisors are denied app access but preserved for history |
+| `role` | text | NO | `'advisor'` | Reserved for future RBAC tiers |
+| `created_at` | timestamptz | NO | `now()` | Advisor profile creation time |
+| `last_login_at` | timestamptz | YES | | Last successful advisor sign-in link/update |
+
+**Business rules:**
+
+- `advisor_id` remains the business primary key and is referenced by `advising_meeting.advisor_id`.
+- Supabase Auth handles identity; `public.advisor` handles staff authorization.
+- Advisors should be marked inactive instead of deleted when they leave the office.
 
 ---
 

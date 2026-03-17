@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { PageHeader } from "@/components/layout/page-header";
+import { requireAdvisor } from "@/lib/auth/session";
 import { createServerClient } from "@/lib/supabase/server";
 import { AdvisingTable } from "@/components/advising/advising-table";
 import type { Database } from "@/types/database";
@@ -67,6 +68,7 @@ async function getAdvisors(): Promise<AdvisorRow[]> {
     const { data } = await supabase
       .from("advisor")
       .select("advisor_id, advisor_name")
+      .eq("is_active", true)
       .order("advisor_name", { ascending: true });
     return data || [];
   } catch {
@@ -75,10 +77,11 @@ async function getAdvisors(): Promise<AdvisorRow[]> {
 }
 
 export default async function AdvisingPage({ searchParams }: Props) {
+  const advisor = await requireAdvisor();
   const params = await searchParams;
   const autoOpenAdd       = params.add     === "1";
   const defaultStudentId  = params.student_id;
-  const defaultAdvisorId  = params.advisor_id;
+  const defaultAdvisorId  = params.advisor_id ?? String(advisor.advisor_id);
   const initialNoShowFilter = params.no_show === "yes" ? "yes" : undefined;
 
   const [meetings, students, advisors] = await Promise.all([
@@ -148,6 +151,7 @@ export default async function AdvisingPage({ searchParams }: Props) {
         initialMeetings={meetings}
         students={students}
         advisors={advisors}
+        currentAdvisorId={advisor.advisor_id}
         autoOpenAdd={autoOpenAdd}
         defaultStudentId={defaultStudentId}
         defaultAdvisorId={defaultAdvisorId}

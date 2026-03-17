@@ -65,6 +65,7 @@ interface AdvisingTableProps {
   initialMeetings: AdvisingMeeting[];
   students: StudentRow[];
   advisors: AdvisorRow[];
+  currentAdvisorId: number;
   defaultStudentId?: string;
   defaultAdvisorId?: string;
   autoOpenAdd?: boolean;
@@ -84,6 +85,7 @@ export function AdvisingTable({
   initialMeetings,
   students,
   advisors,
+  currentAdvisorId,
   defaultStudentId,
   defaultAdvisorId,
   autoOpenAdd,
@@ -111,12 +113,11 @@ export function AdvisingTable({
       setForm((prev) => ({
         ...prev,
         ...(defaultStudentId ? { student_id: defaultStudentId } : {}),
-        ...(defaultAdvisorId ? { advisor_id: defaultAdvisorId } : {}),
+        advisor_id: defaultAdvisorId ?? String(currentAdvisorId),
       }));
       setAddOpen(true);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [autoOpenAdd, currentAdvisorId, defaultAdvisorId, defaultStudentId]);
 
   // Debounce search
   useEffect(() => {
@@ -184,7 +185,7 @@ export function AdvisingTable({
       setMeetings((prev) => [data as AdvisingMeeting, ...prev]);
       toast.success("Meeting recorded successfully.");
       setAddOpen(false);
-      setForm(EMPTY_FORM);
+      setForm({ ...EMPTY_FORM, advisor_id: String(currentAdvisorId) });
       setFormErrors({});
     } catch (err) {
       console.error(err);
@@ -240,7 +241,7 @@ export function AdvisingTable({
       toast.success("Meeting updated successfully.");
       setEditOpen(false);
       setEditingMeeting(null);
-      setForm(EMPTY_FORM);
+      setForm({ ...EMPTY_FORM, advisor_id: String(currentAdvisorId) });
       setFormErrors({});
     } catch (err) {
       console.error(err);
@@ -273,13 +274,13 @@ export function AdvisingTable({
   };
 
   const resetAndCloseAdd = () => {
-    setForm(EMPTY_FORM);
+    setForm({ ...EMPTY_FORM, advisor_id: String(currentAdvisorId) });
     setFormErrors({});
     setAddOpen(false);
   };
 
   const resetAndCloseEdit = () => {
-    setForm(EMPTY_FORM);
+    setForm({ ...EMPTY_FORM, advisor_id: String(currentAdvisorId) });
     setFormErrors({});
     setEditingMeeting(null);
     setEditOpen(false);
@@ -344,7 +345,11 @@ export function AdvisingTable({
         <Button
           size="sm"
           className="bg-[#006747] hover:bg-[#00563b]"
-          onClick={() => setAddOpen(true)}
+          onClick={() => {
+            setForm({ ...EMPTY_FORM, advisor_id: String(currentAdvisorId) });
+            setFormErrors({});
+            setAddOpen(true);
+          }}
         >
           <CalendarPlus className="mr-2 h-4 w-4" />
           Log Meeting
@@ -370,7 +375,11 @@ export function AdvisingTable({
               {!debouncedSearch && modeFilter === "all" && noShowFilter === "all" && (
                 <Button
                   className="bg-[#006747] hover:bg-[#00563b]"
-                  onClick={() => setAddOpen(true)}
+                  onClick={() => {
+                    setForm({ ...EMPTY_FORM, advisor_id: String(currentAdvisorId) });
+                    setFormErrors({});
+                    setAddOpen(true);
+                  }}
                 >
                   <CalendarPlus className="mr-2 h-4 w-4" />
                   Log Meeting

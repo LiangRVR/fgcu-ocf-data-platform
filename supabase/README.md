@@ -31,8 +31,11 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 5. Paste into the SQL Editor
 6. Click **Run** to execute the migration
 7. Verify tables are created in **Table Editor**
-8. Repeat steps 3–6 for `supabase/migrations/20260305000001_allow_anon_read.sql` — grants anonymous key read access
-9. Repeat steps 3–6 for `supabase/migrations/20260305000002_allow_anon_write.sql` — grants anonymous key write access (required for all CRUD operations)
+8. Repeat steps 3–6 for `supabase/migrations/20260305000001_allow_anon_read.sql` — temporary bootstrap read access for local development
+9. Repeat steps 3–6 for `supabase/migrations/20260305000002_allow_anon_write.sql` — temporary bootstrap write access for local development
+10. Repeat steps 3–6 for `supabase/migrations/20260317000003_advisor_auth.sql` — adds advisor auth columns and helper function
+11. Backfill confirmed FGCU emails into `public.advisor.email` for any existing advisor rows before finalizing advisor auth on a populated database
+12. Repeat steps 3–6 for `supabase/migrations/20260317000004_active_advisor_rls.sql` — removes anon access and enables authenticated active-advisor policies
 
 ### Option B: Using Supabase CLI
 
@@ -40,7 +43,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 # Link to your project (one time)
 npx supabase link --project-ref <your-project-id>
 
-# Push all three migrations to your Supabase project
+# Push all migrations to your Supabase project
 npx supabase db push
 ```
 
@@ -126,19 +129,21 @@ If you're getting permission errors:
    ```sql
    ALTER TABLE table_name DISABLE ROW LEVEL SECURITY;
    ```
-3. Implement proper authentication with Supabase Auth
-4. Update RLS policies to match your authentication setup
+3. Confirm `public.advisor.email` contains the same email addresses used in Supabase Auth
+4. Ensure the active advisor has signed in at least once so `auth_user_id` can link to the advisor row
+5. Update RLS policies to match your authentication setup
 
 ## Next Steps
 
 1. ✅ Configure environment variables
 2. ✅ Apply database schema (`20260305000000_initial_schema.sql`)
-3. ✅ Apply anon-read policy (`20260305000001_allow_anon_read.sql`)
-4. ✅ Apply anon-write policy (`20260305000002_allow_anon_write.sql`)
-5. ✅ Generate TypeScript types
-5. ✅ Verify connection
-6. 🔄 Wire Supabase Auth — replace the mock gate in `lib/auth/mock.ts` with real `@supabase/ssr` session middleware
-7. 🔄 Customize RLS policies for authenticated users once auth is live
+3. ✅ Apply bootstrap anon-read policy (`20260305000001_allow_anon_read.sql`)
+4. ✅ Apply bootstrap anon-write policy (`20260305000002_allow_anon_write.sql`)
+5. ✅ Apply advisor auth migration (`20260317000003_advisor_auth.sql`)
+6. ✅ Backfill confirmed advisor emails in `public.advisor.email`
+7. ✅ Apply active-advisor RLS migration (`20260317000004_active_advisor_rls.sql`)
+8. ✅ Generate TypeScript types
+9. ✅ Verify connection
 
 ## Useful Commands
 
@@ -163,5 +168,6 @@ npx supabase logs
 
 - [Supabase Documentation](https://supabase.com/docs)
 - [Supabase JavaScript Client](https://supabase.com/docs/reference/javascript/introduction)
+- [Supabase SSR for Next.js](https://supabase.com/docs/guides/auth/server-side/nextjs)
 - [Row Level Security](https://supabase.com/docs/guides/auth/row-level-security)
 - [Database Migrations](https://supabase.com/docs/guides/cli/local-development#database-migrations)

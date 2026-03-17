@@ -1,4 +1,5 @@
-import { NextResponse, type NextRequest } from "next/server";
+import type { NextRequest } from "next/server";
+import { updateSession } from "@/lib/supabase/proxy";
 
 /**
  * Next.js 16 Edge Proxy — authentication routing stub.
@@ -14,11 +15,8 @@ import { NextResponse, type NextRequest } from "next/server";
  * Reference: https://supabase.com/docs/guides/auth/server-side/nextjs
  * ────────────────────────────────────────────────────────────────────
  */
-export function proxy(
-  // request will be used here once Supabase auth is wired up
-  _request: NextRequest // eslint-disable-line @typescript-eslint/no-unused-vars
-) {
-  return NextResponse.next();
+export async function proxy(request: NextRequest) {
+  return updateSession(request);
 }
 
 export const config = {
@@ -29,6 +27,6 @@ export const config = {
    * - The login page itself (prevent redirect loop)
    */
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|login).*)",
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

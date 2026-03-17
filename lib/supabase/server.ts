@@ -1,15 +1,21 @@
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import {
+  createServerClient as createSupabaseServerClient,
+  type CookieOptions,
+} from "@supabase/ssr";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { cookies } from "next/headers";
 import type { Database } from "@/types/database";
 
 /**
  * Create a Supabase client for use in Server Components and Route Handlers.
  *
- * Call this at the top of a server function so each request gets its own client.
- * This keeps the door open for per-request auth cookies via @supabase/ssr later.
+ * Call this at the top of a server function so each request gets its own
+ * cookie-aware client.
  */
 export function createServerClient(): SupabaseClient<Database> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const cookieStore = cookies();
 
   if (!supabaseUrl || !supabaseAnonKey) {
     console.warn(
@@ -18,8 +24,26 @@ export function createServerClient(): SupabaseClient<Database> {
     );
   }
 
-  return createClient<Database>(
+  return createSupabaseServerClient<Database>(
     supabaseUrl ?? "https://placeholder.supabase.co",
-    supabaseAnonKey ?? "placeholder-anon-key"
+    supabaseAnonKey ?? "placeholder-anon-key",
+    {
+      cookies: {
+        async getAll() {
+          return (await cookieStore).getAll();
+        },
+        async setAll(cookiesToSet) {
+          try {
+            const store = await cookieStore;
+
+            cookiesToSet.forEach(({ name, value, options }) => {
+              store.set(name, value, options as CookieOptions);
+            });
+          } catch {
+            // Server Components cannot always write cookies. Proxy refresh handles this.
+          }
+        },
+      },
+    }
   );
 }

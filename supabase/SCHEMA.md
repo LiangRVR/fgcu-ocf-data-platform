@@ -3,8 +3,8 @@
 > Canonical tables, keys, foreign keys, constraints, and business rules for the
 > FGCU Office of Competitive Fellowships data platform.
 >
-> Current migration: `20260305000000_initial_schema.sql`
-> RLS policies: `20260305000001_allow_anon_read.sql`
+> Current migration chain ends with `20260317000004_active_advisor_rls.sql`
+> Active auth model: Supabase Auth identity + `public.advisor` authorization
 >
 > For open design decisions (email uniqueness, stage denormalization, etc.) see
 > [`docs/schema-decisions.md`](../docs/schema-decisions.md).
@@ -15,7 +15,7 @@
 
 | Table | Purpose | PK |
 | --- | --- | --- |
-| `advisor` | OCF advisor directory | `advisor_id` |
+| `advisor` | OCF staff profile + auth anchor | `advisor_id` |
 | `fellowship` | Fellowship / scholarship programs | `fellowship_id` |
 | `student` | FGCU student profiles | `student_id` |
 | `application` | One application attempt by one student | `application_id` |
@@ -29,12 +29,18 @@ All PKs are **integer sequences** (never UUIDs). All table names are **singular*
 
 ## `advisor`
 
-**Purpose:** Reference list of OCF advisors who conduct advising sessions.
+**Purpose:** Staff profile table for OCF advisors and the app authorization anchor.
 
 | Column | Type | Null | Default | Constraint |
 | --- | --- | --- | --- | --- |
 | `advisor_id` | integer | NO | nextval | **PK** |
 | `advisor_name` | varchar | NO | — | UNIQUE |
+| `email` | text | YES | — | unique when populated |
+| `auth_user_id` | uuid | YES | — | unique when populated |
+| `is_active` | boolean | NO | `true` | |
+| `role` | text | NO | `'advisor'` | |
+| `created_at` | timestamptz | NO | `now()` | |
+| `last_login_at` | timestamptz | YES | — | |
 
 No foreign keys. Referenced by `advising_meeting.advisor_id`.
 

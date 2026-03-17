@@ -51,7 +51,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | **Framework** | Next.js 16 (App Router, Server Components) |
 | **Language** | TypeScript (strict mode) |
 | **Database** | Supabase (PostgreSQL) |
-| **Auth** | Supabase Auth (setup in progress) |
+| **Auth** | Supabase Auth + `@supabase/ssr` |
 | **Styling** | Tailwind CSS v4 |
 | **Design System** | FGCU Brand Colors + Custom Palette |
 | **UI Library** | shadcn/ui + Radix UI |
@@ -67,7 +67,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 ```
 ├── app/                    # Next.js App Router
 │   ├── (auth)/            # Authentication pages
-│   │   └── login/         # Login page (form complete, auth stub pending)
+│   │   └── login/         # Login page wired to Supabase Auth
 │   ├── (dashboard)/       # Protected dashboard pages
 │   │   ├── dashboard/     # Live overview: KPIs, distributions, recent activity
 │   │   ├── students/      # Student list (CRUD, search, sort, filter, CSV export)
@@ -90,14 +90,14 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 │   ├── layout/            # Shell, sidebar, top bar, page header
 │   └── ui/                # shadcn/ui components (buttons, cards, badges, etc.)
 ├── lib/
-│   ├── auth/              # Mock auth gate (IS_AUTHED flag — replace with real session)
+│   ├── auth/              # Server-side session helpers + advisor authorization
 │   ├── config/            # Navigation config (8 sidebar items)
-│   ├── supabase/          # Supabase clients (browser & server)
+│   ├── supabase/          # Supabase SSR clients + proxy session refresh helpers
 │   ├── utils/             # cn, format (formatDate, getInitials, formatCurrency)
 │   └── validators/        # Zod schemas (auth)
 ├── types/                 # TypeScript types (Database auto-generated, App-level)
 ├── supabase/
-│   ├── migrations/        # 20260305000000_initial_schema.sql, 20260305000001_allow_anon_read.sql, 20260305000002_allow_anon_write.sql
+│   ├── migrations/        # Initial schema plus advisor auth and active-advisor RLS migrations
 │   ├── SCHEMA.md          # Quick-reference schema table
 │   └── README.md          # Supabase setup guide
 ├── docs/                  # Project documentation
@@ -119,12 +119,14 @@ See the [full project structure details](docs/quickstart.md#project-structure) f
 The application uses Supabase for the backend. To set up the database:
 
 1. **Create a Supabase project** at [supabase.com](https://supabase.com)
-2. **Apply migration 1** — schema: paste `supabase/migrations/20260305000000_initial_schema.sql` into the SQL Editor and run
-3. **Apply migration 2** — RLS read policies: paste `supabase/migrations/20260305000001_allow_anon_read.sql` and run
-4. **Apply migration 3** — RLS write policies: paste `supabase/migrations/20260305000002_allow_anon_write.sql` and run
-   _(All three files are required. Migration 2 grants the anon key SELECT access; migration 3 grants INSERT/UPDATE/DELETE so CRUD operations work.)_
-5. **Generate types**: Run `pnpm run db:types`
-6. **Test connection**: Run `pnpm run test:connection`
+2. **Apply migration 1** — schema: run `supabase/migrations/20260305000000_initial_schema.sql`
+3. **Apply migration 2** — bootstrap anon read: run `supabase/migrations/20260305000001_allow_anon_read.sql`
+4. **Apply migration 3** — bootstrap anon write: run `supabase/migrations/20260305000002_allow_anon_write.sql`
+5. **Apply migration 4** — advisor auth support: run `supabase/migrations/20260317000003_advisor_auth.sql`
+6. **Backfill confirmed advisor emails** in `public.advisor.email` before enforcing a non-null requirement on non-empty databases
+7. **Apply migration 5** — active-advisor RLS: run `supabase/migrations/20260317000004_active_advisor_rls.sql` after verifying at least one advisor can sign in
+8. **Generate types**: Run `pnpm run db:types`
+9. **Test connection**: Run `pnpm run test:connection`
 
 For detailed instructions, see the [Supabase Setup Guide](supabase/README.md).
 
@@ -144,13 +146,14 @@ For detailed instructions, see the [Supabase Setup Guide](supabase/README.md).
 - ✅ **Professional Dashboard UI** - Neutral slate sidebar, FGCU green accents, responsive layout
 - ✅ **Semantic Status Badges** - Color-coded indicators throughout all tables
 - ✅ **FGCU Design System** - Consistent colors, typography, and spacing (see `docs/DESIGN_GUIDE.md`)
-- ✅ **Database Schema** - 7 tables, 2 SQL migrations, anon-read RLS policy
+- ✅ **Supabase SSR Auth Wiring** - Browser/server clients, proxy session refresh, protected dashboard layout, and real sign-in/sign-out flow
+- ✅ **Database Schema** - 7 core tables plus advisor-auth and active-advisor RLS migrations
 - ✅ **TypeScript Type Safety** - Full type coverage, auto-generated Supabase types
 - ✅ **Form Validation** - Zod schemas + React Hook Form on the login form; manual validation (field-level errors + consistency checks) on all CRUD dialogs throughout the dashboard
 - ✅ **Toasts** - Sonner toast notifications on all mutations
 
 ### In Progress
-- 🔄 **Supabase Auth** - Login page and form are complete; `signInWithPassword` call is stubbed and needs wiring to `@supabase/ssr` session middleware
+- 🔄 **Advisor Provisioning** - Existing advisor rows still need confirmed FGCU email backfill before the auth migration can be finalized on populated databases
 - 🔄 **Reports page** - Page exists with placeholder empty state; charts and export logic not yet built
 
 ### Planned

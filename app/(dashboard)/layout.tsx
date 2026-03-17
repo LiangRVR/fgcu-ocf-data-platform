@@ -1,22 +1,17 @@
-import { redirect } from "next/navigation";
-import { IS_AUTHED } from "@/lib/auth/mock";
+import { requireAdvisor } from "@/lib/auth/session";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 
 /**
  * Dashboard route group layout.
  *
- * Auth gate: reads `IS_AUTHED` from lib/auth/mock.ts.
- * Swap that import for a real Supabase session check when ready.
+ * The dashboard is protected by a server-side Supabase session and advisor lookup.
  */
-export default function DashboardLayout({
+export default async function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  // Server-side auth gate — replace once Supabase session is wired up
-  if (!IS_AUTHED) {
-    redirect("/login");
-  }
+  const advisor = await requireAdvisor();
 
-  return <DashboardShell>{children}</DashboardShell>;
+  return <DashboardShell advisor={advisor}>{children}</DashboardShell>;
 }

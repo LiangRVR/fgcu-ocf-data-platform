@@ -101,8 +101,11 @@ Before using the application with real data:
 
 - [ ] Supabase project created and credentials added to `.env.local`
 - [ ] Schema migration applied (`20260305000000_initial_schema.sql`)
-- [ ] Anon-read policy applied (`20260305000001_allow_anon_read.sql`)
-- [ ] Anon-write policy applied (`20260305000002_allow_anon_write.sql`)
+- [ ] Bootstrap anon-read policy applied (`20260305000001_allow_anon_read.sql`)
+- [ ] Bootstrap anon-write policy applied (`20260305000002_allow_anon_write.sql`)
+- [ ] Advisor auth migration applied (`20260317000003_advisor_auth.sql`)
+- [ ] Confirmed advisor emails backfilled in `public.advisor.email`
+- [ ] Active-advisor RLS migration applied (`20260317000004_active_advisor_rls.sql`)
 - [ ] TypeScript types regenerated if schema was modified: `pnpm run db:types`
 - [ ] Connection test passes: `pnpm run test:connection`
 - [ ] Dev server starts: `pnpm dev`
