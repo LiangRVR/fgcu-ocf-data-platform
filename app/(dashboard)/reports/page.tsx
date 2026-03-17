@@ -1,9 +1,18 @@
 import type { Metadata } from "next";
 import { PageHeader } from "@/components/layout/page-header";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import {
+  AppCard as Card,
+  AppCardContent as CardContent,
+  AppCardDescription,
+  AppCardHeader as CardHeader,
+  AppCardTitle as CardTitle,
+} from "@/components/ui/app-card";
+import { MetricBadge } from "@/components/ui/metric-badge";
+import { PageSection } from "@/components/ui/page-section";
+import { StatCard } from "@/components/ui/stat-card";
 import { createServerClient } from "@/lib/supabase/server";
 import Link from "next/link";
+import { Award, CalendarCheck, FileText, Users, UserRoundCheck } from "lucide-react";
 
 export const metadata: Metadata = { title: "Reports" };
 
@@ -226,29 +235,29 @@ export default async function ReportsPage() {
   return (
     <>
       <PageHeader
+        eyebrow="Analytics"
         title="Reports"
-        description="Cross-table insights: applications, advising, fellowships, and student engagement"
-      />
+        description="Cross-table insights for applications, advising, fellowships, and student engagement across the OCF workspace."
+      >
+        <MetricBadge tone="blue">Cross-table</MetricBadge>
+        <MetricBadge tone="slate">Live metrics</MetricBadge>
+      </PageHeader>
 
       <div className="space-y-8">
 
         {/* ── Summary stats ─────────────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-          {[
-            { label: "Total Students",    value: data.totals.students },
-            { label: "Applications",      value: data.totals.applications },
-            { label: "Advising Meetings", value: data.totals.meetings },
-            { label: "FT Attendees",      value: data.totals.ftAttendees },
-            { label: "Awards",            value: data.totals.awarded },
-          ].map(({ label, value }) => (
-            <Card key={label} className="border-gray-200 shadow-sm">
-              <CardContent className="pt-5 pb-4">
-                <p className="text-2xl font-bold text-slate-900">{value}</p>
-                <p className="text-xs text-slate-500 mt-0.5">{label}</p>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+        <PageSection
+          title="System Totals"
+          description="Top-line reporting metrics that frame the rest of the analytics surface."
+        >
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+            <StatCard title="Total Students" value={data.totals.students} description="Students on record" icon={Users} tone="blue" />
+            <StatCard title="Applications" value={data.totals.applications} description="Tracked across all stages" icon={FileText} tone="violet" />
+            <StatCard title="Advising Meetings" value={data.totals.meetings} description="Recorded advisor sessions" icon={CalendarCheck} tone="green" />
+            <StatCard title="FT Attendees" value={data.totals.ftAttendees} description="Students with attendance history" icon={UserRoundCheck} tone="slate" />
+            <StatCard title="Awards" value={data.totals.awarded} description="Applications marked awarded" icon={Award} tone="amber" />
+          </div>
+        </PageSection>
 
         <div className="grid gap-6 md:grid-cols-2">
 
@@ -258,7 +267,7 @@ export default async function ReportsPage() {
               <CardTitle className="text-base font-semibold text-slate-900">
                 Applications by Stage
               </CardTitle>
-              <p className="text-xs text-slate-500 mt-0.5">Pipeline from start to award</p>
+              <AppCardDescription>Pipeline from start to award</AppCardDescription>
             </CardHeader>
             <CardContent>
               {data.applicationsByStage.length === 0 ? (
@@ -268,9 +277,9 @@ export default async function ReportsPage() {
                   {data.applicationsByStage.map(({ stage, count }) => (
                     <li key={stage}>
                       <div className="flex items-center justify-between mb-1">
-                        <Badge variant="outline" className={stageBadgeClass(stage)}>
+                        <MetricBadge tone="slate" className={stageBadgeClass(stage)}>
                           {stage}
-                        </Badge>
+                        </MetricBadge>
                         <Link
                           href={`/applications?stage=${encodeURIComponent(stage)}`}
                           className="text-sm font-medium text-slate-700 tabular-nums hover:text-[#006747] hover:underline"
@@ -297,7 +306,7 @@ export default async function ReportsPage() {
               <CardTitle className="text-base font-semibold text-slate-900">
                 Students by Class Standing
               </CardTitle>
-              <p className="text-xs text-slate-500 mt-0.5">All enrolled students on record</p>
+              <AppCardDescription>All enrolled students on record</AppCardDescription>
             </CardHeader>
             <CardContent>
               {data.byClassStanding.length === 0 ? (
@@ -331,9 +340,9 @@ export default async function ReportsPage() {
             <CardTitle className="text-base font-semibold text-slate-900">
               Finalists &amp; Awarded Students by Fellowship
             </CardTitle>
-            <p className="text-xs text-slate-500 mt-0.5">
+            <AppCardDescription>
               How far applicants advance for each fellowship
-            </p>
+            </AppCardDescription>
           </CardHeader>
           <CardContent>
             {data.fellowshipsByFinalists.length === 0 ? (
@@ -365,27 +374,27 @@ export default async function ReportsPage() {
                         <td className="py-2 text-center text-slate-500">{total}</td>
                         <td className="hidden py-2 text-center md:table-cell">
                           {semiFinalists > 0 ? (
-                            <Badge variant="outline" className="border-purple-200 bg-purple-50 text-purple-800">
+                            <MetricBadge tone="purple" className="bg-purple-50 text-purple-800">
                               {semiFinalists}
-                            </Badge>
+                            </MetricBadge>
                           ) : (
                             <span className="text-slate-300">—</span>
                           )}
                         </td>
                         <td className="py-2 text-center">
                           {finalists > 0 ? (
-                            <Badge variant="outline" className="border-green-200 bg-green-50 text-green-800">
+                            <MetricBadge tone="green" className="bg-green-50 text-green-800">
                               {finalists}
-                            </Badge>
+                            </MetricBadge>
                           ) : (
                             <span className="text-slate-300">—</span>
                           )}
                         </td>
                         <td className="hidden py-2 text-center sm:table-cell">
                           {awarded > 0 ? (
-                            <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-800 font-semibold">
+                            <MetricBadge tone="amber" className="bg-amber-50 text-amber-900">
                               {awarded}
-                            </Badge>
+                            </MetricBadge>
                           ) : (
                             <span className="text-slate-300">—</span>
                           )}
@@ -408,9 +417,9 @@ export default async function ReportsPage() {
             <CardTitle className="text-base font-semibold text-slate-900">
               Advising Meetings by Advisor
             </CardTitle>
-            <p className="text-xs text-slate-500 mt-0.5">
+            <AppCardDescription>
               Total meetings held and no-show rates per advisor
-            </p>
+            </AppCardDescription>
           </CardHeader>
           <CardContent>
             {data.advisorActivity.length === 0 ? (
@@ -449,9 +458,9 @@ export default async function ReportsPage() {
                           <td className="hidden py-2 text-center text-slate-500 sm:table-cell">{attended}</td>
                           <td className="py-2 text-center">
                             {noShows > 0 ? (
-                              <Badge variant="outline" className="border-red-200 bg-red-50 text-red-700">
+                              <MetricBadge tone="red" className="bg-red-50 text-red-700">
                                 {noShows}
-                              </Badge>
+                              </MetricBadge>
                             ) : (
                               <span className="text-slate-300">0</span>
                             )}
@@ -477,9 +486,9 @@ export default async function ReportsPage() {
             <CardTitle className="text-base font-semibold text-slate-900">
               No-Show Trend
             </CardTitle>
-            <p className="text-xs text-slate-500 mt-0.5">
+            <AppCardDescription>
               Monthly meeting attendance over the last 6 months
-            </p>
+            </AppCardDescription>
           </CardHeader>
           <CardContent>
             {data.noShowTrend.length === 0 ? (
@@ -544,13 +553,13 @@ export default async function ReportsPage() {
                   <CardTitle className="text-base font-semibold text-slate-900">
                     Advised, No Application Yet
                   </CardTitle>
-                  <p className="text-xs text-slate-500 mt-0.5">
+                  <AppCardDescription>
                     Students who met with an advisor but haven&apos;t applied to any fellowship
-                  </p>
+                  </AppCardDescription>
                 </div>
-                <Badge variant="outline" className="shrink-0 border-amber-200 bg-amber-50 text-amber-700">
+                <MetricBadge tone="amber" className="shrink-0 bg-amber-50 text-amber-700">
                   {data.advisingNoApplication.length}
-                </Badge>
+                </MetricBadge>
               </div>
             </CardHeader>
             <CardContent>
@@ -582,9 +591,9 @@ export default async function ReportsPage() {
               <CardTitle className="text-base font-semibold text-slate-900">
                 Fellowship Thursday → Application Funnel
               </CardTitle>
-              <p className="text-xs text-slate-500 mt-0.5">
+              <AppCardDescription>
                 Outreach conversion: FT attendees who did or did not go on to apply
-              </p>
+              </AppCardDescription>
             </CardHeader>
             <CardContent className="space-y-5">
               {data.totals.ftAttendees > 0 && (

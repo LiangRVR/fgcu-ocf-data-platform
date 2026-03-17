@@ -53,7 +53,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | **Database** | Supabase (PostgreSQL) |
 | **Auth** | Supabase Auth + `@supabase/ssr` |
 | **Styling** | Tailwind CSS v4 |
-| **Design System** | FGCU Brand Colors + Custom Palette |
+| **Design System** | Neutral SaaS admin surfaces with FGCU brand accents |
 | **UI Library** | shadcn/ui + Radix UI |
 | **Typography** | Merriweather (headings) + Open Sans (body) |
 | **Forms** | React Hook Form + Zod |
@@ -80,7 +80,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 │   │   ├── advising/      # Advising session records
 │   │   ├── fellowship-thursday/ # Weekly meeting attendance
 │   │   ├── scholarship-history/ # Past scholarship awards
-│   │   └── reports/       # Placeholder (charts not yet built)
+│   │   └── reports/       # Cross-table analytics and reporting views
 │   ├── api/               # API routes
 │   │   ├── account/       # Advisor account update endpoints
 │   │   ├── auth/          # Sign-out + password recovery endpoints
@@ -152,9 +152,9 @@ For detailed instructions, see the [Supabase Setup Guide](supabase/README.md).
 - ✅ **Fellowship Thursday** - Live attendance records with student join, full CRUD table
 - ✅ **Scholarship History** - Live records with student + fellowship joins, full CRUD table
 - ✅ **Fellowships** - Live list with per-fellowship metrics (total applications, finalists, awarded) derived from the `application` table
-- ✅ **Professional Dashboard UI** - Neutral slate sidebar, FGCU green accents, responsive layout
+- ✅ **Professional Dashboard UI** - Neutral shell, restrained FGCU accents, responsive layout
 - ✅ **Semantic Status Badges** - Color-coded indicators throughout all tables
-- ✅ **FGCU Design System** - Consistent colors, typography, and spacing (see `docs/DESIGN_GUIDE.md`)
+- ✅ **FGCU Design System** - Consistent colors, typography, spacing, and shell rules (see `docs/DESIGN_GUIDE.md`)
 - ✅ **Supabase SSR Auth Wiring** - Browser/server clients, proxy session refresh, protected dashboard layout, and real sign-in/sign-out flow
 - ✅ **Advisor Account Center** - `/dashboard/account` with profile editing, password updates, advisor-scoped meeting history, and meeting-derived student roster
 - ✅ **Password Recovery Flow** - Forgot-password request page plus reset-password completion page

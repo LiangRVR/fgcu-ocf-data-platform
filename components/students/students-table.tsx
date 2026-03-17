@@ -3,10 +3,12 @@
 import { useState, useMemo, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Card, CardContent } from "@/components/ui/card";
+import { AppCard, AppCardContent } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
+import { DataToolbar } from "@/components/ui/data-toolbar";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { MetricBadge } from "@/components/ui/metric-badge";
 import {
   Select,
   SelectContent,
@@ -431,124 +433,121 @@ export function StudentsTable({
     <TooltipProvider>
       <div className="space-y-6">
         {/* Control Bar */}
-        <Card className="border-gray-200 shadow-sm">
-          <CardContent className="p-4">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              {/* Left: Search + filter toggle (mobile) / inline filters (desktop) */}
-              <div className="flex flex-col gap-3">
-                <div className="flex items-center gap-2">
-                  <div className="relative flex-1 sm:w-80">
-                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                    <Input
-                      placeholder="Search students by name, email, or ID…"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="pl-9"
-                    />
-                  </div>
-                  {/* Filters toggle — mobile only */}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="shrink-0 gap-1.5 xl:hidden"
-                    onClick={() => setFiltersOpen((o) => !o)}
-                  >
-                    <SlidersHorizontal className="h-4 w-4" />
-                    Filters
-                    {(statusFilter !== "all" || standingFilter !== "all" || majorFilter !== "all") && (
-                      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#006747] text-[10px] font-bold text-white">•</span>
-                    )}
-                  </Button>
+        <DataToolbar
+          leading={
+            <>
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1 sm:w-80">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <Input
+                    placeholder="Search students by name, email, or ID…"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pl-9"
+                  />
                 </div>
-                {/* Filter selects: collapsed on mobile, inline on sm+ */}
-                <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
-                  <Select value={statusFilter} onValueChange={setStatusFilter}>
-                    <SelectTrigger className="w-full sm:w-40">
-                      <SelectValue placeholder="All statuses" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All statuses</SelectItem>
-                      <SelectItem value="ch">CH Student</SelectItem>
-                      <SelectItem value="honors">Honors College</SelectItem>
-                      <SelectItem value="first_gen">First-Generation</SelectItem>
-                      <SelectItem value="other">Other</SelectItem>
-                    </SelectContent>
-                  </Select>
-
-                  <Select value={standingFilter} onValueChange={setStandingFilter}>
-                    <SelectTrigger className="w-full sm:w-44">
-                      <SelectValue placeholder="All standings" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All standings</SelectItem>
-                      {CLASS_STANDINGS.map((s) => (
-                        <SelectItem key={s} value={s}>{s}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-
-                  <Select value={majorFilter} onValueChange={setMajorFilter}>
-                    <SelectTrigger className="w-full sm:w-40">
-                      <SelectValue placeholder="All majors" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All majors</SelectItem>
-                      {uniqueMajors.map((major) => (
-                        <SelectItem key={major} value={major}>
-                          {major}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              {/* Right: Actions */}
-              <div className="flex gap-2">
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={handleExport}
-                  className="gap-2"
+                  className="shrink-0 gap-1.5 xl:hidden"
+                  onClick={() => setFiltersOpen((o) => !o)}
                 >
-                  <FileDown className="h-4 w-4" />
-                  Export CSV
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={() => setAddStudentOpen(true)}
-                  className="bg-[#006747] hover:bg-[#00563b]"
-                >
-                  <UserPlus className="mr-2 h-4 w-4" />
-                  Add Student
+                  <SlidersHorizontal className="h-4 w-4" />
+                  Filters
+                  {(statusFilter !== "all" || standingFilter !== "all" || majorFilter !== "all") && (
+                    <span className="flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-white">•</span>
+                  )}
                 </Button>
               </div>
-            </div>
-          </CardContent>
-        </Card>
+              <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
+                <Select value={statusFilter} onValueChange={setStatusFilter}>
+                  <SelectTrigger className="w-full sm:w-40">
+                    <SelectValue placeholder="All statuses" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All statuses</SelectItem>
+                    <SelectItem value="ch">CH Student</SelectItem>
+                    <SelectItem value="honors">Honors College</SelectItem>
+                    <SelectItem value="first_gen">First-Generation</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <Select value={standingFilter} onValueChange={setStandingFilter}>
+                  <SelectTrigger className="w-full sm:w-44">
+                    <SelectValue placeholder="All standings" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All standings</SelectItem>
+                    {CLASS_STANDINGS.map((s) => (
+                      <SelectItem key={s} value={s}>{s}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                <Select value={majorFilter} onValueChange={setMajorFilter}>
+                  <SelectTrigger className="w-full sm:w-40">
+                    <SelectValue placeholder="All majors" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All majors</SelectItem>
+                    {uniqueMajors.map((major) => (
+                      <SelectItem key={major} value={major}>
+                        {major}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </>
+          }
+          trailing={
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleExport}
+                className="gap-2"
+              >
+                <FileDown className="h-4 w-4" />
+                Export CSV
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => setAddStudentOpen(true)}
+              >
+                <UserPlus className="mr-2 h-4 w-4" />
+                Add Student
+              </Button>
+            </>
+          }
+        />
 
         {/* Students Table */}
-        <Card className="border-gray-200 shadow-sm">
-          <CardContent className="p-0">
+        <AppCard>
+          <AppCardContent className="p-0">
             {filteredAndSortedStudents.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16">
-                <div className="mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-gray-100">
-                  <Search className="h-10 w-10 text-gray-400" />
-                </div>
-                <h3 className="mb-2 text-lg font-semibold text-slate-900">
-                  No students found
-                </h3>
-                <p className="mb-4 text-sm text-slate-500">
-                  {debouncedSearch || statusFilter !== "all" || standingFilter !== "all" || majorFilter !== "all"
+              <EmptyState
+                icon={Search}
+                title="No students found"
+                description={
+                  debouncedSearch || statusFilter !== "all" || standingFilter !== "all" || majorFilter !== "all"
                     ? "Try adjusting your filters or search query."
-                    : "Get started by adding your first student."}
-                </p>
-                {(debouncedSearch || statusFilter !== "all" || standingFilter !== "all" || majorFilter !== "all") && (
-                  <Button variant="outline" onClick={handleClearFilters}>
-                    Clear filters
-                  </Button>
-                )}
-              </div>
+                    : "Get started by adding your first student."
+                }
+                action={
+                  debouncedSearch || statusFilter !== "all" || standingFilter !== "all" || majorFilter !== "all" ? (
+                    <Button variant="outline" onClick={handleClearFilters}>
+                      Clear filters
+                    </Button>
+                  ) : (
+                    <Button onClick={() => setAddStudentOpen(true)}>
+                      <UserPlus className="mr-2 h-4 w-4" />
+                      Add Student
+                    </Button>
+                  )
+                }
+              />
             ) : (
               <>
                 {/* ── Mobile card list (below md) ───────────────── */}
@@ -576,15 +575,9 @@ export function StudentsTable({
                           </div>
                           {(student.is_ch_student || student.first_gen || student.honors_college) && (
                             <div className="mt-2 flex flex-wrap gap-1">
-                              {student.is_ch_student && (
-                                <Badge className="rounded-full border border-green-200 bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 hover:bg-green-100">CH</Badge>
-                              )}
-                              {student.first_gen && (
-                                <Badge className="rounded-full border border-teal-200 bg-teal-100 px-2 py-0.5 text-xs font-medium text-teal-800 hover:bg-teal-100">First Gen</Badge>
-                              )}
-                              {student.honors_college && (
-                                <Badge className="rounded-full border border-amber-200 bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 hover:bg-amber-100">Honors</Badge>
-                              )}
+                              {student.is_ch_student && <MetricBadge tone="green">CH</MetricBadge>}
+                              {student.first_gen && <MetricBadge tone="blue">First Gen</MetricBadge>}
+                              {student.honors_college && <MetricBadge tone="amber">Honors</MetricBadge>}
                             </div>
                           )}
                         </div>
@@ -721,21 +714,9 @@ export function StudentsTable({
                           </td>
                           <td className="hidden whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4 xl:table-cell">
                             <div className="flex flex-wrap gap-1">
-                              {student.is_ch_student && (
-                                <Badge className="rounded-full border border-green-200 bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 hover:bg-green-100">
-                                  CH
-                                </Badge>
-                              )}
-                              {student.first_gen && (
-                                <Badge className="rounded-full border border-teal-200 bg-teal-100 px-2 py-0.5 text-xs font-medium text-teal-800 hover:bg-teal-100">
-                                  First Gen
-                                </Badge>
-                              )}
-                              {student.honors_college && (
-                                <Badge className="rounded-full border border-amber-200 bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 hover:bg-amber-100">
-                                  Honors
-                                </Badge>
-                              )}
+                              {student.is_ch_student && <MetricBadge tone="green">CH</MetricBadge>}
+                              {student.first_gen && <MetricBadge tone="blue">First Gen</MetricBadge>}
+                              {student.honors_college && <MetricBadge tone="amber">Honors</MetricBadge>}
                               {!student.is_ch_student && !student.first_gen && !student.honors_college && (
                                 <span className="text-sm text-slate-400">—</span>
                               )}
@@ -891,8 +872,8 @@ export function StudentsTable({
                 </div>
               </>
             )}
-          </CardContent>
-        </Card>
+          </AppCardContent>
+        </AppCard>
       </div>
 
       {/* Add Student Dialog */}
@@ -1013,7 +994,7 @@ export function StudentsTable({
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
-              <label htmlFor="is_ch_student" className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
+              <label htmlFor="is_ch_student" className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
                   type="checkbox"
                   id="is_ch_student"
@@ -1025,7 +1006,7 @@ export function StudentsTable({
                 />
                 <span className="text-sm font-medium text-slate-700">CH Student</span>
               </label>
-              <label htmlFor="first_gen" className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
+              <label htmlFor="first_gen" className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
                   type="checkbox"
                   id="first_gen"
@@ -1037,7 +1018,7 @@ export function StudentsTable({
                 />
                 <span className="text-sm font-medium text-slate-700">First Generation</span>
               </label>
-              <label htmlFor="honors_college" className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
+              <label htmlFor="honors_college" className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
                   type="checkbox"
                   id="honors_college"
@@ -1049,7 +1030,7 @@ export function StudentsTable({
                 />
                 <span className="text-sm font-medium text-slate-700">Honors College</span>
               </label>
-              <label htmlFor="us_citizen" className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
+              <label htmlFor="us_citizen" className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
                   type="checkbox"
                   id="us_citizen"
@@ -1185,7 +1166,7 @@ export function StudentsTable({
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
-              <label htmlFor="edit_is_ch_student" className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
+              <label htmlFor="edit_is_ch_student" className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
                   type="checkbox"
                   id="edit_is_ch_student"
@@ -1195,7 +1176,7 @@ export function StudentsTable({
                 />
                 <span className="text-sm font-medium text-slate-700">CH Student</span>
               </label>
-              <label htmlFor="edit_first_gen" className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
+              <label htmlFor="edit_first_gen" className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
                   type="checkbox"
                   id="edit_first_gen"
@@ -1205,7 +1186,7 @@ export function StudentsTable({
                 />
                 <span className="text-sm font-medium text-slate-700">First Generation</span>
               </label>
-              <label htmlFor="edit_honors_college" className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
+              <label htmlFor="edit_honors_college" className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
                   type="checkbox"
                   id="edit_honors_college"
@@ -1215,7 +1196,7 @@ export function StudentsTable({
                 />
                 <span className="text-sm font-medium text-slate-700">Honors College</span>
               </label>
-              <label htmlFor="edit_us_citizen" className="flex min-h-[44px] cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
+              <label htmlFor="edit_us_citizen" className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
                   type="checkbox"
                   id="edit_us_citizen"

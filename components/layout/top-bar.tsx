@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Bell, LogOut, Menu, Settings, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { NAV_ITEMS } from "@/lib/config/nav";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -31,7 +32,14 @@ function getInitials(name: string) {
 
 export function TopBar({ onMenuClick, advisorName, advisorEmail }: TopBarProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const [isSigningOut, setIsSigningOut] = useState(false);
+
+  const currentItem = NAV_ITEMS.find((item) =>
+    item.href === "/dashboard"
+      ? pathname === item.href
+      : pathname === item.href || pathname.startsWith(item.href + "/")
+  );
 
   async function handleSignOut() {
     setIsSigningOut(true);
@@ -55,39 +63,46 @@ export function TopBar({ onMenuClick, advisorName, advisorEmail }: TopBarProps) 
   }
 
   return (
-    <header className="sticky top-0 z-20 flex h-16 items-center border-b border-border bg-background px-4 lg:px-6">
+    <header className="sticky top-0 z-20 border-b border-border/70 bg-background/85 backdrop-blur-xl">
+      <div className="mx-auto flex h-16 max-w-7xl items-center gap-3 px-4 sm:px-6 lg:px-10 xl:px-12">
       {/* Mobile menu button — hidden on desktop */}
       <Button
         variant="ghost"
         size="icon"
         onClick={onMenuClick}
-        className="mr-3 lg:hidden"
+        className="lg:hidden"
         aria-label="Open sidebar"
       >
         <Menu className="h-5 w-5" />
       </Button>
 
-      {/* App name — shown on mobile since sidebar is hidden */}
-      <span className="font-semibold text-foreground lg:hidden">
-        OCF Fellowship Management
-      </span>
-
-      {/* Spacer */}
-      <div className="flex-1" />
+      <div className="min-w-0 flex-1">
+        <p className="hidden text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400 sm:block">
+          OCF Data Platform
+        </p>
+        <div className="flex items-center gap-2">
+          <span className="truncate text-sm font-semibold text-slate-900 sm:text-base">
+            {currentItem?.label ?? "Workspace"}
+          </span>
+          <span className="hidden rounded-full border border-emerald-100 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 sm:inline-flex">
+            Protected workspace
+          </span>
+        </div>
+      </div>
 
       {/* Right-side actions */}
       <div className="flex items-center gap-2">
-        <Button variant="ghost" size="icon" aria-label="Notifications">
+        <Button variant="ghost" size="icon" aria-label="Notifications" className="text-slate-500">
           <Bell className="h-5 w-5 text-muted-foreground" />
         </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="h-10 gap-3 px-2" aria-label="User menu">
+            <Button variant="ghost" className="h-11 gap-3 rounded-2xl px-2" aria-label="User menu">
               <div className="hidden text-right sm:block">
                 <div className="text-sm font-medium text-foreground">{advisorName}</div>
                 <div className="text-xs text-muted-foreground">{advisorEmail ?? "No email linked"}</div>
               </div>
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
                 {getInitials(advisorName) || <User className="h-4 w-4" />}
               </div>
             </Button>
@@ -112,6 +127,7 @@ export function TopBar({ onMenuClick, advisorName, advisorEmail }: TopBarProps) 
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+      </div>
       </div>
     </header>
   );

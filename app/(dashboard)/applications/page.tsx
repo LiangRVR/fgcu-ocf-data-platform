@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { PageHeader } from "@/components/layout/page-header";
+import { MetricBadge } from "@/components/ui/metric-badge";
 import { createServerClient } from "@/lib/supabase/server";
 import { ApplicationsTable } from "@/components/applications/applications-table";
 import type { Database } from "@/types/database";
@@ -88,13 +89,20 @@ export default async function ApplicationsPage({ searchParams }: Props) {
     getStudents(),
     getFellowships(),
   ]);
+  const finalistCount = applications.filter((application) => application.is_finalist).length;
+  const awardedCount = applications.filter((application) => application.stage_of_application === "Awarded").length;
 
   return (
     <>
       <PageHeader
+        eyebrow="Application Pipeline"
         title="Applications"
-        description="Track student fellowship applications and statuses"
-      />
+        description="Track fellowship applications from first draft through finalist and award decisions."
+      >
+        <MetricBadge tone="blue">{applications.length} total</MetricBadge>
+        <MetricBadge tone="green">{finalistCount} finalists</MetricBadge>
+        <MetricBadge tone="amber">{awardedCount} awarded</MetricBadge>
+      </PageHeader>
 
       <ApplicationsTable
         initialApplications={applications}

@@ -30,13 +30,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Search, Trash2, Plus, BookOpen, MoreHorizontal, SlidersHorizontal } from "lucide-react";
+import { Search, Trash2, Plus, BookOpen, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";

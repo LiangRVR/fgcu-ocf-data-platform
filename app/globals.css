@@ -4,61 +4,64 @@
 @import "tailwindcss";
 
 /* ── Prevent horizontal overflow on mobile ────────────────── */
-html, body {
+html,
+body {
   overflow-x: hidden;
 }
 
 /* ── shadcn/ui CSS variables ─────────────────────────────────── */
 :root {
-  /* FGCU Brand Colors */
-  --fgcu-green: 158 100% 20%; /* #006747 */
-  --fgcu-green-dark: 158 100% 17%; /* #00563b */
-  --fgcu-blue: 205 100% 18%; /* #003B5C */
-  --fgcu-gold: 45 100% 39%; /* #C99700 */
+  /* FGCU brand anchors */
+  --fgcu-green: 158 100% 20%;
+  --fgcu-green-dark: 158 100% 17%;
+  --fgcu-blue: 205 100% 18%;
+  --fgcu-gold: 45 100% 39%;
 
-  /* Neutrals */
-  --gray-dark: 0 0% 20%; /* #333333 */
-  --gray-medium: 218 11% 46%; /* #6B7280 */
-  --gray-light: 220 13% 96%; /* #F3F4F6 */
+  /* Product neutrals */
+  --gray-dark: 222 28% 14%;
+  --gray-medium: 215 16% 42%;
+  --gray-light: 210 24% 95%;
 
-  /* Base colors */
-  --background: 0 0% 100%;
-  --foreground: 0 0% 20%; /* Dark gray for text */
+  /* App surfaces */
+  --background: 48 25% 97%;
+  --foreground: 222 28% 14%;
 
   --card: 0 0% 100%;
-  --card-foreground: 0 0% 20%;
+  --card-foreground: 222 28% 14%;
 
   --popover: 0 0% 100%;
-  --popover-foreground: 0 0% 20%;
+  --popover-foreground: 222 28% 14%;
 
-  /* FGCU Green as primary */
-  --primary: 158 100% 20%; /* FGCU Green */
+  /* Actions */
+  --primary: 158 100% 20%;
   --primary-foreground: 0 0% 100%;
 
-  /* FGCU Blue as secondary */
-  --secondary: 205 100% 18%; /* FGCU Blue */
+  --secondary: 213 45% 21%;
   --secondary-foreground: 0 0% 100%;
 
-  /* Muted grays */
-  --muted: 220 13% 96%; /* Light gray */
-  --muted-foreground: 218 11% 46%; /* Medium gray */
+  /* Neutral interaction color for outlines, ghosts, and hover states */
+  --accent: 210 28% 94%;
+  --accent-foreground: 222 28% 16%;
 
-  /* FGCU Gold as accent */
-  --accent: 45 100% 39%; /* FGCU Gold */
-  --accent-foreground: 0 0% 0%; /* Black text on gold */
+  --muted: 210 22% 95%;
+  --muted-foreground: 215 16% 42%;
 
   --destructive: 0 84.2% 60.2%;
   --destructive-foreground: 0 0% 100%;
 
-  --border: 220 13% 91%;
-  --input: 220 13% 91%;
-  --ring: 158 100% 20%; /* FGCU Green */
+  --border: 214 24% 88%;
+  --input: 214 24% 88%;
+  --ring: 158 100% 20%;
 
-  /* Sidebar using FGCU Green */
-  --sidebar: 158 100% 20%; /* FGCU Green */
-  --sidebar-foreground: 0 0% 100%;
-  --sidebar-muted: 158 100% 17%; /* Darker green */
-  --sidebar-accent: 205 100% 18%; /* FGCU Blue for active items */
+  /* Shell */
+  --sidebar: 221 33% 11%;
+  --sidebar-foreground: 210 40% 96%;
+  --sidebar-muted: 221 24% 17%;
+  --sidebar-accent: 158 72% 27%;
+
+  --surface-subtle: 210 18% 96%;
+  --surface-strong: 0 0% 100%;
+  --surface-inset: 210 20% 93%;
 
   --radius: 0.5rem;
 }
@@ -109,6 +112,9 @@ html, body {
   --color-sidebar-foreground: hsl(var(--sidebar-foreground));
   --color-sidebar-muted: hsl(var(--sidebar-muted));
   --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-surface-subtle: hsl(var(--surface-subtle));
+  --color-surface-strong: hsl(var(--surface-strong));
+  --color-surface-inset: hsl(var(--surface-inset));
 
   /* Typography */
   --font-family-heading: "Merriweather", "Georgia", serif;
@@ -121,12 +127,62 @@ html, body {
 }
 
 body {
-  background-color: hsl(var(--background));
+  background:
+    radial-gradient(circle at top left, hsl(var(--fgcu-green) / 0.07), transparent 30%),
+    linear-gradient(180deg, hsl(var(--background)), hsl(var(--surface-subtle)) 100%);
   color: hsl(var(--foreground));
   font-family: var(--font-family-body);
+  min-height: 100vh;
 }
 
-h1, h2, h3, h4, h5, h6 {
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
   font-family: var(--font-family-heading);
   font-weight: 700;
+}
+
+::selection {
+  background: hsl(var(--fgcu-green) / 0.18);
+  color: hsl(var(--foreground));
+}
+
+@layer base {
+  * {
+    scroll-margin-top: 6rem;
+  }
+}
+
+@layer utilities {
+  .app-shell-surface {
+    background: linear-gradient(180deg, hsl(var(--background) / 0.96), hsl(var(--surface-subtle) / 0.92));
+  }
+
+  .app-panel {
+    background: hsl(var(--card) / 0.92);
+    backdrop-filter: blur(14px);
+    border: 1px solid hsl(var(--border) / 0.75);
+    box-shadow: 0 16px 40px -26px rgba(15, 23, 42, 0.28);
+  }
+
+  .app-panel-soft {
+    background: linear-gradient(180deg, hsl(var(--surface-strong)), hsl(var(--surface-subtle)));
+    border: 1px solid hsl(var(--border) / 0.8);
+    box-shadow: 0 12px 30px -24px rgba(15, 23, 42, 0.24);
+  }
+
+  .app-hairline {
+    border-color: hsl(var(--border) / 0.65);
+  }
+
+  .app-kicker {
+    color: hsl(var(--fgcu-green));
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
 }

@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { PageHeader } from "@/components/layout/page-header";
+import { AppCard, AppCardContent } from "@/components/ui/app-card";
+import { MetricBadge } from "@/components/ui/metric-badge";
 import { requireAdvisor } from "@/lib/auth/session";
 import { createServerClient } from "@/lib/supabase/server";
 import { AdvisingTable } from "@/components/advising/advising-table";
@@ -100,28 +102,33 @@ export default async function AdvisingPage({ searchParams }: Props) {
   return (
     <>
       <PageHeader
+        eyebrow="Advisor Activity"
         title="Advising"
-        description="Track and manage advising sessions between students and advisors"
-      />
+        description="Track advising sessions, attendance risk, and students who still need advisor contact."
+      >
+        <MetricBadge tone="blue">{meetings.length} meetings</MetricBadge>
+        <MetricBadge tone="red">{noShowCount} no-shows</MetricBadge>
+        <MetricBadge tone="amber">{neverSeenCount} never seen</MetricBadge>
+      </PageHeader>
 
       {/* Exception view pill bar */}
-      <div className="mb-6 flex flex-wrap gap-2">
+      <div className="mb-8 flex flex-wrap gap-2">
         <Link
           href="/advising"
-          className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
             !isNoShow
-              ? "bg-slate-900 text-white border-slate-900"
-              : "border-gray-200 bg-white text-slate-600 hover:border-slate-400"
+              ? "border-slate-900 bg-slate-900 text-white shadow-sm"
+              : "border-border bg-white/80 text-slate-600 hover:border-slate-400 hover:bg-white"
           }`}
         >
           All Meetings
         </Link>
         <Link
           href="/advising?no_show=yes"
-          className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
             isNoShow
-              ? "bg-red-600 text-white border-red-600"
-              : "border-red-200 bg-red-50 text-red-700 hover:border-red-400"
+              ? "border-red-600 bg-red-600 text-white shadow-sm"
+              : "border-red-200 bg-red-50/80 text-red-700 hover:border-red-400 hover:bg-red-50"
           }`}
         >
           No-Shows
@@ -131,7 +138,7 @@ export default async function AdvisingPage({ searchParams }: Props) {
         </Link>
         <Link
           href="/students?view=no-advising"
-          className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700 transition-colors hover:border-amber-400"
+          className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50/80 px-3 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:border-amber-400 hover:bg-amber-50"
         >
           Students Never Seen
           {neverSeenCount > 0 && (
@@ -141,10 +148,12 @@ export default async function AdvisingPage({ searchParams }: Props) {
       </div>
 
       {isNoShow && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-          Showing only meetings where the student did not attend.
-          <Link href="/advising" className="ml-2 underline hover:text-red-600">Clear filter</Link>
-        </div>
+        <AppCard variant="soft" className="mb-6 border-red-200/70 bg-red-50/70">
+          <AppCardContent className="flex flex-col gap-2 p-4 text-sm text-red-800 sm:flex-row sm:items-center sm:justify-between">
+            <p>Showing only meetings where the student did not attend.</p>
+            <Link href="/advising" className="font-medium underline underline-offset-4 hover:text-red-600">Clear filter</Link>
+          </AppCardContent>
+        </AppCard>
       )}
 
       <AdvisingTable

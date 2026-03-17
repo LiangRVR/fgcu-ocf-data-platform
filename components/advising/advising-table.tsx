@@ -1,10 +1,12 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { Card, CardContent } from "@/components/ui/card";
+import { AppCard, AppCardContent } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
+import { DataToolbar } from "@/components/ui/data-toolbar";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { MetricBadge } from "@/components/ui/metric-badge";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -289,103 +291,104 @@ export function AdvisingTable({
   return (
     <>
       {/* Control Bar */}
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          <div className="flex items-center gap-2">
-            <div className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <Input
-                placeholder="Search by student, advisor, notes…"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9"
-              />
+      <DataToolbar
+        className="mb-4"
+        leading={
+          <>
+            <div className="flex items-center gap-2">
+              <div className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <Input
+                  placeholder="Search by student, advisor, notes…"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0 gap-1.5 xl:hidden"
+                onClick={() => setFiltersOpen((o) => !o)}
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+                Filters
+                {(modeFilter !== "all" || noShowFilter !== "all") && (
+                  <span className="flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-white">
+                    •
+                  </span>
+                )}
+              </Button>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="shrink-0 gap-1.5 xl:hidden"
-              onClick={() => setFiltersOpen((o) => !o)}
-            >
-              <SlidersHorizontal className="h-4 w-4" />
-              Filters
-              {(modeFilter !== "all" || noShowFilter !== "all") && (
-                <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#006747] text-[10px] font-bold text-white">
-                  •
-                </span>
-              )}
-            </Button>
-          </div>
-          <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
-            <Select value={modeFilter} onValueChange={setModeFilter}>
-              <SelectTrigger className="w-full sm:w-36">
-                <SelectValue placeholder="All modes" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All modes</SelectItem>
-                {MEETING_MODES.map((m) => (
-                  <SelectItem key={m} value={m}>
-                    {m}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={noShowFilter} onValueChange={setNoShowFilter}>
-              <SelectTrigger className="w-full sm:w-36">
-                <SelectValue placeholder="All attendance" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All attendance</SelectItem>
-                <SelectItem value="no">Attended</SelectItem>
-                <SelectItem value="yes">No-show</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-        <Button
-          size="sm"
-          className="bg-[#006747] hover:bg-[#00563b]"
-          onClick={() => {
-            setForm({ ...EMPTY_FORM, advisor_id: String(currentAdvisorId) });
-            setFormErrors({});
-            setAddOpen(true);
-          }}
-        >
-          <CalendarPlus className="mr-2 h-4 w-4" />
-          Log Meeting
-        </Button>
-      </div>
+            <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
+              <Select value={modeFilter} onValueChange={setModeFilter}>
+                <SelectTrigger className="w-full sm:w-36">
+                  <SelectValue placeholder="All modes" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All modes</SelectItem>
+                  {MEETING_MODES.map((m) => (
+                    <SelectItem key={m} value={m}>
+                      {m}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={noShowFilter} onValueChange={setNoShowFilter}>
+                <SelectTrigger className="w-full sm:w-36">
+                  <SelectValue placeholder="All attendance" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All attendance</SelectItem>
+                  <SelectItem value="no">Attended</SelectItem>
+                  <SelectItem value="yes">No-show</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </>
+        }
+        trailing={
+          <Button
+            size="sm"
+            onClick={() => {
+              setForm({ ...EMPTY_FORM, advisor_id: String(currentAdvisorId) });
+              setFormErrors({});
+              setAddOpen(true);
+            }}
+          >
+            <CalendarPlus className="mr-2 h-4 w-4" />
+            Log Meeting
+          </Button>
+        }
+      />
 
       {/* Table */}
-      <Card className="border-gray-200 shadow-sm">
-        <CardContent className="p-0">
+      <AppCard>
+        <AppCardContent className="p-0">
           {filteredMeetings.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16">
-              <div className="mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-gray-100">
-                <Calendar className="h-10 w-10 text-gray-400" />
-              </div>
-              <h3 className="mb-2 text-lg font-semibold text-slate-900">
-                No meetings found
-              </h3>
-              <p className="mb-4 text-sm text-slate-500">
-                {debouncedSearch || modeFilter !== "all" || noShowFilter !== "all"
+            <EmptyState
+              icon={Calendar}
+              title="No meetings found"
+              description={
+                debouncedSearch || modeFilter !== "all" || noShowFilter !== "all"
                   ? "Try adjusting your search or filters."
-                  : "Get started by logging your first advising meeting."}
-              </p>
-              {!debouncedSearch && modeFilter === "all" && noShowFilter === "all" && (
-                <Button
-                  className="bg-[#006747] hover:bg-[#00563b]"
-                  onClick={() => {
-                    setForm({ ...EMPTY_FORM, advisor_id: String(currentAdvisorId) });
-                    setFormErrors({});
-                    setAddOpen(true);
-                  }}
-                >
-                  <CalendarPlus className="mr-2 h-4 w-4" />
-                  Log Meeting
-                </Button>
-              )}
-            </div>
+                  : "Get started by logging your first advising meeting."
+              }
+              action={
+                !debouncedSearch && modeFilter === "all" && noShowFilter === "all" ? (
+                  <Button
+                    onClick={() => {
+                      setForm({ ...EMPTY_FORM, advisor_id: String(currentAdvisorId) });
+                      setFormErrors({});
+                      setAddOpen(true);
+                    }}
+                  >
+                    <CalendarPlus className="mr-2 h-4 w-4" />
+                    Log Meeting
+                  </Button>
+                ) : undefined
+              }
+            />
           ) : (
             <>
               {/* Mobile card list */}
@@ -423,24 +426,17 @@ export function AdvisingTable({
                           </div>
                         )}
                         <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                          <Badge
-                            variant="secondary"
-                            className={`rounded-full border px-2 py-0.5 text-xs ${
-                              meeting.meeting_mode === "Virtual"
-                                ? "border-blue-200 bg-blue-100 text-blue-800"
-                                : "border-slate-200 bg-slate-100 text-slate-700"
-                            }`}
-                          >
+                          <MetricBadge tone={meeting.meeting_mode === "Virtual" ? "blue" : "slate"}>
                             {meeting.meeting_mode}
-                          </Badge>
+                          </MetricBadge>
                           {meeting.no_show ? (
-                            <Badge variant="destructive" className="rounded-full px-2 py-0.5 text-xs font-medium">
+                            <MetricBadge tone="red">
                               No-show
-                            </Badge>
+                            </MetricBadge>
                           ) : (
-                            <Badge variant="secondary" className="rounded-full border border-green-200 bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">
+                            <MetricBadge tone="green">
                               Attended
-                            </Badge>
+                            </MetricBadge>
                           )}
                         </div>
                       </div>
@@ -531,32 +527,19 @@ export function AdvisingTable({
                         </div>
                       </td>
                       <td className="hidden whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4 sm:table-cell">
-                        <Badge
-                          variant="secondary"
-                          className={`rounded-full border px-2 py-0.5 text-xs ${
-                            meeting.meeting_mode === "Virtual"
-                              ? "border-blue-200 bg-blue-100 text-blue-800"
-                              : "border-slate-200 bg-slate-100 text-slate-700"
-                          }`}
-                        >
+                        <MetricBadge tone={meeting.meeting_mode === "Virtual" ? "blue" : "slate"}>
                           {meeting.meeting_mode}
-                        </Badge>
+                        </MetricBadge>
                       </td>
                       <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         {meeting.no_show ? (
-                          <Badge
-                            variant="destructive"
-                            className="rounded-full px-2 py-0.5 text-xs font-medium"
-                          >
+                          <MetricBadge tone="red">
                             Yes
-                          </Badge>
+                          </MetricBadge>
                         ) : (
-                          <Badge
-                            variant="secondary"
-                            className="rounded-full border border-green-200 bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800"
-                          >
+                          <MetricBadge tone="green">
                             Attended
-                          </Badge>
+                          </MetricBadge>
                         )}
                       </td>
                       <td className="hidden max-w-xs px-3 py-3 sm:px-6 sm:py-4 lg:table-cell">
@@ -593,8 +576,8 @@ export function AdvisingTable({
               </div>
             </>
           )}
-        </CardContent>
-      </Card>
+        </AppCardContent>
+      </AppCard>
 
       {/* Record count */}
       {filteredMeetings.length > 0 && (

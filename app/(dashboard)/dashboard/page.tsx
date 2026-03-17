@@ -3,16 +3,24 @@ import {
   Users,
   Award,
   FileText,
-  Star,
   CalendarCheck,
-  UserCheck,
   GraduationCap,
   XCircle,
+  ArrowRight,
+  Sparkles,
 } from "lucide-react";
 import Link from "next/link";
 import { PageHeader } from "@/components/layout/page-header";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import {
+  AppCard,
+  AppCardContent,
+  AppCardDescription,
+  AppCardHeader,
+  AppCardTitle,
+} from "@/components/ui/app-card";
+import { MetricBadge } from "@/components/ui/metric-badge";
+import { PageSection } from "@/components/ui/page-section";
+import { StatCard } from "@/components/ui/stat-card";
 import { createServerClient } from "@/lib/supabase/server";
 import { formatDate } from "@/lib/utils/format";
 
@@ -159,50 +167,6 @@ async function getDashboardData() {
   };
 }
 
-// ─── sub-components ───────────────────────────────────────────────────────────
-
-function StatCard({
-  title,
-  value,
-  sub,
-  icon: Icon,
-  bg,
-  fg,
-  href,
-}: {
-  title: string;
-  value: number;
-  sub: string;
-  icon: React.ElementType;
-  bg: string;
-  fg: string;
-  href?: string;
-}) {
-  const inner = (
-    <CardContent className="p-4">
-      <div className="flex items-center gap-3">
-        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${bg}`}>
-          <Icon className={`h-5 w-5 ${fg}`} />
-        </div>
-        <div className="min-w-0">
-          <div className="text-2xl font-semibold text-slate-900">{value.toLocaleString()}</div>
-          <div className="truncate text-sm text-slate-500">{title}</div>
-          <div className="truncate text-xs text-slate-400">{sub}</div>
-        </div>
-      </div>
-    </CardContent>
-  );
-  return href ? (
-    <Link href={href}>
-      <Card className="border-gray-200 shadow-sm transition-shadow hover:shadow-md cursor-pointer">
-        {inner}
-      </Card>
-    </Link>
-  ) : (
-    <Card className="border-gray-200 shadow-sm">{inner}</Card>
-  );
-}
-
 function DistributionList({
   title,
   rows,
@@ -218,23 +182,23 @@ function DistributionList({
 }) {
   if (rows.length === 0) {
     return (
-      <Card className="border-gray-200 shadow-sm">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-semibold text-slate-700">{title}</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <AppCard>
+        <AppCardHeader className="pb-2">
+          <AppCardTitle className="text-sm font-semibold text-slate-700">{title}</AppCardTitle>
+        </AppCardHeader>
+        <AppCardContent>
           <p className="text-sm text-slate-400">No data yet.</p>
-        </CardContent>
-      </Card>
+        </AppCardContent>
+      </AppCard>
     );
   }
 
   return (
-    <Card className="border-gray-200 shadow-sm">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-semibold text-slate-700">{title}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-2.5">
+    <AppCard>
+      <AppCardHeader className="pb-2">
+        <AppCardTitle className="text-sm font-semibold text-slate-700">{title}</AppCardTitle>
+      </AppCardHeader>
+      <AppCardContent className="space-y-2.5">
         {rows.map(([label, count]) => {
           const pct = total > 0 ? Math.round((count / total) * 100) : 0;
           const href = getHref?.(label);
@@ -264,8 +228,8 @@ function DistributionList({
             <div key={label}>{inner}</div>
           );
         })}
-      </CardContent>
-    </Card>
+      </AppCardContent>
+    </AppCard>
   );
 }
 
@@ -276,171 +240,230 @@ export default async function DashboardPage() {
 
   const now = new Date();
   const monthLabel = now.toLocaleString("en-US", { month: "long", year: "numeric" });
+  const startedApplications = distributions.appsByStage.find(([label]) => label === "Started")?.[1] ?? 0;
+  const underReviewApplications = distributions.appsByStage.find(([label]) => label === "Under Review")?.[1] ?? 0;
+  const finalistRate = stats.totalApplications > 0 ? Math.round((stats.finalists / stats.totalApplications) * 100) : 0;
+  const noShowRate = stats.meetingsThisMonth > 0 ? Math.round((stats.noShows / stats.meetingsThisMonth) * 100) : 0;
 
   return (
     <>
       <PageHeader
+        eyebrow="Command Center"
         title="Dashboard"
-        description="Live overview of students, fellowships, and advising activity."
-      />
+        description="Executive overview of pipeline health, student reach, and advising activity across the OCF workspace."
+      >
+        <MetricBadge tone="green">Live data</MetricBadge>
+        <MetricBadge tone="slate">{monthLabel}</MetricBadge>
+      </PageHeader>
 
-      {/* ── Primary stat cards ── */}
-      <div className="mb-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <AppCard variant="elevated" className="mb-8 overflow-hidden">
+        <AppCardContent className="grid gap-6 p-6 sm:p-7 lg:grid-cols-[1.45fr_0.95fr] lg:items-end">
+          <div className="space-y-4">
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
+              <Sparkles className="h-3.5 w-3.5" />
+              Admissions and advising pulse
+            </div>
+            <div className="space-y-3">
+              <h2 className="max-w-2xl text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl">
+                Keep the product focused on momentum, not just counts.
+              </h2>
+              <p className="max-w-2xl text-sm leading-6 text-slate-500 sm:text-base">
+                This view prioritizes high-signal metrics, pipeline concentration, and advisor follow-up opportunities so the team can act quickly.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
+            <div className="rounded-2xl border border-border/70 bg-surface-subtle p-4">
+              <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Finalist rate</p>
+              <p className="mt-2 text-3xl font-semibold text-slate-950">{finalistRate}%</p>
+              <p className="mt-1 text-xs text-slate-500">of current applications reached finalist status</p>
+            </div>
+            <div className="rounded-2xl border border-border/70 bg-surface-subtle p-4">
+              <p className="text-xs uppercase tracking-[0.18em] text-slate-400">No-show pressure</p>
+              <p className="mt-2 text-3xl font-semibold text-slate-950">{stats.noShows}</p>
+              <p className="mt-1 text-xs text-slate-500">{noShowRate}% of meetings recorded this month were no-shows</p>
+            </div>
+          </div>
+        </AppCardContent>
+      </AppCard>
+
+      <PageSection
+        title="Executive Snapshot"
+        description="Top-line student, fellowship, application, and advising metrics with direct drill-down links."
+      >
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           title="Total Students"
-          value={stats.totalStudents}
-          sub="Tracked in the system"
+          value={stats.totalStudents.toLocaleString()}
+          description="Tracked in the system"
           icon={Users}
-          bg="bg-blue-100"
-          fg="text-blue-600"
+          tone="blue"
           href="/students"
+          trend={`${stats.chStudents} CH students`}
         />
         <StatCard
           title="Active Fellowships"
-          value={stats.totalFellowships}
-          sub="Available programs"
+          value={stats.totalFellowships.toLocaleString()}
+          description="Available programs"
           icon={Award}
-          bg="bg-amber-100"
-          fg="text-amber-600"
+          tone="amber"
           href="/fellowships"
+          trend={`${stats.finalists} active finalists`}
         />
         <StatCard
           title="Total Applications"
-          value={stats.totalApplications}
-          sub="All stages combined"
+          value={stats.totalApplications.toLocaleString()}
+          description="All stages combined"
           icon={FileText}
-          bg="bg-purple-100"
-          fg="text-purple-600"
+          tone="violet"
           href="/applications"
-        />
-        <StatCard
-          title="Finalists"
-          value={stats.finalists}
-          sub="Reached finalist stage"
-          icon={Star}
-          bg="bg-green-100"
-          fg="text-green-600"
-          href="/applications?stage=Finalist"
-        />
-        <StatCard
-          title="Semi-Finalists"
-          value={stats.semiFinalists}
-          sub="Reached semi-finalist stage"
-          icon={UserCheck}
-          bg="bg-teal-100"
-          fg="text-teal-600"
-          href="/applications?stage=Semi-Finalist"
+          trend={`${underReviewApplications} under review`}
         />
         <StatCard
           title="Advising This Month"
-          value={stats.meetingsThisMonth}
-          sub={monthLabel}
+          value={stats.meetingsThisMonth.toLocaleString()}
+          description={monthLabel}
           icon={CalendarCheck}
-          bg="bg-indigo-100"
-          fg="text-indigo-600"
+          tone="green"
           href="/advising"
+          trend={`${stats.noShows} no-shows recorded`}
         />
-      </div>
+        </div>
+      </PageSection>
 
-      {/* ── Student flag indicators ── */}
-      <div className="mb-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <PageSection
+        title="Student Signals"
+        description="Flags and advising outcomes that shape outreach, triage, and support planning."
+      >
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {[
           {
             label: "CH Students",
             count: stats.chStudents,
             icon: GraduationCap,
-            bg: "bg-sky-100",
-            fg: "text-sky-600",
+            tone: "blue",
             href: "/students?flag=ch",
           },
           {
             label: "Honors College",
             count: stats.honorsStudents,
             icon: Award,
-            bg: "bg-yellow-100",
-            fg: "text-yellow-600",
+            tone: "amber",
             href: "/students?flag=honors",
           },
           {
             label: "First-Generation",
             count: stats.firstGenStudents,
             icon: Users,
-            bg: "bg-rose-100",
-            fg: "text-rose-600",
+            tone: "violet",
             href: "/students?flag=first_gen",
           },
           {
             label: "Advising No-Shows",
             count: stats.noShows,
             icon: XCircle,
-            bg: "bg-red-100",
-            fg: "text-red-500",
+            tone: "rose",
             href: "/advising?no_show=yes",
           },
-        ].map(({ label, count, icon: Icon, bg, fg, href }) => {
+        ].map(({ label, count, icon: Icon, tone, href }) => {
           const pct =
             label !== "Advising No-Shows" && stats.totalStudentsForFlags > 0
               ? Math.round((count / stats.totalStudentsForFlags) * 100)
               : null;
-          const card = (
-            <Card className={`border-gray-200 shadow-sm${href ? " cursor-pointer transition-shadow hover:shadow-md" : ""}`}>
-              <CardContent className="flex items-center gap-3 p-4">
-                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${bg}`}>
-                  <Icon className={`h-4 w-4 ${fg}`} />
-                </div>
-                <div>
-                  <div className="text-xl font-semibold text-slate-900">
-                    {count.toLocaleString()}
-                    {pct !== null && (
-                      <span className="ml-1.5 text-sm font-normal text-slate-400">
-                        {pct}%
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-xs text-slate-500">{label}</div>
-                </div>
-              </CardContent>
-            </Card>
+          return (
+            <StatCard
+              key={label}
+              title={label}
+              value={`${count.toLocaleString()}${pct !== null ? ` · ${pct}%` : ""}`}
+              description={pct !== null ? "Share of tracked students" : "Recorded across advising history"}
+              icon={Icon}
+              tone={tone as "blue" | "amber" | "violet" | "rose"}
+              href={href}
+              trend={pct !== null ? "Student profile signal" : "Needs follow-up"}
+            />
           );
-          return href ? <Link key={label} href={href}>{card}</Link> : card;
         })}
-      </div>
+        </div>
+      </PageSection>
 
-      {/* ── Distributions ── */}
-      <div className="mb-4 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        <DistributionList
-          title="Applications by Stage"
-          rows={distributions.appsByStage}
-          total={stats.totalApplications}
-          barColor="bg-purple-500"
-          getHref={(label) => `/applications?stage=${encodeURIComponent(label)}`}
-        />
-        <DistributionList
-          title="Students by Class Standing"
-          rows={distributions.studentsByStanding}
-          total={stats.totalStudents}
-          barColor="bg-blue-500"
-          getHref={(label) => `/students?standing=${encodeURIComponent(label)}`}
-        />
-        <DistributionList
-          title="Finalists by Fellowship"
-          rows={distributions.finalistsByFellowship}
-          total={stats.finalists}
-          barColor="bg-green-500"
-          getHref={(label) => `/applications?stage=Finalist&fellowship=${encodeURIComponent(label)}`}
-        />
-      </div>
+      <PageSection
+        title="Operational Signals"
+        description="Pipeline composition, student distribution, and the places where advisor attention can move outcomes fastest."
+      >
+        <div className="grid gap-4 xl:grid-cols-[1.1fr_1.1fr_1fr]">
+          <DistributionList
+            title="Applications by Stage"
+            rows={distributions.appsByStage}
+            total={stats.totalApplications}
+            barColor="bg-purple-500"
+            getHref={(label) => `/applications?stage=${encodeURIComponent(label)}`}
+          />
+          <DistributionList
+            title="Students by Class Standing"
+            rows={distributions.studentsByStanding}
+            total={stats.totalStudents}
+            barColor="bg-blue-500"
+            getHref={(label) => `/students?standing=${encodeURIComponent(label)}`}
+          />
+          <AppCard variant="soft">
+            <AppCardHeader>
+              <AppCardTitle>Attention Needed</AppCardTitle>
+              <AppCardDescription>Prioritize these queues for advisor follow-up and pipeline movement.</AppCardDescription>
+            </AppCardHeader>
+            <AppCardContent className="space-y-3">
+              {[
+                {
+                  label: "Started applications",
+                  value: startedApplications,
+                  href: "/applications?stage=Started",
+                  tone: "purple" as const,
+                },
+                {
+                  label: "Under review",
+                  value: underReviewApplications,
+                  href: "/applications?stage=Under%20Review",
+                  tone: "blue" as const,
+                },
+                {
+                  label: "Advising no-shows",
+                  value: stats.noShows,
+                  href: "/advising?no_show=yes",
+                  tone: "red" as const,
+                },
+              ].map((item) => (
+                <Link
+                  key={item.label}
+                  href={item.href}
+                  className="flex items-center justify-between rounded-2xl border border-border/70 bg-white px-4 py-3 text-sm transition-colors hover:border-emerald-200 hover:bg-emerald-50/40"
+                >
+                  <div>
+                    <p className="font-medium text-slate-800">{item.label}</p>
+                    <p className="mt-1 text-xs text-slate-500">Open the linked workflow and act from the list view.</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <MetricBadge tone={item.tone}>{item.value}</MetricBadge>
+                    <ArrowRight className="h-4 w-4 text-slate-400" />
+                  </div>
+                </Link>
+              ))}
+            </AppCardContent>
+          </AppCard>
+        </div>
+      </PageSection>
 
-      {/* ── Recent activity ── */}
+      <PageSection
+        title="Recent Activity"
+        description="Latest advising and application activity with direct links into the student and fellowship records."
+      >
       <div className="grid gap-4 md:grid-cols-2">
         {/* Recent advising meetings */}
-        <Card className="border-gray-200 shadow-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-semibold text-slate-700">
+        <AppCard>
+          <AppCardHeader className="pb-2">
+            <AppCardTitle className="text-sm font-semibold text-slate-700">
               Recent Advising Meetings
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
+            </AppCardTitle>
+          </AppCardHeader>
+          <AppCardContent>
             {recent.meetings.length === 0 ? (
               <p className="text-sm text-slate-400">No meetings recorded yet.</p>
             ) : (
@@ -459,25 +482,25 @@ export default async function DashboardPage() {
                       </p>
                     </div>
                     {m.no_show && (
-                      <Badge variant="destructive" className="ml-2 shrink-0 text-xs">
+                      <MetricBadge tone="red" className="ml-2 shrink-0 text-xs">
                         No-show
-                      </Badge>
+                      </MetricBadge>
                     )}
                   </li>
                 ))}
               </ul>
             )}
-          </CardContent>
-        </Card>
+          </AppCardContent>
+        </AppCard>
 
         {/* Recent applications */}
-        <Card className="border-gray-200 shadow-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-semibold text-slate-700">
+        <AppCard>
+          <AppCardHeader className="pb-2">
+            <AppCardTitle className="text-sm font-semibold text-slate-700">
               Recent Applications
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
+            </AppCardTitle>
+          </AppCardHeader>
+          <AppCardContent>
             {recent.applications.length === 0 ? (
               <p className="text-sm text-slate-400">No applications recorded yet.</p>
             ) : (
@@ -499,27 +522,28 @@ export default async function DashboardPage() {
                       </Link>
                     </div>
                     <div className="ml-2 flex shrink-0 flex-col items-end gap-1">
-                      <Badge variant="outline" className="text-xs">
+                      <MetricBadge tone="slate" className="text-xs">
                         {a.stage_of_application}
-                      </Badge>
+                      </MetricBadge>
                       {a.is_finalist && (
-                        <Badge className="border-green-200 bg-green-100 text-xs text-green-800 hover:bg-green-100">
+                        <MetricBadge tone="green" className="text-xs">
                           Finalist
-                        </Badge>
+                        </MetricBadge>
                       )}
                       {!a.is_finalist && a.is_semi_finalist && (
-                        <Badge variant="secondary" className="text-xs">
+                        <MetricBadge tone="purple" className="text-xs">
                           Semi-Finalist
-                        </Badge>
+                        </MetricBadge>
                       )}
                     </div>
                   </li>
                 ))}
               </ul>
             )}
-          </CardContent>
-        </Card>
+          </AppCardContent>
+        </AppCard>
       </div>
+      </PageSection>
     </>
   );
 }

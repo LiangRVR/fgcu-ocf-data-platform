@@ -1,10 +1,12 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { Card, CardContent } from "@/components/ui/card";
+import { AppCard, AppCardContent } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
+import { DataToolbar } from "@/components/ui/data-toolbar";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { MetricBadge } from "@/components/ui/metric-badge";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -414,85 +416,81 @@ export function ApplicationsTable({
   return (
     <>
       {/* Control Bar */}
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          <div className="flex items-center gap-2">
-            <div className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <Input
-                placeholder="Search by student, fellowship, country…"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9"
-              />
+      <DataToolbar
+        className="mb-4"
+        leading={
+          <>
+            <div className="flex items-center gap-2">
+              <div className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <Input
+                  placeholder="Search by student, fellowship, country…"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0 gap-1.5 xl:hidden"
+                onClick={() => setFiltersOpen((o) => !o)}
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+                Filters
+                {stageFilter !== "all" && (
+                  <span className="flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-white">
+                    •
+                  </span>
+                )}
+              </Button>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="shrink-0 gap-1.5 xl:hidden"
-              onClick={() => setFiltersOpen((o) => !o)}
-            >
-              <SlidersHorizontal className="h-4 w-4" />
-              Filters
-              {stageFilter !== "all" && (
-                <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#006747] text-[10px] font-bold text-white">
-                  •
-                </span>
-              )}
-            </Button>
-          </div>
-          <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
-            <Select value={stageFilter} onValueChange={setStageFilter}>
-              <SelectTrigger className="w-full sm:w-44">
-                <SelectValue placeholder="All stages" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All stages</SelectItem>
-                {STAGES.map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {s}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-        <Button
-          size="sm"
-          className="bg-[#006747] hover:bg-[#00563b]"
-          onClick={() => setAddOpen(true)}
-        >
-          <FilePlus className="mr-2 h-4 w-4" />
-          New Application
-        </Button>
-      </div>
+            <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
+              <Select value={stageFilter} onValueChange={setStageFilter}>
+                <SelectTrigger className="w-full sm:w-44">
+                  <SelectValue placeholder="All stages" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All stages</SelectItem>
+                  {STAGES.map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {s}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </>
+        }
+        trailing={
+          <Button size="sm" onClick={() => setAddOpen(true)}>
+            <FilePlus className="mr-2 h-4 w-4" />
+            New Application
+          </Button>
+        }
+      />
 
       {/* Applications Table */}
-      <Card className="border-gray-200 shadow-sm">
-        <CardContent className="p-0">
+      <AppCard>
+        <AppCardContent className="p-0">
           {filteredApplications.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16">
-              <div className="mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-gray-100">
-                <FileText className="h-10 w-10 text-gray-400" />
-              </div>
-              <h3 className="mb-2 text-lg font-semibold text-slate-900">
-                No applications found
-              </h3>
-              <p className="mb-4 text-sm text-slate-500">
-                {debouncedSearch || stageFilter !== "all"
+            <EmptyState
+              icon={FileText}
+              title="No applications found"
+              description={
+                debouncedSearch || stageFilter !== "all"
                   ? "Try adjusting your search or stage filter."
-                  : "Get started by creating your first application."}
-              </p>
-              {!debouncedSearch && stageFilter === "all" && (
-                <Button
-                  className="bg-[#006747] hover:bg-[#00563b]"
-                  onClick={() => setAddOpen(true)}
-                >
-                  <FilePlus className="mr-2 h-4 w-4" />
-                  New Application
-                </Button>
-              )}
-            </div>
+                  : "Get started by creating your first application."
+              }
+              action={
+                !debouncedSearch && stageFilter === "all" ? (
+                  <Button onClick={() => setAddOpen(true)}>
+                    <FilePlus className="mr-2 h-4 w-4" />
+                    New Application
+                  </Button>
+                ) : undefined
+              }
+            />
           ) : (
             <>
               {/* Mobile card list */}
@@ -519,22 +517,11 @@ export function ApplicationsTable({
                           <div className="mt-0.5 text-xs text-slate-400">{app.destination_country}</div>
                         )}
                         <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                          <Badge
-                            variant="secondary"
-                            className={`rounded-full border px-2 py-0.5 text-xs ${stageBadgeClass(app.stage_of_application)}`}
-                          >
+                          <MetricBadge tone={app.stage_of_application === "Awarded" ? "amber" : app.stage_of_application === "Finalist" ? "green" : app.stage_of_application === "Semi-Finalist" ? "purple" : app.stage_of_application === "Rejected" ? "red" : app.stage_of_application === "Under Review" ? "amber" : app.stage_of_application === "Submitted" ? "blue" : "slate"} className={stageBadgeClass(app.stage_of_application)}>
                             {app.stage_of_application}
-                          </Badge>
-                          {app.is_semi_finalist && (
-                            <Badge variant="default" className="rounded-full border border-purple-200 bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800 hover:bg-purple-100">
-                              Semi-Fin.
-                            </Badge>
-                          )}
-                          {app.is_finalist && (
-                            <Badge variant="default" className="rounded-full border border-green-200 bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 hover:bg-green-100">
-                              Finalist
-                            </Badge>
-                          )}
+                          </MetricBadge>
+                          {app.is_semi_finalist && <MetricBadge tone="purple">Semi-Fin.</MetricBadge>}
+                          {app.is_finalist && <MetricBadge tone="green">Finalist</MetricBadge>}
                         </div>
                       </div>
                       <DropdownMenu>
@@ -617,33 +604,20 @@ export function ApplicationsTable({
                         </div>
                       </td>
                       <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
-                        <Badge
-                          variant="secondary"
-                          className={`rounded-full border px-2 py-0.5 text-xs ${stageBadgeClass(app.stage_of_application)}`}
-                        >
+                        <MetricBadge tone={app.stage_of_application === "Awarded" ? "amber" : app.stage_of_application === "Finalist" ? "green" : app.stage_of_application === "Semi-Finalist" ? "purple" : app.stage_of_application === "Rejected" ? "red" : app.stage_of_application === "Under Review" ? "amber" : app.stage_of_application === "Submitted" ? "blue" : "slate"} className={stageBadgeClass(app.stage_of_application)}>
                           {app.stage_of_application}
-                        </Badge>
+                        </MetricBadge>
                       </td>
                       <td className="hidden px-3 py-3 text-center sm:px-6 sm:py-4 lg:table-cell">
                         {app.is_semi_finalist ? (
-                          <Badge
-                            variant="default"
-                            className="rounded-full border border-purple-200 bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800 hover:bg-purple-100"
-                          >
-                            Yes
-                          </Badge>
+                          <MetricBadge tone="purple">Yes</MetricBadge>
                         ) : (
                           <span className="text-xs text-slate-400">—</span>
                         )}
                       </td>
                       <td className="hidden px-3 py-3 text-center sm:px-6 sm:py-4 lg:table-cell">
                         {app.is_finalist ? (
-                          <Badge
-                            variant="default"
-                            className="rounded-full border border-green-200 bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 hover:bg-green-100"
-                          >
-                            Yes
-                          </Badge>
+                          <MetricBadge tone="green">Yes</MetricBadge>
                         ) : (
                           <span className="text-xs text-slate-400">—</span>
                         )}
@@ -677,8 +651,8 @@ export function ApplicationsTable({
               </div>
             </>
           )}
-        </CardContent>
-      </Card>
+        </AppCardContent>
+      </AppCard>
 
       {/* Pagination summary */}
       {filteredApplications.length > 0 && (
