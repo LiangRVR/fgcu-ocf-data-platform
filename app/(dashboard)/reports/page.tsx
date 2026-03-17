@@ -348,7 +348,32 @@ export default async function ReportsPage() {
             {data.fellowshipsByFinalists.length === 0 ? (
               <p className="text-sm text-slate-400">No data yet.</p>
             ) : (
-              <div className="overflow-x-auto">
+              <>
+                <div className="space-y-3 md:hidden">
+                  {data.fellowshipsByFinalists.map(({ id, name, total, semiFinalists, finalists, awarded }) => (
+                    <div key={id} className="rounded-2xl border border-border/70 bg-surface-subtle/70 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <Link
+                          href={`/fellowships/${id}`}
+                          className="min-w-0 text-sm font-semibold text-slate-800 hover:text-primary hover:underline"
+                        >
+                          <span className="line-clamp-2">{name}</span>
+                        </Link>
+                        <MetricBadge tone="slate">{total} apps</MetricBadge>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <MetricBadge tone="purple">{semiFinalists} semi</MetricBadge>
+                        <MetricBadge tone="green">{finalists} finalists</MetricBadge>
+                        <MetricBadge tone="amber">{awarded} awarded</MetricBadge>
+                        <MetricBadge tone="slate">
+                          {total > 0 ? `${Math.round((finalists / total) * 100)}% finalist rate` : "No rate yet"}
+                        </MetricBadge>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="hidden overflow-x-auto md:block">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-gray-100">
@@ -406,7 +431,8 @@ export default async function ReportsPage() {
                     ))}
                   </tbody>
                 </table>
-              </div>
+                </div>
+              </>
             )}
           </CardContent>
         </Card>
@@ -425,7 +451,38 @@ export default async function ReportsPage() {
             {data.advisorActivity.length === 0 ? (
               <p className="text-sm text-slate-400">No advising data yet.</p>
             ) : (
-              <div className="overflow-x-auto">
+              <>
+                <div className="space-y-3 md:hidden">
+                  {data.advisorActivity.map(({ id, name, total, noShows }) => {
+                    const attended = total - noShows;
+                    const rate = total > 0 ? Math.round((noShows / total) * 100) : 0;
+
+                    return (
+                      <div key={name} className="rounded-2xl border border-border/70 bg-surface-subtle/70 p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          {id != null ? (
+                            <Link
+                              href={`/advisors/${id}`}
+                              className="text-sm font-semibold text-slate-800 hover:text-primary hover:underline"
+                            >
+                              {name}
+                            </Link>
+                          ) : (
+                            <span className="text-sm font-semibold italic text-slate-500">{name}</span>
+                          )}
+                          <MetricBadge tone="slate">{total} meetings</MetricBadge>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <MetricBadge tone="green">{attended} attended</MetricBadge>
+                          <MetricBadge tone={noShows > 0 ? "red" : "slate"}>{noShows} no-shows</MetricBadge>
+                          <MetricBadge tone={rate >= 30 ? "red" : "slate"}>{total > 0 ? `${rate}% rate` : "No rate yet"}</MetricBadge>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="hidden overflow-x-auto md:block">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-gray-100">
@@ -475,7 +532,8 @@ export default async function ReportsPage() {
                     })}
                   </tbody>
                 </table>
-              </div>
+                </div>
+              </>
             )}
           </CardContent>
         </Card>
@@ -502,9 +560,9 @@ export default async function ReportsPage() {
                   const nsBarW   = total > 0 ? Math.round((noShows  / total) * 100) : 0;
                   return (
                     <div key={month}>
-                      <div className="flex items-center justify-between text-sm mb-1.5">
-                        <span className="font-medium text-slate-700 w-20 shrink-0 sm:w-24">{formatMonth(month)}</span>
-                        <div className="flex gap-4 text-xs text-slate-500">
+                      <div className="mb-1.5 flex flex-col gap-2 text-sm sm:flex-row sm:items-center sm:justify-between">
+                        <span className="font-medium text-slate-700">{formatMonth(month)}</span>
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
                           <span>{attended} attended</span>
                           <span className={noShows > 0 ? "text-red-500 font-medium" : ""}>
                             {noShows} no-show{noShows !== 1 ? "s" : ""} ({nsPct}%)
@@ -597,12 +655,12 @@ export default async function ReportsPage() {
             </CardHeader>
             <CardContent className="space-y-5">
               {data.totals.ftAttendees > 0 && (
-                <div className="flex flex-wrap items-center gap-4 rounded-lg bg-slate-50 px-4 py-3 text-sm border border-gray-100">
+                <div className="grid grid-cols-2 gap-4 rounded-lg border border-gray-100 bg-slate-50 px-4 py-3 text-sm sm:flex sm:flex-wrap sm:items-center">
                   <div className="text-center">
                     <p className="text-lg font-bold text-slate-900">{data.totals.ftAttendees}</p>
                     <p className="text-xs text-slate-500">FT Attendees</p>
                   </div>
-                  <div className="text-slate-300 text-lg">→</div>
+                  <div className="hidden text-lg text-slate-300 sm:block">→</div>
                   <div className="text-center">
                     <p className="text-lg font-bold text-[#006747]">{data.ftThenApplied.length}</p>
                     <p className="text-xs text-slate-500">Applied</p>
@@ -611,7 +669,7 @@ export default async function ReportsPage() {
                     <p className="text-lg font-bold text-amber-600">{data.ftNotYetApplied.length}</p>
                     <p className="text-xs text-slate-500">Not Yet</p>
                   </div>
-                  <div className="ml-auto text-right">
+                  <div className="col-span-2 border-t border-gray-200 pt-3 text-center sm:ml-auto sm:border-t-0 sm:pt-0 sm:text-right">
                     <p className="text-lg font-bold text-slate-700">
                       {Math.round((data.ftThenApplied.length / data.totals.ftAttendees) * 100)}%
                     </p>
@@ -619,7 +677,7 @@ export default async function ReportsPage() {
                   </div>
                 </div>
               )}
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <p className="text-xs font-medium text-[#006747] mb-1.5">
                     ✓ Applied ({data.ftThenApplied.length})

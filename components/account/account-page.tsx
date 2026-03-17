@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { parseISO, isSameMonth } from "date-fns";
 import {
+  Activity,
   CalendarRange,
   KeyRound,
   Mail,
@@ -14,15 +15,18 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
-import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import {
-  AppCard as Card,
-  AppCardContent as CardContent,
-  AppCardDescription as CardDescription,
-  AppCardHeader as CardHeader,
-  AppCardTitle as CardTitle,
+  AppCard,
+  AppCardContent,
+  AppCardDescription,
+  AppCardHeader,
+  AppCardTitle,
 } from "@/components/ui/app-card";
+import { DataToolbar } from "@/components/ui/data-toolbar";
+import { DetailSection } from "@/components/ui/detail-section";
+import { EmptyState } from "@/components/ui/empty-state";
+import { EntityHeader } from "@/components/ui/entity-header";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { MetricBadge } from "@/components/ui/metric-badge";
@@ -33,7 +37,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { StatCard } from "@/components/ui/stat-card";
 import type { Advisor } from "@/lib/auth/session";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
 import { formatDate } from "@/lib/utils/format";
@@ -143,6 +146,21 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
       noShowCount,
     };
   }, [filteredMeetings]);
+
+  const totalNoShows = useMemo(
+    () => initialMeetings.filter((meeting) => meeting.no_show).length,
+    [initialMeetings]
+  );
+
+  const advisorMeta = [
+    advisor.email ? { label: "Email", value: advisor.email } : null,
+    {
+      label: "Last login",
+      value: advisor.last_login_at
+        ? formatDate(advisor.last_login_at, "MMM d, yyyy h:mm a")
+        : "Not recorded yet",
+    },
+  ].filter(Boolean) as Array<{ label: string; value: string }>;
 
   const filteredStudents = useMemo(() => {
     const search = studentSearch.trim().toLowerCase();
@@ -273,45 +291,79 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        eyebrow="Advisor Workspace"
-        title="My Account"
-        description="Manage your advisor profile, security settings, meeting history, and the students you have advised."
-      >
-        <MetricBadge tone="blue">{initialMeetings.length} meetings</MetricBadge>
-        <MetricBadge tone="green">{initialStudents.length} students</MetricBadge>
-        <MetricBadge tone="slate">{advisor.role}</MetricBadge>
-        <div className="flex flex-wrap gap-2">
-          <Button asChild variant="outline" size="sm">
-            <a href="#profile">Profile</a>
-          </Button>
-          <Button asChild variant="outline" size="sm">
-            <a href="#security">Security</a>
-          </Button>
-          <Button asChild variant="outline" size="sm">
-            <a href="#meetings">My meetings</a>
-          </Button>
-          <Button asChild variant="outline" size="sm">
-            <a href="#students">My students</a>
-          </Button>
-        </div>
-      </PageHeader>
+      <EntityHeader
+        kicker="Advisor Workspace"
+        title={advisor.advisor_name}
+        description="Manage your advisor profile, security settings, meeting history, and the students you have advised from one shared workspace."
+        badges={
+          <>
+            <MetricBadge tone={advisor.is_active ? "green" : "red"}>
+              {advisor.is_active ? "Active" : "Inactive"}
+            </MetricBadge>
+            <MetricBadge tone="slate">{advisor.role}</MetricBadge>
+            <MetricBadge tone="blue">{initialMeetings.length} meetings</MetricBadge>
+            <MetricBadge tone="green">{initialStudents.length} students</MetricBadge>
+          </>
+        }
+        meta={
+          <>
+            {advisorMeta.map((item) => (
+              <span key={item.label} className="inline-flex items-center gap-2">
+                {item.label === "Email" ? <Mail className="h-4 w-4" /> : <Activity className="h-4 w-4" />}
+                <span className="font-medium text-slate-700">{item.label}:</span>
+                <span>{item.value}</span>
+              </span>
+            ))}
+          </>
+        }
+        actions={
+          <>
+            <Button asChild variant="outline" size="sm">
+              <a href="#profile">Profile</a>
+            </Button>
+            <Button asChild variant="outline" size="sm">
+              <a href="#security">Security</a>
+            </Button>
+            <Button asChild variant="outline" size="sm">
+              <a href="#meetings">My meetings</a>
+            </Button>
+            <Button asChild variant="outline" size="sm">
+              <a href="#students">My students</a>
+            </Button>
+          </>
+        }
+        summary={
+          <>
+            {[
+              { label: "Total Meetings", value: initialMeetings.length },
+              { label: "Meetings This Month", value: meetingStats.meetingsThisMonth },
+              { label: "Students Advised", value: initialStudents.length },
+              { label: "No-Shows", value: totalNoShows },
+            ].map((item) => (
+              <div key={item.label} className="rounded-2xl border border-border/70 bg-surface-subtle px-4 py-3">
+                <p className="text-xs uppercase tracking-[0.16em] text-slate-400">{item.label}</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-950">{item.value}</p>
+              </div>
+            ))}
+          </>
+        }
+      />
 
-      <section id="profile" className="scroll-mt-24 space-y-4">
-        <div className="flex items-center gap-2">
-          <UserCircle2 className="h-5 w-5 text-[#006747]" />
-          <h2 className="text-lg font-semibold text-slate-900">Profile</h2>
-        </div>
-
-        <div className="grid gap-4 xl:grid-cols-[1.2fr,0.8fr]">
-          <Card>
-            <CardHeader>
-              <CardTitle>Update your profile</CardTitle>
-              <CardDescription>
-                You can change your display name and email here. Role and active status stay admin-controlled.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
+      <section id="profile" className="scroll-mt-24">
+        <DetailSection
+          title="Profile"
+          description="Update your advisor identity and review the core account fields this workspace uses."
+          icon={<UserCircle2 className="h-5 w-5" />}
+        >
+          <div className="grid gap-4 xl:grid-cols-[1.2fr,0.8fr]">
+            <AppCard variant="inset">
+              <AppCardHeader>
+                <AppCardTitle>Update your profile</AppCardTitle>
+                <AppCardDescription>
+                  You can change your display name and email here. Role and active status stay admin-controlled.
+                </AppCardDescription>
+              </AppCardHeader>
+              <AppCardContent>
               <form className="space-y-4" onSubmit={handleProfileSubmit} noValidate>
                 <div className="space-y-1.5">
                   <Label htmlFor="advisorName">Advisor name</Label>
@@ -361,25 +413,25 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
                   {isSavingProfile ? "Saving profile..." : "Save profile"}
                 </Button>
               </form>
-            </CardContent>
-          </Card>
+              </AppCardContent>
+            </AppCard>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Account summary</CardTitle>
-              <CardDescription>
-                These fields define your current advisor identity in the platform.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
-              <div className="rounded-lg border bg-slate-50 p-4">
+            <AppCard variant="soft">
+              <AppCardHeader>
+                <AppCardTitle>Account summary</AppCardTitle>
+                <AppCardDescription>
+                  These fields define your current advisor identity in the platform.
+                </AppCardDescription>
+              </AppCardHeader>
+              <AppCardContent className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
+                <div className="rounded-2xl border border-border/70 bg-white/80 p-4">
                 <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Role</div>
                 <div className="mt-2 flex items-center gap-2">
                   <MetricBadge tone="slate">{advisor.role}</MetricBadge>
                   <span className="text-xs text-muted-foreground">Admin-controlled</span>
                 </div>
               </div>
-              <div className="rounded-lg border bg-slate-50 p-4">
+                <div className="rounded-2xl border border-border/70 bg-white/80 p-4">
                 <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Status</div>
                 <div className="mt-2 flex items-center gap-2">
                   <MetricBadge tone={advisor.is_active ? "green" : "red"}>
@@ -388,35 +440,35 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
                   <span className="text-xs text-muted-foreground">Admin-controlled</span>
                 </div>
               </div>
-              <div className="rounded-lg border bg-slate-50 p-4">
+                <div className="rounded-2xl border border-border/70 bg-white/80 p-4">
                 <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Last login</div>
                 <div className="mt-2 text-sm text-slate-900">
                   {advisor.last_login_at ? formatDate(advisor.last_login_at, "MMM d, yyyy h:mm a") : "Not recorded yet"}
                 </div>
               </div>
-              <div className="rounded-lg border bg-slate-50 p-4">
+                <div className="rounded-2xl border border-border/70 bg-white/80 p-4">
                 <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Profile email</div>
                 <div className="mt-2 text-sm text-slate-900">{advisor.email ?? "No email linked"}</div>
               </div>
-            </CardContent>
-          </Card>
-        </div>
+              </AppCardContent>
+            </AppCard>
+          </div>
+        </DetailSection>
       </section>
 
-      <section id="security" className="scroll-mt-24 space-y-4">
-        <div className="flex items-center gap-2">
-          <Shield className="h-5 w-5 text-[#006747]" />
-          <h2 className="text-lg font-semibold text-slate-900">Security</h2>
-        </div>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Change your password</CardTitle>
-            <CardDescription>
+      <section id="security" className="scroll-mt-24">
+        <DetailSection
+          title="Security"
+          description="Change your password using the active advisor session already attached to this workspace."
+          icon={<Shield className="h-5 w-5" />}
+        >
+          <div className="space-y-4">
+            <div>
+              <h3 className="text-sm font-medium text-slate-900">Change your password</h3>
+              <p className="mt-1 text-sm text-slate-500">
               This uses your current signed-in session. Forgot-password recovery stays available from the login page.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
+              </p>
+            </div>
             <form className="grid gap-4 lg:grid-cols-[1fr,1fr,auto] lg:items-end" onSubmit={handlePasswordSubmit} noValidate>
               <div className="space-y-1.5">
                 <Label htmlFor="newPassword">New password</Label>
@@ -468,133 +520,127 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
             <p className="mt-3 text-xs text-muted-foreground">
               Current-password verification is deferred in this first release. The flow relies on your active session plus password validation.
             </p>
-          </CardContent>
-        </Card>
+          </div>
+        </DetailSection>
       </section>
 
-      <section id="meetings" className="scroll-mt-24 space-y-4">
-        <div className="flex items-center gap-2">
-          <CalendarRange className="h-5 w-5 text-[#006747]" />
-          <h2 className="text-lg font-semibold text-slate-900">My meetings</h2>
-        </div>
+      <section id="meetings" className="scroll-mt-24">
+        <DetailSection
+          title="My meetings"
+          description="Filter your advising sessions by student, date range, meeting mode, or no-show status."
+          icon={<CalendarRange className="h-5 w-5" />}
+          actions={<MetricBadge tone="blue">{filteredMeetings.length} visible</MetricBadge>}
+        >
+          <div className="space-y-4">
+            <DataToolbar
+              leading={
+                <>
+                  <div className="relative min-w-0 flex-1 sm:max-w-sm">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <Input
+                      id="meetingSearch"
+                      placeholder="Search student name"
+                      className="pl-9"
+                      value={meetingSearch}
+                      onChange={(event) => setMeetingSearch(event.target.value)}
+                    />
+                  </div>
 
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <StatCard title="Total Meetings" value={meetingStats.totalMeetings} description="Filtered advising sessions" icon={CalendarRange} tone="blue" />
-          <StatCard title="This Month" value={meetingStats.meetingsThisMonth} description="Meetings in the current month" icon={CalendarRange} tone="green" />
-          <StatCard title="Students Advised" value={meetingStats.uniqueStudents} description="Unique students in the filtered set" icon={Users} tone="violet" />
-          <StatCard title="No-Shows" value={meetingStats.noShowCount} description="Attendance issues requiring follow-up" icon={Shield} tone="amber" />
-        </div>
+                  <Select value={meetingMode} onValueChange={setMeetingMode}>
+                    <SelectTrigger className="w-full sm:w-40">
+                      <SelectValue placeholder="All modes" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All modes</SelectItem>
+                      <SelectItem value="In-Person">In-Person</SelectItem>
+                      <SelectItem value="Virtual">Virtual</SelectItem>
+                    </SelectContent>
+                  </Select>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Meeting history</CardTitle>
-            <CardDescription>
-              Filter your advising sessions by student, date range, meeting mode, or no-show status.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-3 lg:grid-cols-[1.2fr,0.8fr,0.8fr,0.8fr,0.8fr]">
-              <div className="space-y-1.5">
-                <Label htmlFor="meetingSearch">Search by student</Label>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                  <Input
-                    id="meetingSearch"
-                    placeholder="Search student name"
-                    className="pl-9"
-                    value={meetingSearch}
-                    onChange={(event) => setMeetingSearch(event.target.value)}
-                  />
-                </div>
-              </div>
+                  <Select value={meetingAttendance} onValueChange={setMeetingAttendance}>
+                    <SelectTrigger className="w-full sm:w-40">
+                      <SelectValue placeholder="All meetings" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All meetings</SelectItem>
+                      <SelectItem value="attended">Attended only</SelectItem>
+                      <SelectItem value="no-show">No-shows only</SelectItem>
+                    </SelectContent>
+                  </Select>
 
-              <div className="space-y-1.5">
-                <Label>Meeting mode</Label>
-                <Select value={meetingMode} onValueChange={setMeetingMode}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="All modes" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All modes</SelectItem>
-                    <SelectItem value="In-Person">In-Person</SelectItem>
-                    <SelectItem value="Virtual">Virtual</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+                  <div className="flex w-full gap-3 sm:w-auto">
+                    <div className="min-w-0 flex-1 sm:w-40">
+                      <Label htmlFor="meetingStartDate" className="sr-only">Start date</Label>
+                      <Input
+                        id="meetingStartDate"
+                        type="date"
+                        value={meetingStartDate}
+                        onChange={(event) => setMeetingStartDate(event.target.value)}
+                      />
+                    </div>
+                    <div className="min-w-0 flex-1 sm:w-40">
+                      <Label htmlFor="meetingEndDate" className="sr-only">End date</Label>
+                      <Input
+                        id="meetingEndDate"
+                        type="date"
+                        value={meetingEndDate}
+                        onChange={(event) => setMeetingEndDate(event.target.value)}
+                      />
+                    </div>
+                  </div>
+                </>
+              }
+              trailing={
+                <>
+                  <MetricBadge tone="slate">{meetingStats.uniqueStudents} students</MetricBadge>
+                  <MetricBadge tone={meetingStats.noShowCount > 0 ? "amber" : "green"}>
+                    {meetingStats.noShowCount} no-shows
+                  </MetricBadge>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setMeetingSearch("");
+                      setMeetingMode("all");
+                      setMeetingAttendance("all");
+                      setMeetingStartDate("");
+                      setMeetingEndDate("");
+                    }}
+                  >
+                    Clear filters
+                  </Button>
+                </>
+              }
+            />
 
-              <div className="space-y-1.5">
-                <Label>No-show filter</Label>
-                <Select value={meetingAttendance} onValueChange={setMeetingAttendance}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="All meetings" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All meetings</SelectItem>
-                    <SelectItem value="attended">Attended only</SelectItem>
-                    <SelectItem value="no-show">No-shows only</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="meetingStartDate">Start date</Label>
-                <Input
-                  id="meetingStartDate"
-                  type="date"
-                  value={meetingStartDate}
-                  onChange={(event) => setMeetingStartDate(event.target.value)}
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="meetingEndDate">End date</Label>
-                <Input
-                  id="meetingEndDate"
-                  type="date"
-                  value={meetingEndDate}
-                  onChange={(event) => setMeetingEndDate(event.target.value)}
-                />
-              </div>
+            <div>
+              <p className="text-sm text-muted-foreground">
+                Showing {filteredMeetings.length} of {initialMeetings.length} meetings.
+              </p>
             </div>
 
-            <div className="flex items-center justify-between text-sm text-muted-foreground">
-              <span>Showing {filteredMeetings.length} of {initialMeetings.length} meetings</span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setMeetingSearch("");
-                  setMeetingMode("all");
-                  setMeetingAttendance("all");
-                  setMeetingStartDate("");
-                  setMeetingEndDate("");
-                }}
-              >
-                Clear filters
-              </Button>
-            </div>
-
-            <div className="overflow-x-auto rounded-lg border">
-              <table className="min-w-full divide-y divide-border text-sm">
-                <thead className="bg-slate-50">
-                  <tr>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">Student</th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">Date</th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">Mode</th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">Status</th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">Notes</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border bg-white">
-                  {filteredMeetings.length === 0 ? (
+            {filteredMeetings.length === 0 ? (
+              <EmptyState
+                icon={CalendarRange}
+                title="No meetings match the current filters"
+                description="Adjust the student, date, mode, or attendance filters to surface the advising activity you want to review."
+                compact
+              />
+            ) : (
+              <div className="overflow-x-auto rounded-2xl border border-border/70 bg-white">
+                <table className="min-w-full divide-y divide-border text-sm">
+                  <thead className="bg-slate-50/90">
                     <tr>
-                      <td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">
-                        No meetings match the current filters.
-                      </td>
+                      <th className="px-4 py-3 text-left font-medium text-slate-600">Student</th>
+                      <th className="px-4 py-3 text-left font-medium text-slate-600">Date</th>
+                      <th className="px-4 py-3 text-left font-medium text-slate-600">Mode</th>
+                      <th className="px-4 py-3 text-left font-medium text-slate-600">Status</th>
+                      <th className="px-4 py-3 text-left font-medium text-slate-600">Notes</th>
                     </tr>
-                  ) : (
-                    filteredMeetings.map((meeting) => (
+                  </thead>
+                  <tbody className="divide-y divide-border bg-white">
+                    {filteredMeetings.map((meeting) => (
                       <tr key={meeting.meeting_id}>
                         <td className="px-4 py-3 align-top">
                           {meeting.student ? (
@@ -614,80 +660,74 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
                         </td>
                         <td className="px-4 py-3 align-top text-slate-700">{getNotesPreview(meeting.notes)}</td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </CardContent>
-        </Card>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </DetailSection>
       </section>
 
-      <section id="students" className="scroll-mt-24 space-y-4">
-        <div className="flex items-center gap-2">
-          <Users className="h-5 w-5 text-[#006747]" />
-          <h2 className="text-lg font-semibold text-slate-900">My students</h2>
-        </div>
+      <section id="students" className="scroll-mt-24">
+        <DetailSection
+          title="My students"
+          description="This is a meeting-derived roster, not an official advisor assignment list."
+          icon={<Users className="h-5 w-5" />}
+          actions={<MetricBadge tone="green">{filteredStudents.length} visible</MetricBadge>}
+        >
+          <div className="space-y-4">
+            <DataToolbar
+              leading={
+                <>
+                  <div className="relative min-w-0 flex-1 sm:max-w-sm">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <Input
+                      id="studentSearch"
+                      placeholder="Search by name, email, or major"
+                      className="pl-9"
+                      value={studentSearch}
+                      onChange={(event) => setStudentSearch(event.target.value)}
+                    />
+                  </div>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Students you have advised</CardTitle>
-            <CardDescription>
-              This is a meeting-derived roster, not an official advisor assignment list.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-3 lg:grid-cols-[1.2fr,0.8fr]">
-              <div className="space-y-1.5">
-                <Label htmlFor="studentSearch">Search students</Label>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                  <Input
-                    id="studentSearch"
-                    placeholder="Search by name, email, or major"
-                    className="pl-9"
-                    value={studentSearch}
-                    onChange={(event) => setStudentSearch(event.target.value)}
-                  />
-                </div>
-              </div>
+                  <Select value={studentSort} onValueChange={setStudentSort}>
+                    <SelectTrigger className="w-full sm:w-52">
+                      <SelectValue placeholder="Sort students" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="recent">Most recent meeting</SelectItem>
+                      <SelectItem value="meetings">Most meetings</SelectItem>
+                      <SelectItem value="name">Student name</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </>
+              }
+              trailing={<MetricBadge tone="slate">{initialStudents.length} total students</MetricBadge>}
+            />
 
-              <div className="space-y-1.5">
-                <Label>Sort roster</Label>
-                <Select value={studentSort} onValueChange={setStudentSort}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Sort students" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="recent">Most recent meeting</SelectItem>
-                    <SelectItem value="meetings">Most meetings</SelectItem>
-                    <SelectItem value="name">Student name</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            <div className="overflow-x-auto rounded-lg border">
-              <table className="min-w-full divide-y divide-border text-sm">
-                <thead className="bg-slate-50">
-                  <tr>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">Student</th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">Email</th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">Major</th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">Class standing</th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">Meetings</th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">Most recent</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border bg-white">
-                  {filteredStudents.length === 0 ? (
+            {filteredStudents.length === 0 ? (
+              <EmptyState
+                icon={Users}
+                title="No advised students match the current search"
+                description="Broaden the roster search to see students tied to your meeting history."
+                compact
+              />
+            ) : (
+              <div className="overflow-x-auto rounded-2xl border border-border/70 bg-white">
+                <table className="min-w-full divide-y divide-border text-sm">
+                  <thead className="bg-slate-50/90">
                     <tr>
-                      <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                        No advised students match the current search.
-                      </td>
+                      <th className="px-4 py-3 text-left font-medium text-slate-600">Student</th>
+                      <th className="px-4 py-3 text-left font-medium text-slate-600">Email</th>
+                      <th className="px-4 py-3 text-left font-medium text-slate-600">Major</th>
+                      <th className="px-4 py-3 text-left font-medium text-slate-600">Class standing</th>
+                      <th className="px-4 py-3 text-left font-medium text-slate-600">Meetings</th>
+                      <th className="px-4 py-3 text-left font-medium text-slate-600">Most recent</th>
                     </tr>
-                  ) : (
-                    filteredStudents.map((student) => (
+                  </thead>
+                  <tbody className="divide-y divide-border bg-white">
+                    {filteredStudents.map((student) => (
                       <tr key={student.student_id}>
                         <td className="px-4 py-3 align-top">
                           <Link href={`/students/${student.student_id}`} className="font-medium text-slate-900 hover:text-primary hover:underline">
@@ -702,13 +742,13 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
                         </td>
                         <td className="px-4 py-3 align-top text-slate-700">{formatDate(student.latest_meeting_date)}</td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </CardContent>
-        </Card>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </DetailSection>
       </section>
     </div>
   );

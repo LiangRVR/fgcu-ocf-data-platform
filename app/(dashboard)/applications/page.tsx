@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
 import { PageHeader } from "@/components/layout/page-header";
 import { MetricBadge } from "@/components/ui/metric-badge";
+import { PageSection } from "@/components/ui/page-section";
+import { StatCard } from "@/components/ui/stat-card";
 import { createServerClient } from "@/lib/supabase/server";
 import { ApplicationsTable } from "@/components/applications/applications-table";
 import type { Database } from "@/types/database";
+import { Award, FileText, Trophy, Users } from "lucide-react";
 
 export const metadata: Metadata = { title: "Applications" };
 
@@ -91,6 +94,8 @@ export default async function ApplicationsPage({ searchParams }: Props) {
   ]);
   const finalistCount = applications.filter((application) => application.is_finalist).length;
   const awardedCount = applications.filter((application) => application.stage_of_application === "Awarded").length;
+  const uniqueStudents = new Set(applications.map((application) => application.student_id)).size;
+  const uniqueFellowships = new Set(applications.map((application) => application.fellowship_id)).size;
 
   return (
     <>
@@ -103,6 +108,19 @@ export default async function ApplicationsPage({ searchParams }: Props) {
         <MetricBadge tone="green">{finalistCount} finalists</MetricBadge>
         <MetricBadge tone="amber">{awardedCount} awarded</MetricBadge>
       </PageHeader>
+
+      <PageSection
+        title="Pipeline Health"
+        description="Track total application flow, student reach, and how many fellowship programs have active movement right now."
+        className="mb-6"
+      >
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard icon={FileText} value={applications.length} title="Total Applications" description="Current application records across the pipeline" tone="blue" />
+          <StatCard icon={Trophy} value={finalistCount} title="Finalists" description="Applications that advanced to finalist status" tone="green" />
+          <StatCard icon={Award} value={awardedCount} title="Awarded" description="Award decisions recorded in the current set" tone="amber" />
+          <StatCard icon={Users} value={uniqueStudents} title="Students Reached" description={`${uniqueFellowships} fellowships represented in the current pipeline`} tone="violet" />
+        </div>
+      </PageSection>
 
       <ApplicationsTable
         initialApplications={applications}

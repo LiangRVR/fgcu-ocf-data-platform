@@ -67,7 +67,7 @@ function StatCardInner({
       variant="default"
       className={cn(
         "group h-full overflow-hidden border-border/70",
-        href && "hover:-translate-y-0.5 hover:border-emerald-200/90 hover:shadow-[0_20px_44px_-28px_rgba(5,95,70,0.26)]",
+        href && "motion-safe:hover:-translate-y-0.5 hover:border-emerald-200/90 hover:shadow-[0_20px_44px_-28px_rgba(5,95,70,0.26)]",
         className
       )}
     >
@@ -88,7 +88,7 @@ function StatCardInner({
         {(trend || href) && (
           <div className="flex items-center justify-between gap-3 text-xs">
             <span className={cn("font-medium", trend ? color.accent : "text-slate-400")}>{trend ?? "View details"}</span>
-            {href ? <ArrowUpRight className="h-4 w-4 text-slate-400 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" /> : null}
+            {href ? <ArrowUpRight className="h-4 w-4 text-slate-400 motion-safe:transition-transform motion-safe:group-hover:translate-x-0.5 motion-safe:group-hover:-translate-y-0.5" /> : null}
           </div>
         )}
       </AppCardContent>

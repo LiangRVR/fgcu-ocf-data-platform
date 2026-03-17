@@ -147,7 +147,41 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
               }
             />
           ) : (
-            <div className="overflow-x-auto">
+            <>
+              <div className="space-y-3 md:hidden">
+                {meetings.map((meeting) => (
+                  <div key={meeting.meeting_id} className="rounded-2xl border border-border/70 bg-surface-subtle/70 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <Link
+                        href={`/students/${meeting.student_id}`}
+                        className="min-w-0 text-sm font-semibold text-slate-900 hover:text-primary hover:underline"
+                      >
+                        <span className="line-clamp-2">{meeting.student?.full_name ?? `Student #${meeting.student_id}`}</span>
+                      </Link>
+                      <MetricBadge tone={meeting.no_show ? "red" : "green"}>
+                        {meeting.no_show ? "No-Show" : "Attended"}
+                      </MetricBadge>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <MetricBadge tone={meeting.meeting_mode === "Virtual" ? "blue" : "slate"}>
+                        {meeting.meeting_mode}
+                      </MetricBadge>
+                      <MetricBadge tone="slate">
+                        {new Date(meeting.meeting_date + "T00:00:00").toLocaleDateString("en-US", {
+                          year: "numeric",
+                          month: "short",
+                          day: "numeric",
+                        })}
+                      </MetricBadge>
+                    </div>
+                    <p className="mt-3 text-sm leading-6 text-slate-500">
+                      {meeting.notes || "No notes recorded yet."}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="hidden overflow-x-auto md:block">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-gray-200 bg-gray-50">
@@ -204,7 +238,8 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
                   ))}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </>
           )}
       </DetailSection>
     </>

@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { cn } from "@/lib/utils/cn";
 
 const appCardVariants = cva(
-  "rounded-2xl border transition-all duration-200",
+  "rounded-2xl border motion-safe:transition-all motion-safe:duration-200",
   {
     variants: {
       variant: {

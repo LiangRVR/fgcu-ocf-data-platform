@@ -2,11 +2,14 @@ import type { Metadata } from "next";
 import { PageHeader } from "@/components/layout/page-header";
 import { AppCard, AppCardContent } from "@/components/ui/app-card";
 import { MetricBadge } from "@/components/ui/metric-badge";
+import { PageSection } from "@/components/ui/page-section";
+import { StatCard } from "@/components/ui/stat-card";
 import { requireAdvisor } from "@/lib/auth/session";
 import { createServerClient } from "@/lib/supabase/server";
 import { AdvisingTable } from "@/components/advising/advising-table";
 import type { Database } from "@/types/database";
 import Link from "next/link";
+import { CalendarCheck2, ShieldAlert, UserRoundCheck, Users } from "lucide-react";
 
 export const metadata: Metadata = { title: "Advising" };
 
@@ -96,6 +99,7 @@ export default async function AdvisingPage({ searchParams }: Props) {
   const noShowCount = meetings.filter((m) => m.no_show).length;
   const studentIdsWithMeetings = new Set(meetings.map((m) => m.student_id));
   const neverSeenCount = students.filter((s) => !studentIdsWithMeetings.has(s.student_id)).length;
+  const advisorCoverage = new Set(meetings.map((m) => m.advisor_id).filter((advisorId): advisorId is number => advisorId !== null)).size;
 
   const isNoShow = params.no_show === "yes";
 
@@ -110,6 +114,19 @@ export default async function AdvisingPage({ searchParams }: Props) {
         <MetricBadge tone="red">{noShowCount} no-shows</MetricBadge>
         <MetricBadge tone="amber">{neverSeenCount} never seen</MetricBadge>
       </PageHeader>
+
+      <PageSection
+        title="Advising Coverage"
+        description="Use these metrics to identify attendance risk, advisor load, and which students still need first contact."
+        className="mb-6"
+      >
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard icon={CalendarCheck2} value={meetings.length} title="Meetings Logged" description="Advising sessions currently on record" tone="blue" />
+          <StatCard icon={ShieldAlert} value={noShowCount} title="No-Shows" description="Meetings where the student did not attend" tone="rose" />
+          <StatCard icon={Users} value={neverSeenCount} title="Students Never Seen" description="Students with no advising history yet" tone="amber" />
+          <StatCard icon={UserRoundCheck} value={advisorCoverage} title="Active Advisors" description="Advisors represented in recorded meetings" tone="green" />
+        </div>
+      </PageSection>
 
       {/* Exception view pill bar */}
       <div className="mb-8 flex flex-wrap gap-2">

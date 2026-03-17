@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
 import { PageHeader } from "@/components/layout/page-header";
 import { MetricBadge } from "@/components/ui/metric-badge";
+import { PageSection } from "@/components/ui/page-section";
+import { StatCard } from "@/components/ui/stat-card";
 import { createServerClient } from "@/lib/supabase/server";
 import { ScholarshipHistoryTable } from "@/components/scholarship-history/scholarship-history-table";
 import type { Database } from "@/types/database";
+import { Award, BookOpen, Trophy, Users } from "lucide-react";
 
 export const metadata: Metadata = { title: "Scholarship History" };
 
@@ -86,6 +89,7 @@ export default async function ScholarshipHistoryPage({ searchParams }: Props) {
     getFellowships(),
   ]);
   const uniqueStudents = new Set(records.map((record) => record.student_id)).size;
+  const repeatAwards = records.length - uniqueStudents;
 
   return (
     <>
@@ -98,6 +102,20 @@ export default async function ScholarshipHistoryPage({ searchParams }: Props) {
         <MetricBadge tone="green">{uniqueStudents} students</MetricBadge>
         <MetricBadge tone="amber">{fellowships.length} fellowships</MetricBadge>
       </PageHeader>
+
+      <PageSection
+        title="Historical Coverage"
+        description="Preserve award history as advising context and track how widely prior fellowship outcomes are represented across students and programs."
+        className="mb-6"
+      >
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard icon={BookOpen} value={records.length} title="Award Records" description="Historical award outcomes on file" tone="blue" />
+          <StatCard icon={Users} value={uniqueStudents} title="Students With History" description="Students connected to prior awards" tone="green" />
+          <StatCard icon={Award} value={fellowships.length} title="Tracked Fellowships" description="Programs represented in historical records" tone="amber" />
+          <StatCard icon={Trophy} value={repeatAwards} title="Repeat Awards" description="Additional awards beyond each student's first recorded history item" tone="violet" />
+        </div>
+      </PageSection>
+
       <ScholarshipHistoryTable
         initialRecords={records}
         students={students}

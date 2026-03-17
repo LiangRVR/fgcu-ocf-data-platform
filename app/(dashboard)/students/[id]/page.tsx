@@ -7,6 +7,7 @@ import {
 } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { ActivityTimeline } from "@/components/ui/activity-timeline";
 import {
   ArrowLeft,
   Mail,
@@ -26,11 +27,15 @@ import Link from "next/link";
 import { createServerClient } from "@/lib/supabase/server";
 import type { Database } from "@/types/database";
 import { StudentInfoEditor } from "@/components/students/student-info-editor";
+import { DetailSection } from "@/components/ui/detail-section";
+import { EmptyState } from "@/components/ui/empty-state";
 import { EntityHeader } from "@/components/ui/entity-header";
 import { MetricBadge } from "@/components/ui/metric-badge";
+import { formatDate } from "@/lib/utils/format";
 
 type Student = Database["public"]["Tables"]["student"]["Row"];
 type Application = Database["public"]["Tables"]["application"]["Row"] & {
+  created_at?: string | null;
   fellowship: { fellowship_name: string } | null;
 };
 type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
@@ -75,7 +80,7 @@ async function getApplications(studentId: number): Promise<Application[]> {
       .from("application")
       .select("*, fellowship(fellowship_name)")
       .eq("student_id", studentId)
-      .order("application_id", { ascending: false });
+      .order("created_at", { ascending: false });
 
     if (error) {
       console.error("Error fetching applications:", error);
@@ -159,26 +164,41 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
   const ftAttended = fellowshipThursday.filter((r) => r.attended).length;
 
   // Activity timeline – merge all dated events
-  type TimelineEvent =
-    | { kind: "application"; date: string; label: string; sub: string; href: string }
-    | { kind: "meeting"; date: string; label: string; sub: string; href: string };
+  type TimelineEvent = {
+    id: string;
+    kind: "application" | "meeting";
+    date: string;
+    title: string;
+    description: string;
+    href: string;
+    badge: string;
+    tone: "blue" | "purple" | "red";
+  };
 
   const timeline: TimelineEvent[] = [
     ...applications.map((a) => ({
+      id: `application-${a.application_id}`,
       kind: "application" as const,
-      date: String(a.application_id), // no date column; use id for ordering
-      label: a.fellowship?.fellowship_name ?? `Fellowship #${a.fellowship_id}`,
-      sub: a.stage_of_application,
+      date: a.created_at ?? "",
+      title: a.fellowship?.fellowship_name ?? `Fellowship #${a.fellowship_id}`,
+      description: [a.stage_of_application, a.destination_country].filter(Boolean).join(" · "),
       href: `/fellowships/${a.fellowship_id}`,
+      badge: "Application",
+      tone: "purple" as const,
     })),
     ...advisingMeetings.map((m) => ({
+      id: `meeting-${m.meeting_id}`,
       kind: "meeting" as const,
       date: m.meeting_date,
-      label: m.meeting_date,
-      sub: `${m.meeting_mode}${m.no_show ? " · No-Show" : ""}${m.advisor ? ` · ${m.advisor.advisor_name}` : ""}`,
+      title: m.no_show ? "Missed advising meeting" : "Advising meeting",
+      description: `${m.meeting_mode}${m.no_show ? " · No-show" : " · Attended"}${m.advisor ? ` · ${m.advisor.advisor_name}` : ""}`,
       href: m.advisor_id ? `/advisors/${m.advisor_id}` : "/advising",
+      badge: "Meeting",
+      tone: m.no_show ? "red" : "blue",
     })),
-  ].sort((a, b) => b.date.localeCompare(a.date));
+  ]
+    .filter((event) => Boolean(event.date))
+    .sort((a, b) => b.date.localeCompare(a.date));
 
   return (
     <>
@@ -550,52 +570,40 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
           </CardContent>
         </Card>
 
-        {/* Activity Timeline */}
-        {timeline.length > 0 && (
-          <Card className="border-gray-200 shadow-sm">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Activity className="h-5 w-5 text-slate-400" />
-                Activity Timeline
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ol className="relative border-l border-gray-200">
-                {timeline.slice(0, 10).map((event, idx) => (
-                  <li key={idx} className="mb-4 ml-4">
-                    <div className="absolute -left-1.5 mt-1.5 h-3 w-3 rounded-full border border-white bg-gray-300" />
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <Link
-                          href={event.href}
-                          className="text-sm font-medium text-slate-900 hover:text-[#006747] hover:underline"
-                        >
-                          {event.label}
-                        </Link>
-                        <p className="text-xs text-slate-500">{event.sub}</p>
-                      </div>
-                      <Badge
-                        variant="secondary"
-                        className={`ml-3 shrink-0 text-xs ${
-                          event.kind === "application"
-                            ? "border-purple-200 bg-purple-50 text-purple-700"
-                            : "border-blue-200 bg-blue-50 text-blue-700"
-                        }`}
-                      >
-                        {event.kind === "application" ? "Application" : "Meeting"}
-                      </Badge>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-              {timeline.length > 10 && (
-                <p className="mt-2 text-xs text-slate-400">
-                  Showing 10 of {timeline.length} events
-                </p>
-              )}
-            </CardContent>
-          </Card>
-        )}
+        <DetailSection
+          title="Recent Activity"
+          description="A unified timeline of the student’s latest advising and application activity with direct links into the related workflow."
+          icon={<Activity className="h-5 w-5" />}
+          actions={<MetricBadge tone="slate">{timeline.length} events</MetricBadge>}
+        >
+          {timeline.length === 0 ? (
+            <EmptyState
+              icon={Activity}
+              title="No recent activity yet"
+              description="Applications and advising meetings will appear here as a single timeline once they are added to the student record."
+              compact
+            />
+          ) : (
+            <>
+              <ActivityTimeline
+                items={timeline.slice(0, 10).map((event) => ({
+                  id: event.id,
+                  title: event.title,
+                  description: event.description,
+                  timestamp: formatDate(event.date),
+                  badge: event.badge,
+                  tone: event.tone,
+                  href: event.href,
+                  icon: event.kind === "application" ? <Award className="h-3.5 w-3.5" /> : <CalendarDays className="h-3.5 w-3.5" />,
+                  meta: event.kind === "application" ? "Recorded from the application pipeline" : "Recorded from advising history",
+                }))}
+              />
+              {timeline.length > 10 ? (
+                <p className="mt-4 text-xs text-slate-400">Showing 10 of {timeline.length} events.</p>
+              ) : null}
+            </>
+          )}
+        </DetailSection>
       </div>
     </>
   );
