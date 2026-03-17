@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { GraduationCap } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
@@ -110,6 +111,15 @@ export function LoginForm({ reasonMessage }: LoginFormProps) {
                 {errors.password.message}
               </p>
             )}
+          </div>
+
+          <div className="flex justify-end">
+            <Link
+              href="/forgot-password"
+              className="text-xs font-medium text-primary hover:underline"
+            >
+              Forgot password?
+            </Link>
           </div>
         </CardContent>
 

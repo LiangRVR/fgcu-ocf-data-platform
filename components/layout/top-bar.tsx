@@ -1,8 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Bell, LogOut, Menu, User } from "lucide-react";
+import { Bell, LogOut, Menu, Settings, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -99,6 +100,12 @@ export function TopBar({ onMenuClick, advisorName, advisorEmail }: TopBarProps) 
               </span>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
+            <DropdownMenuItem asChild>
+              <Link href="/dashboard/account">
+                <Settings className="h-4 w-4" />
+                Account settings
+              </Link>
+            </DropdownMenuItem>
             <DropdownMenuItem onSelect={handleSignOut} disabled={isSigningOut}>
               <LogOut className="h-4 w-4" />
               {isSigningOut ? "Signing out..." : "Sign out"}

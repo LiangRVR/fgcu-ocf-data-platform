@@ -18,7 +18,7 @@ NEXT_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 ```
 
-2. Restart your development server after updating environment variables.
+1. Restart your development server after updating environment variables.
 
 ## Step 2: Apply Database Schema
 
@@ -35,7 +35,10 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 9. Repeat steps 3–6 for `supabase/migrations/20260305000002_allow_anon_write.sql` — temporary bootstrap write access for local development
 10. Repeat steps 3–6 for `supabase/migrations/20260317000003_advisor_auth.sql` — adds advisor auth columns and helper function
 11. Backfill confirmed FGCU emails into `public.advisor.email` for any existing advisor rows before finalizing advisor auth on a populated database
-12. Repeat steps 3–6 for `supabase/migrations/20260317000004_active_advisor_rls.sql` — removes anon access and enables authenticated active-advisor policies
+12. Create Supabase Auth users for each advisor with email addresses that exactly match `public.advisor.email`
+13. Repeat steps 3–6 for `supabase/migrations/20260317000004_active_advisor_rls.sql` — removes anon access and enables authenticated active-advisor policies
+
+After migration `20260317000004_active_advisor_rls.sql`, bootstrap anon access is no longer the intended steady state. Operational access should come only from authenticated active advisors.
 
 ### Option B: Using Supabase CLI
 
@@ -58,6 +61,7 @@ pnpm run db:types
 ```
 
 Or manually:
+
 ```bash
 npx supabase gen types typescript --project-id <your-project-id> > types/database.ts
 ```
@@ -81,6 +85,7 @@ pnpm run test:connection
 ```
 
 This will verify:
+
 - Environment variables are set correctly
 - Connection to Supabase is successful
 - Database tables are accessible
@@ -100,6 +105,7 @@ Or create a seed script for automated sample data insertion.
 ## Database Schema
 
 See [SCHEMA.md](./SCHEMA.md) for detailed documentation about:
+
 - Table structures
 - Relationships
 - Indexes
@@ -124,14 +130,18 @@ See [SCHEMA.md](./SCHEMA.md) for detailed documentation about:
 ### RLS Policies blocking access
 
 If you're getting permission errors:
+
 1. Review RLS policies in the SQL schema
 2. Temporarily disable RLS for testing (not recommended for production):
+
    ```sql
    ALTER TABLE table_name DISABLE ROW LEVEL SECURITY;
    ```
+
 3. Confirm `public.advisor.email` contains the same email addresses used in Supabase Auth
 4. Ensure the active advisor has signed in at least once so `auth_user_id` can link to the advisor row
-5. Update RLS policies to match your authentication setup
+5. Confirm the advisor row has `is_active = true`
+6. Update RLS policies to match your authentication setup
 
 ## Next Steps
 
@@ -141,9 +151,17 @@ If you're getting permission errors:
 4. ✅ Apply bootstrap anon-write policy (`20260305000002_allow_anon_write.sql`)
 5. ✅ Apply advisor auth migration (`20260317000003_advisor_auth.sql`)
 6. ✅ Backfill confirmed advisor emails in `public.advisor.email`
-7. ✅ Apply active-advisor RLS migration (`20260317000004_active_advisor_rls.sql`)
-8. ✅ Generate TypeScript types
-9. ✅ Verify connection
+7. ✅ Create matching Supabase Auth users for advisors
+8. ✅ Apply active-advisor RLS migration (`20260317000004_active_advisor_rls.sql`)
+9. ✅ Generate TypeScript types
+10. ✅ Verify connection
+
+## Auth and Account Notes
+
+- Dashboard access is gated by `requireAdvisor()` on the server.
+- The account page lives at `/dashboard/account` and allows advisors to update `advisor_name`, request an email change, and change their password.
+- Email updates should keep Supabase Auth and `public.advisor.email` synchronized.
+- Password recovery uses `supabase.auth.resetPasswordForEmail(...)` and redirects back to `/reset-password`.
 
 ## Useful Commands
 

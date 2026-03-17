@@ -119,3 +119,25 @@ business PK, and set `is_active = false` instead of deleting former staff.
 **Decision:** Add these columns only when the UI needs to display or filter by them.
 The current phase focuses on tracking applications, not managing program metadata.
 `fellowship_name` remains UNIQUE regardless of what is added later.
+
+---
+
+## 5. Advisor-specific student roster — Derive from meeting history first
+
+**Current state:** `public.advising_meeting` links each advising record to both
+`student_id` and `advisor_id`, but `public.student` does not include an advisor
+foreign key and there is no `student_advisor` bridge table.
+
+**Decision:** The first version of `My students` on the advisor account page is a
+derived convenience view, not a formal assignment model. It means
+`students this advisor has met with`, computed from advising history.
+
+**Why this design:** OCF advising continuity can involve multiple staff members
+working with the same student over time. Adding `student.primary_advisor_id`
+immediately would force a one-student-to-one-advisor shape that may be too rigid.
+
+**Future direction:** If OCF later needs official caseload assignment, prefer a
+new `student_advisor` table over adding a single `primary_advisor_id` column.
+That bridge table can support primary and secondary relationships, active and
+inactive assignments, and assignment start/end dates without rewriting advising
+history.

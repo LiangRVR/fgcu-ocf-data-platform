@@ -7,6 +7,7 @@ This folder contains detailed documentation for the OCF Fellowship Management Sy
 ### Getting Started
 
 - **[Quick Start Guide](quickstart.md)** - Environment setup and Supabase connection
+- **[Main README](../README.md)** - Project overview, feature status, auth/account flows, and structure
 
 ### Design & UI
 
@@ -21,8 +22,13 @@ This folder contains detailed documentation for the OCF Fellowship Management Sy
 - **[Supabase Setup](../supabase/README.md)** - Guide for creating a Supabase project and applying migrations
 - **[Schema Quick Reference](../supabase/SCHEMA.md)** - Table list and foreign key map
 
+### Authentication & Account
+
+- **[Main README](../README.md)** - Current auth, account, and recovery features at a glance
+- **[Schema Design Decisions](schema-decisions.md)** - Why advisor identity lives in `public.advisor` and why `My students` is meeting-derived for now
+
 ### Project Information
-- **[Main README](../README.md)** - Project overview, tech stack, features, and project structure
+
 - **[License](../LICENSE)** - License information
 
 ---
@@ -32,14 +38,14 @@ This folder contains detailed documentation for the OCF Fellowship Management Sy
 ### For New Developers
 
 1. Read the [Main README](../README.md) for project overview and feature status
-2. Follow the [Quick Start Guide](quickstart.md) to configure Supabase
+2. Follow the [Quick Start Guide](quickstart.md) to configure Supabase, advisor auth, and recovery redirects
 3. Review the [Schema Reference](schema-reference.md) to understand the data model
 4. Review the [FGCU Design Style Guide](DESIGN_GUIDE.md) for UI/UX guidelines
 
 ### For Database Setup
 
 1. Follow the [Supabase Setup Guide](../supabase/README.md)
-2. Use the [Schema Verification Checklist](schema-verification.md) to confirm everything is working
+2. Use the [Schema Verification Checklist](schema-verification.md) to confirm migrations, advisor auth, and the account flow are working
 
 ---
 

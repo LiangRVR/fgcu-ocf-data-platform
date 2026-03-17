@@ -384,11 +384,11 @@ All primary action buttons use FGCU green:
 
 ### Not Yet Built
 
-1. **Supabase Auth** — Login form + Zod validation done; `signInWithPassword` stub needs `@supabase/ssr` session middleware
-2. **Reports page** — Empty state shown; charts and export not built
-3. **Server-side pagination** — All pagination is currently client-side
-4. **CSV export** — Export buttons exist in the UI; logic not hooked up
-5. **Bulk actions** — Checkboxes and multi-row operations not implemented
+1. **Reports page** — Empty state shown; charts and export not built
+2. **Server-side pagination** — All pagination is currently client-side
+3. **CSV export** — Export buttons exist in the UI; logic not hooked up
+4. **Bulk actions** — Checkboxes and multi-row operations not implemented
+5. **Production auth hardening** — Verify secure email-change confirmations, password-recovery delivery, and any optional current-password confirmation UX
 
 ---
 

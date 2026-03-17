@@ -105,6 +105,12 @@ Records each advising session between an advisor and a student.
 | `no_show` | boolean | NO | `false` | Student did not attend |
 | `notes` | text | YES | | |
 
+**Business rules:**
+
+- Advisor-personalized meeting history is derived from `advising_meeting.advisor_id`.
+- The first version of `My students` is also derived from this table by grouping the current advisor's meetings by `student_id`.
+- This schema does **not** currently encode a formal advisor assignment or caseload model.
+
 ---
 
 ### `fellowship_thursday`

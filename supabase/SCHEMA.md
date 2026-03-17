@@ -44,6 +44,8 @@ All PKs are **integer sequences** (never UUIDs). All table names are **singular*
 
 No foreign keys. Referenced by `advising_meeting.advisor_id`.
 
+Used by the app for sign-in authorization, account profile display, password-recovery context, and the `/dashboard/account` page.
+
 ---
 
 ## `fellowship`
@@ -104,6 +106,7 @@ Indexed: `email`, `is_ch_student`, `class_standing`. Referenced by all five chil
 `Started` → `Submitted` → `Under Review` → `Semi-Finalist` → `Finalist` → `Awarded` / `Rejected`
 
 **Business rules:**
+
 - No unique constraint on `(student_id, fellowship_id)` — multi-year repeat applications are allowed.
 - `is_semi_finalist` and `is_finalist` duplicate `stage_of_application` for fast `WHERE` queries.
   Both must be set together when updating the stage. See schema-decisions.md §2.
@@ -127,6 +130,8 @@ Indexed: `student_id`, `fellowship_id`, `stage_of_application`.
 | `notes` | text | YES | — | |
 
 Indexed: `student_id`, `meeting_date`.
+
+This table is also the source for advisor-personalized views such as `My meetings` and the meeting-derived `My students` roster on `/dashboard/account`.
 
 ---
 
@@ -164,7 +169,7 @@ Indexed: `student_id`, `fellowship_id`.
 
 ## Entity-Relationship Diagram
 
-```
+```text
 advisor (1) ──────────────────────────────────────────┐
                                                        │ advisor_id (nullable)
 fellowship (1) ──────────────────────────────┐         │
@@ -186,18 +191,22 @@ fellowship (1) ─────────────────────�
 | File | What it does |
 | --- | --- |
 | `20260305000000_initial_schema.sql` | Creates all 7 tables, 7 sequences, all indexes, enables RLS |
-| `20260305000001_allow_anon_read.sql` | Grants anon-role `SELECT` on every table + `USAGE` on schema |
-| `20260305000002_allow_anon_write.sql` | Grants anon-role `INSERT`, `UPDATE`, `DELETE` on every table + `USAGE`/`SELECT` on all sequences (required for CRUD) |
+| `20260305000001_allow_anon_read.sql` | Temporary bootstrap anon-role `SELECT` on every table + `USAGE` on schema |
+| `20260305000002_allow_anon_write.sql` | Temporary bootstrap anon-role `INSERT`, `UPDATE`, `DELETE` on every table + `USAGE`/`SELECT` on all sequences |
+| `20260317000003_advisor_auth.sql` | Extends `advisor` for auth linkage, active status, role, timestamps, and helper logic |
+| `20260317000004_active_advisor_rls.sql` | Removes anon access and enables authenticated active-advisor policies |
 
-**All three migrations must be applied.** The second enables reads; the third enables writes. Without migration #3, all INSERT/UPDATE/DELETE operations will fail.
+**All five migrations must be applied.** Migrations 2 and 3 are temporary bootstrap steps. Migration 5 establishes the intended steady state: authenticated active advisors only.
 
 Apply via Supabase Dashboard (SQL Editor) or CLI:
+
 ```bash
 npx supabase link --project-ref <your-project-id>
 npx supabase db push
 ```
 
 Regenerate TypeScript types after any schema change:
+
 ```bash
 pnpm run db:types
 ```

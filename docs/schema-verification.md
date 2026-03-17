@@ -7,15 +7,20 @@
 - [x] Supabase client configuration (`lib/supabase/client.ts` and `lib/supabase/server.ts`)
 - [x] Environment variable setup (`.env.local`)
 - [x] Initial schema migration (`supabase/migrations/20260305000000_initial_schema.sql`)
-- [x] Anon read policy migration (`supabase/migrations/20260305000001_allow_anon_read.sql`)
-- [x] Anon write policy migration (`supabase/migrations/20260305000002_allow_anon_write.sql`)
+- [x] Bootstrap anon read policy migration (`supabase/migrations/20260305000001_allow_anon_read.sql`)
+- [x] Bootstrap anon write policy migration (`supabase/migrations/20260305000002_allow_anon_write.sql`)
+- [x] Advisor auth migration (`supabase/migrations/20260317000003_advisor_auth.sql`)
+- [x] Active-advisor RLS migration (`supabase/migrations/20260317000004_active_advisor_rls.sql`)
 - [x] Schema documentation (`docs/schema-reference.md`, `supabase/SCHEMA.md`)
 - [x] Auto-generated TypeScript types (`types/database.ts`)
 - [x] Application-level types (`types/index.ts`)
 - [x] Connection test utility (`scripts/test-connection.ts`)
-- [x] All 8 dashboard pages query live Supabase data
+- [x] Real advisor auth wiring (`lib/auth/session.ts`, protected dashboard layout, sign-in/sign-out)
+- [x] Password recovery flow (`/forgot-password` → `/reset-password`)
+- [x] Advisor account page (`/dashboard/account`)
+- [x] All 9 dashboard destinations query live Supabase data
 - [x] Add / Edit / Delete operations implemented on all main tables (students, applications, advising, fellowship thursday, scholarship history)
-- [x] Form validation: Zod + React Hook Form on login form; manual field-level + consistency validation on all CRUD dialogs
+- [x] Form validation: Zod + React Hook Form on login/recovery; manual field-level + consistency validation on account page and CRUD dialogs
 
 ### ⚠️ Required From You Before First Use
 
@@ -28,6 +33,11 @@
    - Go to Supabase Dashboard → SQL Editor
    - Run `supabase/migrations/20260305000000_initial_schema.sql`
    - Then run `supabase/migrations/20260305000001_allow_anon_read.sql`
+   - Then run `supabase/migrations/20260305000002_allow_anon_write.sql`
+   - Then run `supabase/migrations/20260317000003_advisor_auth.sql`
+   - Backfill confirmed advisor emails in `public.advisor.email`
+   - Create matching Supabase Auth users for advisors
+   - Then run `supabase/migrations/20260317000004_active_advisor_rls.sql`
    - Or use CLI: `npx supabase db push` (after linking project)
 
 3. **Generate TypeScript Types** (only needed if schema changes)
@@ -73,7 +83,8 @@ Our database schema aligns with the application needs:
 
 - **Table**: `advisor`
 - **Primary Key**: `advisor_id` (integer)
-- **Key Fields**: advisor_name
+- **Key Fields**: advisor_name, email, auth_user_id, is_active, role, last_login_at
+- **Notes**: Serves as both the staff profile table and the app authorization anchor
 
 ### Fellowship Thursday Attendance
 
@@ -105,11 +116,23 @@ Before using the application with real data:
 - [ ] Bootstrap anon-write policy applied (`20260305000002_allow_anon_write.sql`)
 - [ ] Advisor auth migration applied (`20260317000003_advisor_auth.sql`)
 - [ ] Confirmed advisor emails backfilled in `public.advisor.email`
+- [ ] Matching Supabase Auth users created for advisors
 - [ ] Active-advisor RLS migration applied (`20260317000004_active_advisor_rls.sql`)
 - [ ] TypeScript types regenerated if schema was modified: `pnpm run db:types`
 - [ ] Connection test passes: `pnpm run test:connection`
 - [ ] Dev server starts: `pnpm dev`
+- [ ] Advisor can sign in and reach `/dashboard`
+- [ ] Advisor can open `/dashboard/account`
+- [ ] Forgot-password email flow reaches `/reset-password`
 - [ ] Dashboard loads with live (or empty) data
+
+### Auth Flow Smoke Test
+
+- [ ] Sign in with a Supabase Auth user whose email matches `public.advisor.email`
+- [ ] Confirm the advisor row links `auth_user_id` after first sign-in
+- [ ] Confirm inactive advisors are redirected out of protected routes
+- [ ] Confirm profile updates save successfully from `/dashboard/account`
+- [ ] Confirm password updates succeed for an active session
 
 ### What Works Without Real Data
 

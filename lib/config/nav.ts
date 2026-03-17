@@ -7,6 +7,7 @@ import {
   CalendarDays,
   BookOpen,
   BarChart2,
+  User,
 } from "lucide-react";
 import type { NavItem } from "@/types";
 
@@ -16,6 +17,7 @@ import type { NavItem } from "@/types";
  */
 export const NAV_ITEMS: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+  { label: "My Account", href: "/dashboard/account", icon: User },
   { label: "Students", href: "/students", icon: Users },
   { label: "Fellowships", href: "/fellowships", icon: Award },
   { label: "Applications", href: "/applications", icon: FileText },
