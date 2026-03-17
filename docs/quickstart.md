@@ -172,7 +172,7 @@ Before relying on the app day to day:
 | --- | --- | --- |
 | Advisor provisioning | In progress | Real environments still need confirmed FGCU emails and matching Supabase Auth users |
 | Email delivery verification | In progress | Forgot-password and secure email-change confirmation need end-to-end testing |
-| Reports page | Placeholder | Empty state exists; charts and export logic are not built |
+| Reports page | Implemented | Six report sections: Applications by Stage, Finalists by Fellowship, Students by Class Standing, Advising Activity by Advisor, Fellowship Thursday Attendance, and Recent Activity |
 | Server-side pagination | Not started | All pagination is currently client-side |
 | CSV export | UI only | Buttons exist, but export logic is not implemented |
 | Bulk actions | Not started | Multi-select and bulk operations are planned |
@@ -181,5 +181,5 @@ Before relying on the app day to day:
 
 1. Provision advisor auth users in the real Supabase environment.
 2. Verify profile updates and password recovery end to end.
-3. Build reports, exports, and pagination.
+3. Build CSV export logic and server-side pagination.
 4. Plan a `student_advisor` table only if OCF later wants formal caseload assignment.

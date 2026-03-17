@@ -194,7 +194,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
       description: `${m.meeting_mode}${m.no_show ? " · No-show" : " · Attended"}${m.advisor ? ` · ${m.advisor.advisor_name}` : ""}`,
       href: m.advisor_id ? `/advisors/${m.advisor_id}` : "/advising",
       badge: "Meeting",
-      tone: m.no_show ? "red" : "blue",
+      tone: (m.no_show ? "red" : "blue") as "red" | "blue",
     })),
   ]
     .filter((event) => Boolean(event.date))

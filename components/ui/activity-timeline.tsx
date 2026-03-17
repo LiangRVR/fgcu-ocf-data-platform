@@ -34,7 +34,7 @@ interface ActivityTimelineProps {
 
 export function ActivityTimeline({ items, className }: ActivityTimelineProps) {
   return (
-    <ol className={cn("relative space-y-4 before:absolute before:bottom-2 before:left-[0.875rem] before:top-2 before:w-px before:bg-border/70", className)}>
+    <ol className={cn("relative space-y-4 before:absolute before:bottom-2 before:left-3.5 before:top-2 before:w-px before:bg-border/70", className)}>
       {items.map((item) => {
         const tone = item.tone ?? "slate";
 

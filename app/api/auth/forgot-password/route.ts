@@ -1,8 +1,8 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
 import { forgotPasswordSchema } from "@/lib/validators/account";
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   const payload = await request.json().catch(() => null);
   const parsed = forgotPasswordSchema.safeParse(payload);
 

@@ -78,9 +78,11 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 │   │   ├── fellowships/   # Fellowship list with per-fellowship metrics
 │   │   ├── applications/  # Application tracking with stage pipeline
 │   │   ├── advising/      # Advising session records
+│   │   ├── advisors/      # Advisor list
+│   │   │   └── [id]/      # Advisor detail page (profile + meeting history + metrics)
 │   │   ├── fellowship-thursday/ # Weekly meeting attendance
 │   │   ├── scholarship-history/ # Past scholarship awards
-│   │   └── reports/       # Cross-table analytics and reporting views
+│   │   └── reports/       # Cross-table analytics: applications by stage, finalists, class standing, advising activity, Thursday attendance
 │   ├── api/               # API routes
 │   │   ├── account/       # Advisor account update endpoints
 │   │   ├── auth/          # Sign-out + password recovery endpoints
@@ -90,6 +92,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 │   ├── advising/          # AdvisingTable (CRUD client component)
 │   ├── applications/      # ApplicationsTable (CRUD client component)
 │   ├── fellowship-thursday/ # FellowshipThursdayTable (CRUD client component)
+│   ├── fellowships/       # FellowshipEditButton (inline edit button)
 │   ├── scholarship-history/ # ScholarshipHistoryTable (CRUD client component)
 │   ├── students/          # StudentsTable (CRUD + sort + filter client component)
 │   ├── layout/            # Shell, sidebar, top bar, page header
@@ -163,6 +166,8 @@ For detailed instructions, see the [Supabase Setup Guide](supabase/README.md).
 - ✅ **TypeScript Type Safety** - Full type coverage, auto-generated Supabase types
 - ✅ **Form Validation** - Zod schemas + React Hook Form on the login form; manual validation (field-level errors + consistency checks) on all CRUD dialogs throughout the dashboard
 - ✅ **Toasts** - Sonner toast notifications on all mutations
+- ✅ **Reports** - Six cross-table report sections: Applications by Stage (bar distribution), Finalists & Awarded by Fellowship, Students by Class Standing, Advising Activity by Advisor, Fellowship Thursday Attendance, and Recent Meeting & Application Activity
+- ✅ **Advisor Detail Page** - `/advisors/[id]` with advisor profile, metrics (total meetings, students advised, no-shows), and full meeting history
 
 ### In Progress
 
