@@ -203,7 +203,7 @@ function DistributionList({
           const pct = total > 0 ? Math.round((count / total) * 100) : 0;
           const href = getHref?.(label);
           const inner = (
-            <div className={href ? "group cursor-pointer rounded-md p-1 -mx-1 transition-colors hover:bg-slate-50" : ""}>
+            <div className={href ? "group cursor-pointer rounded-md p-1 -mx-1 motion-safe:transition-colors hover:bg-slate-50" : ""}>
               <div className="mb-1 flex items-center justify-between text-xs">
                 <span className={`max-w-[70%] truncate font-medium ${href ? "text-slate-700 group-hover:text-[#006747]" : "text-slate-700"}`}>
                   {label}
@@ -434,7 +434,7 @@ export default async function DashboardPage() {
                 <Link
                   key={item.label}
                   href={item.href}
-                  className="flex items-center justify-between rounded-2xl border border-border/70 bg-white px-4 py-3 text-sm transition-colors hover:border-emerald-200 hover:bg-emerald-50/40"
+                  className="flex items-center justify-between rounded-2xl border border-border/70 bg-white px-4 py-3 text-sm motion-safe:transition-colors hover:border-emerald-200 hover:bg-emerald-50/40"
                 >
                   <div>
                     <p className="font-medium text-slate-800">{item.label}</p>

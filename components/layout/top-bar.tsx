@@ -70,7 +70,7 @@ export function TopBar({ onMenuClick, advisorName, advisorEmail }: TopBarProps) 
         variant="ghost"
         size="icon"
         onClick={onMenuClick}
-        className="lg:hidden"
+        className="motion-safe:transition-colors lg:hidden"
         aria-label="Open sidebar"
       >
         <Menu className="h-5 w-5" />
@@ -92,12 +92,12 @@ export function TopBar({ onMenuClick, advisorName, advisorEmail }: TopBarProps) 
 
       {/* Right-side actions */}
       <div className="flex items-center gap-2">
-        <Button variant="ghost" size="icon" aria-label="Notifications" className="text-slate-500">
+        <Button variant="ghost" size="icon" aria-label="Notifications" className="text-slate-500 motion-safe:transition-colors">
           <Bell className="h-5 w-5 text-muted-foreground" />
         </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="h-11 gap-3 rounded-2xl px-2" aria-label="User menu">
+            <Button variant="ghost" className="h-11 gap-3 rounded-2xl px-2 motion-safe:transition-colors" aria-label="User menu">
               <div className="hidden text-right sm:block">
                 <div className="text-sm font-medium text-foreground">{advisorName}</div>
                 <div className="text-xs text-muted-foreground">{advisorEmail ?? "No email linked"}</div>

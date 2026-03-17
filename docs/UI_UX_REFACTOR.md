@@ -49,6 +49,7 @@ These abstractions are the preferred way to build new dashboard UI:
 - `MetricBadge`
 - `EntityHeader`
 - `DetailSection`
+- `ListPageLoading`
 
 If a page needs a new visual pattern, evaluate whether it belongs in one of these wrappers before creating page-local markup.
 
@@ -78,6 +79,7 @@ If a page needs a new visual pattern, evaluate whether it belongs in one of thes
 
 - Use motion to reinforce hierarchy and responsiveness.
 - Prefer subtle CSS transitions for cards, rows, controls, and drawers.
+- Shared shell interactions should use reduced-motion-safe transition utilities instead of unconditional animation.
 - Skeleton states should resemble the final layout rather than generic blocks.
 - Add route-specific loading skeletons for dense detail and analytics pages before falling back to the generic dashboard loader.
 
@@ -85,6 +87,7 @@ If a page needs a new visual pattern, evaluate whether it belongs in one of thes
 
 - Dense related-record tables should provide a stacked card treatment on small screens instead of relying only on horizontal scrolling.
 - Preserve the same status chips and key actions between mobile cards and desktop tables so routes do not lose meaning at narrower widths.
+- Apply the same responsive fallback pattern to advisor-scoped workspaces such as the account meeting log and meeting-derived student roster.
 
 ## 9. Documentation Rules
 

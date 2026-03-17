@@ -676,7 +676,7 @@ export function StudentsTable({
                         <tr
                           key={student.student_id}
                           onClick={() => handleRowClick(student.student_id)}
-                          className="cursor-pointer transition-colors duration-150 hover:bg-gray-50"
+                          className="cursor-pointer motion-safe:transition-colors motion-safe:duration-150 hover:bg-gray-50"
                         >
                           <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                             <Link

@@ -132,7 +132,7 @@ export default async function AdvisingPage({ searchParams }: Props) {
       <div className="mb-8 flex flex-wrap gap-2">
         <Link
           href="/advising"
-          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium motion-safe:transition-colors ${
             !isNoShow
               ? "border-slate-900 bg-slate-900 text-white shadow-sm"
               : "border-border bg-white/80 text-slate-600 hover:border-slate-400 hover:bg-white"
@@ -142,7 +142,7 @@ export default async function AdvisingPage({ searchParams }: Props) {
         </Link>
         <Link
           href="/advising?no_show=yes"
-          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium motion-safe:transition-colors ${
             isNoShow
               ? "border-red-600 bg-red-600 text-white shadow-sm"
               : "border-red-200 bg-red-50/80 text-red-700 hover:border-red-400 hover:bg-red-50"
@@ -155,7 +155,7 @@ export default async function AdvisingPage({ searchParams }: Props) {
         </Link>
         <Link
           href="/students?view=no-advising"
-          className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50/80 px-3 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:border-amber-400 hover:bg-amber-50"
+          className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50/80 px-3 py-1.5 text-xs font-medium text-amber-700 motion-safe:transition-colors hover:border-amber-400 hover:bg-amber-50"
         >
           Students Never Seen
           {neverSeenCount > 0 && (

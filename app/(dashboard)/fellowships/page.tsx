@@ -154,7 +154,7 @@ export default async function FellowshipsPage({ searchParams }: Props) {
       <div className="mb-8 flex flex-wrap gap-2">
         <Link
           href="/fellowships"
-          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium motion-safe:transition-colors ${
             view === "all"
               ? "border-slate-900 bg-slate-900 text-white shadow-sm"
               : "border-border bg-white/80 text-slate-600 hover:border-slate-400 hover:bg-white"
@@ -164,7 +164,7 @@ export default async function FellowshipsPage({ searchParams }: Props) {
         </Link>
         <Link
           href="/fellowships?view=no-applicants"
-          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium motion-safe:transition-colors ${
             view === "no-applicants"
               ? "border-amber-600 bg-amber-600 text-white shadow-sm"
               : "border-amber-200 bg-amber-50/80 text-amber-700 hover:border-amber-400 hover:bg-amber-50"
@@ -292,7 +292,7 @@ export default async function FellowshipsPage({ searchParams }: Props) {
                   {visibleFellowships.map((fellowship) => (
                     <tr
                       key={fellowship.fellowship_id}
-                      className="transition-colors duration-150 hover:bg-gray-50"
+                      className="motion-safe:transition-colors motion-safe:duration-150 hover:bg-gray-50"
                     >
                       <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <Link

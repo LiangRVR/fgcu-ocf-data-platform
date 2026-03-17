@@ -276,7 +276,7 @@ export default async function StudentsPage({ searchParams }: Props) {
             <Link
               key={key}
               href={key === "all" ? "/students" : `/students?view=${key}`}
-              className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${cls}`}
+              className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium motion-safe:transition-colors ${cls}`}
             >
               {label}
             </Link>

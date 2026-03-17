@@ -628,42 +628,75 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
                 compact
               />
             ) : (
-              <div className="overflow-x-auto rounded-2xl border border-border/70 bg-white">
-                <table className="min-w-full divide-y divide-border text-sm">
-                  <thead className="bg-slate-50/90">
-                    <tr>
-                      <th className="px-4 py-3 text-left font-medium text-slate-600">Student</th>
-                      <th className="px-4 py-3 text-left font-medium text-slate-600">Date</th>
-                      <th className="px-4 py-3 text-left font-medium text-slate-600">Mode</th>
-                      <th className="px-4 py-3 text-left font-medium text-slate-600">Status</th>
-                      <th className="px-4 py-3 text-left font-medium text-slate-600">Notes</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border bg-white">
-                    {filteredMeetings.map((meeting) => (
-                      <tr key={meeting.meeting_id}>
-                        <td className="px-4 py-3 align-top">
+              <>
+                <div className="space-y-3 md:hidden">
+                  {filteredMeetings.map((meeting) => (
+                    <div key={meeting.meeting_id} className="rounded-2xl border border-border/70 bg-surface-subtle/70 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-1">
                           {meeting.student ? (
-                            <Link href={`/students/${meeting.student.student_id}`} className="font-medium text-slate-900 hover:text-primary hover:underline">
-                              {meeting.student.full_name}
+                            <Link
+                              href={`/students/${meeting.student.student_id}`}
+                              className="text-sm font-semibold text-slate-900 transition-colors hover:text-primary hover:underline"
+                            >
+                              <span className="line-clamp-2">{meeting.student.full_name}</span>
                             </Link>
                           ) : (
-                            <span className="text-muted-foreground">Unknown student</span>
+                            <span className="text-sm text-muted-foreground">Unknown student</span>
                           )}
-                        </td>
-                        <td className="px-4 py-3 align-top text-slate-700">{formatDate(meeting.meeting_date)}</td>
-                        <td className="px-4 py-3 align-top text-slate-700">{meeting.meeting_mode}</td>
-                        <td className="px-4 py-3 align-top">
-                          <MetricBadge tone={meeting.no_show ? "red" : "green"}>
-                            {meeting.no_show ? "No-show" : "Attended"}
-                          </MetricBadge>
-                        </td>
-                        <td className="px-4 py-3 align-top text-slate-700">{getNotesPreview(meeting.notes)}</td>
+                          <p className="text-xs text-slate-500">{formatDate(meeting.meeting_date)}</p>
+                        </div>
+                        <MetricBadge tone={meeting.no_show ? "red" : "green"}>
+                          {meeting.no_show ? "No-show" : "Attended"}
+                        </MetricBadge>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <MetricBadge tone={meeting.meeting_mode === "Virtual" ? "blue" : "slate"}>
+                          {meeting.meeting_mode}
+                        </MetricBadge>
+                      </div>
+                      <p className="mt-3 text-sm leading-6 text-slate-600">{getNotesPreview(meeting.notes)}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="hidden overflow-x-auto rounded-2xl border border-border/70 bg-white md:block">
+                  <table className="min-w-full divide-y divide-border text-sm">
+                    <thead className="bg-slate-50/90">
+                      <tr>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Student</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Date</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Mode</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Status</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Notes</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-border bg-white">
+                      {filteredMeetings.map((meeting) => (
+                        <tr key={meeting.meeting_id} className="transition-colors duration-150 hover:bg-slate-50 motion-safe:transition-colors">
+                          <td className="px-4 py-3 align-top">
+                            {meeting.student ? (
+                              <Link href={`/students/${meeting.student.student_id}`} className="font-medium text-slate-900 hover:text-primary hover:underline">
+                                {meeting.student.full_name}
+                              </Link>
+                            ) : (
+                              <span className="text-muted-foreground">Unknown student</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 align-top text-slate-700">{formatDate(meeting.meeting_date)}</td>
+                          <td className="px-4 py-3 align-top text-slate-700">{meeting.meeting_mode}</td>
+                          <td className="px-4 py-3 align-top">
+                            <MetricBadge tone={meeting.no_show ? "red" : "green"}>
+                              {meeting.no_show ? "No-show" : "Attended"}
+                            </MetricBadge>
+                          </td>
+                          <td className="px-4 py-3 align-top text-slate-700">{getNotesPreview(meeting.notes)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
           </div>
         </DetailSection>
@@ -714,38 +747,64 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
                 compact
               />
             ) : (
-              <div className="overflow-x-auto rounded-2xl border border-border/70 bg-white">
-                <table className="min-w-full divide-y divide-border text-sm">
-                  <thead className="bg-slate-50/90">
-                    <tr>
-                      <th className="px-4 py-3 text-left font-medium text-slate-600">Student</th>
-                      <th className="px-4 py-3 text-left font-medium text-slate-600">Email</th>
-                      <th className="px-4 py-3 text-left font-medium text-slate-600">Major</th>
-                      <th className="px-4 py-3 text-left font-medium text-slate-600">Class standing</th>
-                      <th className="px-4 py-3 text-left font-medium text-slate-600">Meetings</th>
-                      <th className="px-4 py-3 text-left font-medium text-slate-600">Most recent</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border bg-white">
-                    {filteredStudents.map((student) => (
-                      <tr key={student.student_id}>
-                        <td className="px-4 py-3 align-top">
-                          <Link href={`/students/${student.student_id}`} className="font-medium text-slate-900 hover:text-primary hover:underline">
-                            {student.full_name}
+              <>
+                <div className="space-y-3 md:hidden">
+                  {filteredStudents.map((student) => (
+                    <div key={student.student_id} className="rounded-2xl border border-border/70 bg-surface-subtle/70 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-1">
+                          <Link
+                            href={`/students/${student.student_id}`}
+                            className="text-sm font-semibold text-slate-900 transition-colors hover:text-primary hover:underline"
+                          >
+                            <span className="line-clamp-2">{student.full_name}</span>
                           </Link>
-                        </td>
-                        <td className="px-4 py-3 align-top text-slate-700">{student.email}</td>
-                        <td className="px-4 py-3 align-top text-slate-700">{student.major ?? "—"}</td>
-                        <td className="px-4 py-3 align-top text-slate-700">{student.class_standing ?? "—"}</td>
-                        <td className="px-4 py-3 align-top">
-                          <MetricBadge tone="slate">{student.total_meetings}</MetricBadge>
-                        </td>
-                        <td className="px-4 py-3 align-top text-slate-700">{formatDate(student.latest_meeting_date)}</td>
+                          <p className="truncate text-xs text-slate-500">{student.email}</p>
+                        </div>
+                        <MetricBadge tone="slate">{student.total_meetings} meetings</MetricBadge>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <MetricBadge tone="slate">{student.major ?? "No major"}</MetricBadge>
+                        <MetricBadge tone="blue">{student.class_standing ?? "Unknown standing"}</MetricBadge>
+                      </div>
+                      <p className="mt-3 text-sm text-slate-600">Most recent: {formatDate(student.latest_meeting_date)}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="hidden overflow-x-auto rounded-2xl border border-border/70 bg-white md:block">
+                  <table className="min-w-full divide-y divide-border text-sm">
+                    <thead className="bg-slate-50/90">
+                      <tr>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Student</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Email</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Major</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Class standing</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Meetings</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Most recent</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-border bg-white">
+                      {filteredStudents.map((student) => (
+                        <tr key={student.student_id} className="transition-colors duration-150 hover:bg-slate-50 motion-safe:transition-colors">
+                          <td className="px-4 py-3 align-top">
+                            <Link href={`/students/${student.student_id}`} className="font-medium text-slate-900 hover:text-primary hover:underline">
+                              {student.full_name}
+                            </Link>
+                          </td>
+                          <td className="px-4 py-3 align-top text-slate-700">{student.email}</td>
+                          <td className="px-4 py-3 align-top text-slate-700">{student.major ?? "—"}</td>
+                          <td className="px-4 py-3 align-top text-slate-700">{student.class_standing ?? "—"}</td>
+                          <td className="px-4 py-3 align-top">
+                            <MetricBadge tone="slate">{student.total_meetings}</MetricBadge>
+                          </td>
+                          <td className="px-4 py-3 align-top text-slate-700">{formatDate(student.latest_meeting_date)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
           </div>
         </DetailSection>

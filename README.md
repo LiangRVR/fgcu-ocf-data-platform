@@ -35,7 +35,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 - **[Quick Start Guide](docs/quickstart.md)** - Get up and running with Supabase
 - **[FGCU Design Style Guide](docs/DESIGN_GUIDE.md)** - Official design system and style guidelines
-- **[UI/UX Refactor Summary](docs/UI_UX_REFACTOR.md)** - Complete UI/UX transformation documentation
+- **[UI/UX System Reference](docs/UI_UX_REFACTOR.md)** - Active UI rules, responsive patterns, and loading-state guidance
 - **[Schema Verification](docs/schema-verification.md)** - Database setup checklist
 - **[Schema Reference](docs/schema-reference.md)** - Full schema with all constraints and business rules
 - **[Schema Design Decisions](docs/schema-decisions.md)** - Rationale for key data-model choices
@@ -152,7 +152,7 @@ For detailed instructions, see the [Supabase Setup Guide](supabase/README.md).
 - ✅ **Fellowship Thursday** - Live attendance records with student join, full CRUD table
 - ✅ **Scholarship History** - Live records with student + fellowship joins, full CRUD table
 - ✅ **Fellowships** - Live list with per-fellowship metrics (total applications, finalists, awarded) derived from the `application` table
-- ✅ **Professional Dashboard UI** - Neutral shell, restrained FGCU accents, responsive layout
+- ✅ **Professional Dashboard UI** - Neutral shell, restrained FGCU accents, responsive layout, and route-specific loading states across major dashboard pages
 - ✅ **Semantic Status Badges** - Color-coded indicators throughout all tables
 - ✅ **FGCU Design System** - Consistent colors, typography, spacing, and shell rules (see `docs/DESIGN_GUIDE.md`)
 - ✅ **Supabase SSR Auth Wiring** - Browser/server clients, proxy session refresh, protected dashboard layout, and real sign-in/sign-out flow
@@ -168,7 +168,10 @@ For detailed instructions, see the [Supabase Setup Guide](supabase/README.md).
 
 - 🔄 **Advisor Provisioning** - Existing advisor rows still need confirmed FGCU email backfill before the auth migration can be finalized on populated databases
 - 🔄 **Production Auth Verification** - Email-change confirmations and password-recovery delivery still need end-to-end verification against the real Supabase project
-- 🔄 **Reports page** - Page exists with placeholder empty state; charts and export logic not yet built
+
+### Resolved Decisions
+
+- ✅ **Analytics Surface Direction** - Dashboard and reports now rely on native cards, distribution bars, and narrative panels; no additional charting dependency is required in the current product direction
 
 ### Planned
 

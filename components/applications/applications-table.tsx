@@ -549,7 +549,7 @@ export function ApplicationsTable({
                 ))}
               </div>
               {/* Desktop table */}
-              <div className="hidden md:block overflow-x-auto">
+              <div className="hidden overflow-x-auto md:block">
               <table className="w-full">
                 <thead className="bg-gray-50">
                   <tr className="border-b border-gray-200">
@@ -580,7 +580,7 @@ export function ApplicationsTable({
                   {filteredApplications.map((app) => (
                     <tr
                       key={app.application_id}
-                      className="transition-colors duration-150 hover:bg-gray-50"
+                      className="motion-safe:transition-colors motion-safe:duration-150 hover:bg-gray-50"
                     >
                       <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <Link

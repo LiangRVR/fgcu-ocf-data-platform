@@ -67,7 +67,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                   href={item.href}
                   onClick={onClose}
                   className={cn(
-                    "group flex items-center gap-3 rounded-2xl px-3.5 py-2.5 text-sm font-medium transition-all duration-200",
+                    "group flex items-center gap-3 rounded-2xl px-3.5 py-2.5 text-sm font-medium motion-safe:transition-all motion-safe:duration-200",
                     isActive
                       ? "bg-sidebar-accent text-white shadow-[0_16px_24px_-18px_rgba(0,103,71,0.9)]"
                       : "text-slate-300 hover:bg-sidebar-muted hover:text-white"
@@ -75,7 +75,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 >
                   {Icon && (
                     <span className={cn(
-                      "flex h-8 w-8 items-center justify-center rounded-xl transition-colors",
+                      "flex h-8 w-8 items-center justify-center rounded-xl motion-safe:transition-colors",
                       isActive ? "bg-white/10" : "bg-white/[0.03] group-hover:bg-white/[0.06]"
                     )}>
                       <Icon className="h-4.5 w-4.5 shrink-0" />
@@ -128,7 +128,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             <button
               type="button"
               onClick={onClose}
-              className="absolute right-4 top-4 rounded-xl border border-white/10 bg-white/5 p-1.5 text-white/70 hover:text-white lg:hidden"
+              className="absolute right-4 top-4 rounded-xl border border-white/10 bg-white/5 p-1.5 text-white/70 motion-safe:transition-colors hover:text-white lg:hidden"
               aria-label="Close sidebar"
             >
               <X className="h-5 w-5" />

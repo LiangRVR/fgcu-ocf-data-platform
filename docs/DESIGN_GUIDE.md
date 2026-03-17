@@ -104,6 +104,7 @@ All new dashboard work should prefer shared wrappers over raw ad hoc `Card` usag
 - `EntityHeader`: detail-page summary block
 - `DetailSection`: standard detail-page content block
 - `DataToolbar`: list-page search, filters, and actions container
+- `ListPageLoading`: shared skeleton baseline for CRUD and roster pages with KPI strips and toolbars
 
 ## 6. Tables And Data Views
 
@@ -125,6 +126,7 @@ All new dashboard work should prefer shared wrappers over raw ad hoc `Card` usag
 
 - Use motion only to reinforce hierarchy and responsiveness.
 - Prioritize hover refinement, loading polish, and dialog or drawer transitions.
+- Prefer `motion-safe:` transition utilities on shell controls, cards, and table rows so reduced-motion preferences are respected by default.
 - Avoid decorative animation loops.
 - Focus states must remain visible and consistent.
 
@@ -134,10 +136,12 @@ All new dashboard work should prefer shared wrappers over raw ad hoc `Card` usag
 - Desktop density should not collapse into cramped mobile layouts.
 - Toolbars must stack cleanly on small screens.
 - Tables must preserve critical information at narrower breakpoints.
+- When tables become too dense for smaller screens, replace them with stacked summary cards instead of relying on horizontal scroll alone.
 
 ## 10. Implementation Notes
 
 - Global visual tokens live in `app/globals.css`.
 - Shared shell components live in `components/layout`.
 - Shared primitives live in `components/ui`.
+- Shared route-level loading states live alongside their routes under `app/(dashboard)/**/loading.tsx` and should mirror the final layout shape.
 - When design rules change, update this guide and `docs/UI_UX_REFACTOR.md` in the same pull request.
