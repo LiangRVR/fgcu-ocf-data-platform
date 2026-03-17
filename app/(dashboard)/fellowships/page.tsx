@@ -1,8 +1,13 @@
 import type { Metadata } from "next";
 import { PageHeader } from "@/components/layout/page-header";
-import { Card, CardContent } from "@/components/ui/card";
+import { AppCard, AppCardContent } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
+import { DataToolbar } from "@/components/ui/data-toolbar";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
+import { MetricBadge } from "@/components/ui/metric-badge";
+import { PageSection } from "@/components/ui/page-section";
+import { StatCard } from "@/components/ui/stat-card";
 import Link from "next/link";
 import { Plus, Search, Eye, Trash2, Award } from "lucide-react";
 import { FellowshipEditButton } from "@/components/fellowships/fellowship-edit-button";
@@ -132,33 +137,37 @@ export default async function FellowshipsPage({ searchParams }: Props) {
   return (
     <>
       <PageHeader
+        eyebrow="Program Portfolio"
         title="Fellowships"
-        description="Browse and manage available fellowship opportunities"
+        description="Manage the active fellowship catalog, surface under-promoted programs, and review pipeline performance by program."
       >
-        <Button size="sm" className="bg-[#006747] hover:bg-[#00563b]">
+        <MetricBadge tone="blue">{fellowshipsWithMetrics.length} programs</MetricBadge>
+        <MetricBadge tone="green">{totalFinalistsAll} finalists</MetricBadge>
+        <MetricBadge tone="amber">{totalAwardedAll} awarded</MetricBadge>
+        <Button size="sm">
           <Plus className="mr-2 h-4 w-4" />
           Add Fellowship
         </Button>
       </PageHeader>
 
       {/* Exception view pill bar */}
-      <div className="mb-6 flex flex-wrap gap-2">
+      <div className="mb-8 flex flex-wrap gap-2">
         <Link
           href="/fellowships"
-          className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
             view === "all"
-              ? "bg-slate-900 text-white border-slate-900"
-              : "border-gray-200 bg-white text-slate-600 hover:border-slate-400"
+              ? "border-slate-900 bg-slate-900 text-white shadow-sm"
+              : "border-border bg-white/80 text-slate-600 hover:border-slate-400 hover:bg-white"
           }`}
         >
           All Fellowships
         </Link>
         <Link
           href="/fellowships?view=no-applicants"
-          className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
             view === "no-applicants"
-              ? "bg-amber-600 text-white border-amber-600"
-              : "border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-400"
+              ? "border-amber-600 bg-amber-600 text-white shadow-sm"
+              : "border-amber-200 bg-amber-50/80 text-amber-700 hover:border-amber-400 hover:bg-amber-50"
           }`}
         >
           No Applicants Yet
@@ -171,74 +180,64 @@ export default async function FellowshipsPage({ searchParams }: Props) {
       </div>
 
       {view === "no-applicants" && (
-        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          <span className="font-semibold">{visibleFellowships.length} fellowship{visibleFellowships.length !== 1 ? "s" : ""}</span> have no applications on record.
-          These may need additional promotion or outreach.
-        </div>
+        <AppCard variant="soft" className="mb-6 border-amber-200/70 bg-amber-50/70">
+          <AppCardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-amber-900">Promotion candidates</p>
+              <p className="text-sm text-amber-800">
+                {visibleFellowships.length} fellowship{visibleFellowships.length !== 1 ? "s" : ""} have no applications on record. These may need additional promotion or outreach.
+              </p>
+            </div>
+            <MetricBadge tone="amber">{visibleFellowships.length} open</MetricBadge>
+          </AppCardContent>
+        </AppCard>
       )}
 
-      {/* Summary KPI Cards */}
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card className="border-gray-200 shadow-sm">
-          <CardContent className="p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Fellowships</p>
-            <p className="mt-1 text-2xl font-bold text-slate-900">{fellowshipsWithMetrics.length}</p>
-          </CardContent>
-        </Card>
-        <Card className="border-gray-200 shadow-sm">
-          <CardContent className="p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Total Applications</p>
-            <p className="mt-1 text-2xl font-bold text-slate-900">{totalApplicationsAll}</p>
-          </CardContent>
-        </Card>
-        <Card className="border-gray-200 shadow-sm">
-          <CardContent className="p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Finalists</p>
-            <p className="mt-1 text-2xl font-bold text-[#006747]">{totalFinalistsAll}</p>
-          </CardContent>
-        </Card>
-        <Card className="border-gray-200 shadow-sm">
-          <CardContent className="p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Awarded</p>
-            <p className="mt-1 text-2xl font-bold text-[#006747]">{totalAwardedAll}</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Search Bar */}
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="relative w-full sm:w-72">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <Input
-            placeholder="Search fellowships..."
-            className="pl-9"
-          />
+      <PageSection
+        title="Program Health"
+        description="Use these metrics to spot coverage gaps and see where applicant flow is concentrating."
+        className="mb-6"
+      >
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard title="Fellowships" value={fellowshipsWithMetrics.length} description="Programs in the current catalog" icon={Award} tone="blue" />
+          <StatCard title="Total Applications" value={totalApplicationsAll} description="Applications linked across all programs" icon={Search} tone="violet" />
+          <StatCard title="Finalists" value={totalFinalistsAll} description="Applicants marked as finalists" icon={Award} tone="green" />
+          <StatCard title="Awarded" value={totalAwardedAll} description="Awarded outcomes across the program set" icon={Award} tone="amber" />
         </div>
-      </div>
+      </PageSection>
+
+      <DataToolbar
+        className="mb-4"
+        leading={
+          <div className="relative w-full sm:w-72">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <Input
+              placeholder="Search fellowships..."
+              className="pl-9"
+            />
+          </div>
+        }
+      />
 
       {/* Fellowships Table */}
-      <Card className="border-gray-200 shadow-sm">
-        <CardContent className="p-0">
+      <AppCard>
+        <AppCardContent className="p-0">
           {visibleFellowships.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16">
-              <div className="mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-gray-100">
-                <Award className="h-10 w-10 text-gray-400" />
-              </div>
-              <h3 className="mb-2 text-lg font-semibold text-slate-900">
-                {view === "no-applicants" ? "All fellowships have applicants" : "No fellowships found"}
-              </h3>
-              <p className="mb-4 text-sm text-slate-500">
-                {view === "no-applicants"
-                  ? "Every fellowship currently has at least one applicant — great!"
-                  : "Get started by adding your first fellowship opportunity."}
-              </p>
-              {view === "all" && (
-                <Button className="bg-[#006747] hover:bg-[#00563b]">
+            <EmptyState
+              icon={Award}
+              title={view === "no-applicants" ? "All fellowships have applicants" : "No fellowships found"}
+              description={
+                view === "no-applicants"
+                  ? "Every fellowship currently has at least one applicant."
+                  : "Get started by adding your first fellowship opportunity."
+              }
+              action={view === "all" ? (
+                <Button>
                   <Plus className="mr-2 h-4 w-4" />
                   Add Fellowship
                 </Button>
-              )}
-            </div>
+              ) : undefined}
+            />
           ) : (
             <>
               {/* Mobile card list */}
@@ -256,9 +255,7 @@ export default async function FellowshipsPage({ searchParams }: Props) {
                         <div className="mt-1 flex flex-wrap gap-3 text-xs text-slate-500">
                           <span><span className="font-medium text-slate-700">{fellowship.totalApplications}</span> apps</span>
                           <span><span className="font-medium text-slate-700">{fellowship.finalists}</span> finalists</span>
-                          <span className={fellowship.awardedStudents > 0 ? "font-medium text-[#006747]" : ""}>
-                            <span className={`font-medium ${fellowship.awardedStudents > 0 ? "text-[#006747]" : "text-slate-700"}`}>{fellowship.awardedStudents}</span> awarded
-                          </span>
+                          <span><span className="font-medium text-slate-700">{fellowship.awardedStudents}</span> awarded</span>
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
@@ -312,7 +309,7 @@ export default async function FellowshipsPage({ searchParams }: Props) {
                         <span className="text-sm font-medium text-slate-700">{fellowship.finalists}</span>
                       </td>
                       <td className="hidden whitespace-nowrap px-3 py-3 text-right sm:px-6 sm:py-4 md:table-cell">
-                        <span className={`text-sm font-medium ${fellowship.awardedStudents > 0 ? "text-[#006747]" : "text-slate-700"}`}>
+                        <span className="text-sm font-medium text-slate-700">
                           {fellowship.awardedStudents}
                         </span>
                       </td>
@@ -349,8 +346,8 @@ export default async function FellowshipsPage({ searchParams }: Props) {
               </div>
             </>
           )}
-        </CardContent>
-      </Card>
+        </AppCardContent>
+      </AppCard>
 
       {/* Pagination */}
       {visibleFellowships.length > 0 && (

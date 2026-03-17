@@ -15,17 +15,17 @@ import {
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { PageHeader } from "@/components/layout/page-header";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  AppCard as Card,
+  AppCardContent as CardContent,
+  AppCardDescription as CardDescription,
+  AppCardHeader as CardHeader,
+  AppCardTitle as CardTitle,
+} from "@/components/ui/app-card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MetricBadge } from "@/components/ui/metric-badge";
 import {
   Select,
   SelectContent,
@@ -33,6 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { StatCard } from "@/components/ui/stat-card";
 import type { Advisor } from "@/lib/auth/session";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
 import { formatDate } from "@/lib/utils/format";
@@ -273,9 +274,13 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
   return (
     <div className="space-y-6">
       <PageHeader
+        eyebrow="Advisor Workspace"
         title="My Account"
         description="Manage your advisor profile, security settings, meeting history, and the students you have advised."
       >
+        <MetricBadge tone="blue">{initialMeetings.length} meetings</MetricBadge>
+        <MetricBadge tone="green">{initialStudents.length} students</MetricBadge>
+        <MetricBadge tone="slate">{advisor.role}</MetricBadge>
         <div className="flex flex-wrap gap-2">
           <Button asChild variant="outline" size="sm">
             <a href="#profile">Profile</a>
@@ -370,16 +375,16 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
               <div className="rounded-lg border bg-slate-50 p-4">
                 <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Role</div>
                 <div className="mt-2 flex items-center gap-2">
-                  <Badge variant="outline">{advisor.role}</Badge>
+                  <MetricBadge tone="slate">{advisor.role}</MetricBadge>
                   <span className="text-xs text-muted-foreground">Admin-controlled</span>
                 </div>
               </div>
               <div className="rounded-lg border bg-slate-50 p-4">
                 <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Status</div>
                 <div className="mt-2 flex items-center gap-2">
-                  <Badge variant={advisor.is_active ? "default" : "destructive"}>
+                  <MetricBadge tone={advisor.is_active ? "green" : "red"}>
                     {advisor.is_active ? "Active" : "Inactive"}
-                  </Badge>
+                  </MetricBadge>
                   <span className="text-xs text-muted-foreground">Admin-controlled</span>
                 </div>
               </div>
@@ -474,30 +479,10 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
         </div>
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>Total meetings</CardDescription>
-              <CardTitle className="text-3xl">{meetingStats.totalMeetings}</CardTitle>
-            </CardHeader>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>Meetings this month</CardDescription>
-              <CardTitle className="text-3xl">{meetingStats.meetingsThisMonth}</CardTitle>
-            </CardHeader>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>Unique students advised</CardDescription>
-              <CardTitle className="text-3xl">{meetingStats.uniqueStudents}</CardTitle>
-            </CardHeader>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>No-shows</CardDescription>
-              <CardTitle className="text-3xl">{meetingStats.noShowCount}</CardTitle>
-            </CardHeader>
-          </Card>
+          <StatCard title="Total Meetings" value={meetingStats.totalMeetings} description="Filtered advising sessions" icon={CalendarRange} tone="blue" />
+          <StatCard title="This Month" value={meetingStats.meetingsThisMonth} description="Meetings in the current month" icon={CalendarRange} tone="green" />
+          <StatCard title="Students Advised" value={meetingStats.uniqueStudents} description="Unique students in the filtered set" icon={Users} tone="violet" />
+          <StatCard title="No-Shows" value={meetingStats.noShowCount} description="Attendance issues requiring follow-up" icon={Shield} tone="amber" />
         </div>
 
         <Card>
@@ -623,9 +608,9 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
                         <td className="px-4 py-3 align-top text-slate-700">{formatDate(meeting.meeting_date)}</td>
                         <td className="px-4 py-3 align-top text-slate-700">{meeting.meeting_mode}</td>
                         <td className="px-4 py-3 align-top">
-                          <Badge variant={meeting.no_show ? "destructive" : "secondary"}>
+                          <MetricBadge tone={meeting.no_show ? "red" : "green"}>
                             {meeting.no_show ? "No-show" : "Attended"}
-                          </Badge>
+                          </MetricBadge>
                         </td>
                         <td className="px-4 py-3 align-top text-slate-700">{getNotesPreview(meeting.notes)}</td>
                       </tr>
@@ -713,7 +698,7 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
                         <td className="px-4 py-3 align-top text-slate-700">{student.major ?? "—"}</td>
                         <td className="px-4 py-3 align-top text-slate-700">{student.class_standing ?? "—"}</td>
                         <td className="px-4 py-3 align-top">
-                          <Badge variant="outline">{student.total_meetings}</Badge>
+                          <MetricBadge tone="slate">{student.total_meetings}</MetricBadge>
                         </td>
                         <td className="px-4 py-3 align-top text-slate-700">{formatDate(student.latest_meeting_date)}</td>
                       </tr>

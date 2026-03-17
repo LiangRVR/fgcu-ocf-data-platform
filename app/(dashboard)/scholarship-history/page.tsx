@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { PageHeader } from "@/components/layout/page-header";
+import { MetricBadge } from "@/components/ui/metric-badge";
 import { createServerClient } from "@/lib/supabase/server";
 import { ScholarshipHistoryTable } from "@/components/scholarship-history/scholarship-history-table";
 import type { Database } from "@/types/database";
@@ -84,13 +85,19 @@ export default async function ScholarshipHistoryPage({ searchParams }: Props) {
     getStudents(),
     getFellowships(),
   ]);
+  const uniqueStudents = new Set(records.map((record) => record.student_id)).size;
 
   return (
     <>
       <PageHeader
+        eyebrow="Award History"
         title="Scholarship History"
-        description="Prior scholarship and fellowship awards received by students"
-      />
+        description="Record prior awards and preserve historical context for students with new fellowship activity."
+      >
+        <MetricBadge tone="blue">{records.length} records</MetricBadge>
+        <MetricBadge tone="green">{uniqueStudents} students</MetricBadge>
+        <MetricBadge tone="amber">{fellowships.length} fellowships</MetricBadge>
+      </PageHeader>
       <ScholarshipHistoryTable
         initialRecords={records}
         students={students}

@@ -1,8 +1,10 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { Card, CardContent } from "@/components/ui/card";
+import { AppCard, AppCardContent } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
+import { DataToolbar } from "@/components/ui/data-toolbar";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -194,85 +196,77 @@ export function ScholarshipHistoryTable({
   return (
     <>
       {/* Control Bar */}
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          <div className="flex items-center gap-2">
-            <div className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <Input
-                placeholder="Search by student or fellowship…"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9"
-              />
+      <DataToolbar
+        className="mb-4"
+        leading={
+          <>
+            <div className="flex items-center gap-2">
+              <div className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <Input
+                  placeholder="Search by student or fellowship…"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0 gap-1.5 xl:hidden"
+                onClick={() => setFiltersOpen((o) => !o)}
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+                Filters
+                {fellowshipFilter !== "all" && (
+                  <span className="flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-white">•</span>
+                )}
+              </Button>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="shrink-0 gap-1.5 xl:hidden"
-              onClick={() => setFiltersOpen((o) => !o)}
-            >
-              <SlidersHorizontal className="h-4 w-4" />
-              Filters
-              {fellowshipFilter !== "all" && (
-                <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#006747] text-[10px] font-bold text-white">
-                  •
-                </span>
-              )}
-            </Button>
-          </div>
-          <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
-            <Select value={fellowshipFilter} onValueChange={setFellowshipFilter}>
-              <SelectTrigger className="w-full sm:w-48">
-                <SelectValue placeholder="All fellowships" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All fellowships</SelectItem>
-                {fellowships.map((f) => (
-                  <SelectItem key={f.fellowship_id} value={String(f.fellowship_id)}>
-                    {f.fellowship_name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-        <Button
-          size="sm"
-          className="bg-[#006747] hover:bg-[#00563b]"
-          onClick={() => setAddOpen(true)}
-        >
-          <Plus className="mr-2 h-4 w-4" />
-          Add Record
-        </Button>
-      </div>
+            <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
+              <Select value={fellowshipFilter} onValueChange={setFellowshipFilter}>
+                <SelectTrigger className="w-full sm:w-48">
+                  <SelectValue placeholder="All fellowships" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All fellowships</SelectItem>
+                  {fellowships.map((f) => (
+                    <SelectItem key={f.fellowship_id} value={String(f.fellowship_id)}>
+                      {f.fellowship_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </>
+        }
+        trailing={
+          <Button size="sm" onClick={() => setAddOpen(true)}>
+            <Plus className="mr-2 h-4 w-4" />
+            Add Record
+          </Button>
+        }
+      />
 
       {/* Table */}
-      <Card className="border-gray-200 shadow-sm">
-        <CardContent className="p-0">
+      <AppCard>
+        <AppCardContent className="p-0">
           {filteredRecords.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16">
-              <div className="mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-gray-100">
-                <BookOpen className="h-10 w-10 text-gray-400" />
-              </div>
-              <h3 className="mb-2 text-lg font-semibold text-slate-900">
-                No scholarship history found
-              </h3>
-              <p className="mb-4 text-sm text-slate-500">
-                {debouncedSearch || fellowshipFilter !== "all"
+            <EmptyState
+              icon={BookOpen}
+              title="No scholarship history found"
+              description={
+                debouncedSearch || fellowshipFilter !== "all"
                   ? "Try adjusting your search or filter."
-                  : "Start recording prior scholarship and fellowship awards."}
-              </p>
-              {!debouncedSearch && fellowshipFilter === "all" && (
-                <Button
-                  className="bg-[#006747] hover:bg-[#00563b]"
-                  onClick={() => setAddOpen(true)}
-                >
+                  : "Start recording prior scholarship and fellowship awards."
+              }
+              action={!debouncedSearch && fellowshipFilter === "all" ? (
+                <Button onClick={() => setAddOpen(true)}>
                   <Plus className="mr-2 h-4 w-4" />
                   Add Record
                 </Button>
-              )}
-            </div>
+              ) : undefined}
+            />
           ) : (
             <>
               {/* Mobile card list */}
@@ -367,8 +361,8 @@ export function ScholarshipHistoryTable({
               </div>
             </>
           )}
-        </CardContent>
-      </Card>
+        </AppCardContent>
+      </AppCard>
 
       {/* Record count */}
       {filteredRecords.length > 0 && (

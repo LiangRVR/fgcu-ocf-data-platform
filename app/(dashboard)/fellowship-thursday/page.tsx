@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { PageHeader } from "@/components/layout/page-header";
+import { MetricBadge } from "@/components/ui/metric-badge";
 import { createServerClient } from "@/lib/supabase/server";
 import { FellowshipThursdayTable } from "@/components/fellowship-thursday/fellowship-thursday-table";
 import type { Database } from "@/types/database";
@@ -62,13 +63,20 @@ export default async function FellowshipThursdayPage({ searchParams }: Props) {
     getFellowshipThursdayRecords(),
     getStudents(),
   ]);
+  const attendedCount = records.filter((record) => record.attended).length;
+  const sourcedCount = records.filter((record) => Boolean(record.source_info)).length;
 
   return (
     <>
       <PageHeader
+        eyebrow="Event Outreach"
         title="Fellowship Thursday"
-        description="Track student attendance at weekly Thursday fellowship meetings"
-      />
+        description="Track weekly Fellowship Thursday attendance and monitor which students are entering through partner channels."
+      >
+        <MetricBadge tone="blue">{records.length} records</MetricBadge>
+        <MetricBadge tone="green">{attendedCount} attended</MetricBadge>
+        <MetricBadge tone="amber">{sourcedCount} tagged sources</MetricBadge>
+      </PageHeader>
       <FellowshipThursdayTable
         initialRecords={records}
         students={students}

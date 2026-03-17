@@ -1,10 +1,12 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { Card, CardContent } from "@/components/ui/card";
+import { AppCard, AppCardContent } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
+import { DataToolbar } from "@/components/ui/data-toolbar";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { MetricBadge } from "@/components/ui/metric-badge";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -261,95 +263,87 @@ export function FellowshipThursdayTable({
   return (
     <>
       {/* Control Bar */}
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          <div className="flex items-center gap-2">
-            <div className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <Input
-                placeholder="Search by student name…"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9"
-              />
+      <DataToolbar
+        className="mb-4"
+        leading={
+          <>
+            <div className="flex items-center gap-2">
+              <div className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <Input
+                  placeholder="Search by student name…"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0 gap-1.5 xl:hidden"
+                onClick={() => setFiltersOpen((o) => !o)}
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+                Filters
+                {(attendedFilter !== "all" || sourceFilter !== "all") && (
+                  <span className="flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-white">•</span>
+                )}
+              </Button>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="shrink-0 gap-1.5 xl:hidden"
-              onClick={() => setFiltersOpen((o) => !o)}
-            >
-              <SlidersHorizontal className="h-4 w-4" />
-              Filters
-              {(attendedFilter !== "all" || sourceFilter !== "all") && (
-                <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#006747] text-[10px] font-bold text-white">
-                  •
-                </span>
-              )}
-            </Button>
-          </div>
-          <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
-            <Select value={attendedFilter} onValueChange={setAttendedFilter}>
-              <SelectTrigger className="w-full sm:w-36">
-                <SelectValue placeholder="All attendance" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All attendance</SelectItem>
-                <SelectItem value="yes">Attended</SelectItem>
-                <SelectItem value="no">Not attended</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={sourceFilter} onValueChange={setSourceFilter}>
-              <SelectTrigger className="w-full sm:w-40">
-                <SelectValue placeholder="All sources" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All sources</SelectItem>
-                {SOURCE_OPTIONS.map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {sourceLabel[s]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-        <Button
-          size="sm"
-          className="bg-[#006747] hover:bg-[#00563b]"
-          onClick={() => setAddOpen(true)}
-        >
-          <UserPlus className="mr-2 h-4 w-4" />
-          Add Record
-        </Button>
-      </div>
+            <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
+              <Select value={attendedFilter} onValueChange={setAttendedFilter}>
+                <SelectTrigger className="w-full sm:w-36">
+                  <SelectValue placeholder="All attendance" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All attendance</SelectItem>
+                  <SelectItem value="yes">Attended</SelectItem>
+                  <SelectItem value="no">Not attended</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={sourceFilter} onValueChange={setSourceFilter}>
+                <SelectTrigger className="w-full sm:w-40">
+                  <SelectValue placeholder="All sources" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All sources</SelectItem>
+                  {SOURCE_OPTIONS.map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {sourceLabel[s]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </>
+        }
+        trailing={
+          <Button size="sm" onClick={() => setAddOpen(true)}>
+            <UserPlus className="mr-2 h-4 w-4" />
+            Add Record
+          </Button>
+        }
+      />
 
       {/* Table */}
-      <Card className="border-gray-200 shadow-sm">
-        <CardContent className="p-0">
+      <AppCard>
+        <AppCardContent className="p-0">
           {filteredRecords.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16">
-              <div className="mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-gray-100">
-                <CalendarDays className="h-10 w-10 text-gray-400" />
-              </div>
-              <h3 className="mb-2 text-lg font-semibold text-slate-900">
-                No attendance records found
-              </h3>
-              <p className="mb-4 text-sm text-slate-500">
-                {debouncedSearch || attendedFilter !== "all" || sourceFilter !== "all"
+            <EmptyState
+              icon={CalendarDays}
+              title="No attendance records found"
+              description={
+                debouncedSearch || attendedFilter !== "all" || sourceFilter !== "all"
                   ? "Try adjusting your search or filters."
-                  : "Start tracking Thursday meeting attendance."}
-              </p>
-              {!debouncedSearch && attendedFilter === "all" && sourceFilter === "all" && (
-                <Button
-                  className="bg-[#006747] hover:bg-[#00563b]"
-                  onClick={() => setAddOpen(true)}
-                >
+                  : "Start tracking Thursday meeting attendance."
+              }
+              action={!debouncedSearch && attendedFilter === "all" && sourceFilter === "all" ? (
+                <Button onClick={() => setAddOpen(true)}>
                   <UserPlus className="mr-2 h-4 w-4" />
                   Add Record
                 </Button>
-              )}
-            </div>
+              ) : undefined}
+            />
           ) : (
             <>
               {/* Mobile card list */}
@@ -371,28 +365,11 @@ export function FellowshipThursdayTable({
                           )}
                         </div>
                         <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                          {record.attended ? (
-                            <Badge variant="secondary" className="rounded-full border border-green-200 bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">
-                              Attended
-                            </Badge>
-                          ) : (
-                            <Badge variant="secondary" className="rounded-full border border-red-200 bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
-                              Not Attended
-                            </Badge>
-                          )}
+                          {record.attended ? <MetricBadge tone="green">Attended</MetricBadge> : <MetricBadge tone="red">Not Attended</MetricBadge>}
                           {record.source_info && (
-                            <Badge
-                              variant="secondary"
-                              className={`rounded-full border px-2 py-0.5 text-xs font-medium ${
-                                record.source_info === "OCF"
-                                  ? "border-[#006747]/30 bg-[#006747]/10 text-[#006747]"
-                                  : record.source_info === "HC"
-                                  ? "border-purple-200 bg-purple-100 text-purple-800"
-                                  : "border-amber-200 bg-amber-100 text-amber-800"
-                              }`}
-                            >
+                            <MetricBadge tone={record.source_info === "OCF" ? "green" : record.source_info === "HC" ? "purple" : "amber"}>
                               {sourceLabel[record.source_info] ?? record.source_info}
-                            </Badge>
+                            </MetricBadge>
                           )}
                         </div>
                       </div>
@@ -461,36 +438,13 @@ export function FellowshipThursdayTable({
                         </div>
                       </td>
                       <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
-                        {record.attended ? (
-                          <Badge
-                            variant="secondary"
-                            className="rounded-full border border-green-200 bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800"
-                          >
-                            Yes
-                          </Badge>
-                        ) : (
-                          <Badge
-                            variant="secondary"
-                            className="rounded-full border border-red-200 bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700"
-                          >
-                            No
-                          </Badge>
-                        )}
+                        {record.attended ? <MetricBadge tone="green">Yes</MetricBadge> : <MetricBadge tone="red">No</MetricBadge>}
                       </td>
                       <td className="hidden whitespace-nowrap px-3 py-3 sm:table-cell sm:px-6 sm:py-4">
                         {record.source_info ? (
-                          <Badge
-                            variant="secondary"
-                            className={`rounded-full border px-2 py-0.5 text-xs font-medium ${
-                              record.source_info === "OCF"
-                                ? "border-[#006747]/30 bg-[#006747]/10 text-[#006747]"
-                                : record.source_info === "HC"
-                                ? "border-purple-200 bg-purple-100 text-purple-800"
-                                : "border-amber-200 bg-amber-100 text-amber-800"
-                            }`}
-                          >
+                          <MetricBadge tone={record.source_info === "OCF" ? "green" : record.source_info === "HC" ? "purple" : "amber"}>
                             {sourceLabel[record.source_info] ?? record.source_info}
-                          </Badge>
+                          </MetricBadge>
                         ) : (
                           <span className="text-xs text-slate-300">—</span>
                         )}
@@ -524,8 +478,8 @@ export function FellowshipThursdayTable({
               </div>
             </>
           )}
-        </CardContent>
-      </Card>
+        </AppCardContent>
+      </AppCard>
 
       {/* Record count */}
       {filteredRecords.length > 0 && (
