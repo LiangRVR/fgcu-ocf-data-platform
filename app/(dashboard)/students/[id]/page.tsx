@@ -300,7 +300,38 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                 </Link>
               </div>
             ) : (
-              <div className="overflow-x-auto">
+              <>
+                <div className="space-y-3 md:hidden">
+                  {applications.map((app) => (
+                    <div key={app.application_id} className="rounded-2xl border border-border/70 bg-surface-subtle/70 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <Link
+                          href={`/fellowships/${app.fellowship_id}`}
+                          className="min-w-0 text-sm font-semibold text-slate-900 hover:text-primary hover:underline"
+                        >
+                          <span className="line-clamp-2">
+                            {app.fellowship?.fellowship_name ?? `Fellowship #${app.fellowship_id}`}
+                          </span>
+                        </Link>
+                        <MetricBadge tone="slate">{app.stage_of_application || "Pending"}</MetricBadge>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <MetricBadge tone="slate">
+                          {app.destination_country || "No destination"}
+                        </MetricBadge>
+                        {app.is_finalist ? (
+                          <MetricBadge tone="blue">Finalist</MetricBadge>
+                        ) : app.is_semi_finalist ? (
+                          <MetricBadge tone="purple">Semi-Finalist</MetricBadge>
+                        ) : (
+                          <MetricBadge tone="slate">Applicant</MetricBadge>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="hidden overflow-x-auto md:block">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-gray-100">
@@ -353,7 +384,8 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                     ))}
                   </tbody>
                 </table>
-              </div>
+                </div>
+              </>
             )}
           </CardContent>
         </Card>
@@ -392,7 +424,42 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                 </Link>
               </div>
             ) : (
-              <div className="overflow-x-auto">
+              <>
+                <div className="space-y-3 md:hidden">
+                  {advisingMeetings.map((meeting) => (
+                    <div key={meeting.meeting_id} className="rounded-2xl border border-border/70 bg-surface-subtle/70 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <MetricBadge tone="slate">
+                          {new Date(meeting.meeting_date + "T00:00:00").toLocaleDateString("en-US", {
+                            year: "numeric",
+                            month: "short",
+                            day: "numeric",
+                          })}
+                        </MetricBadge>
+                        <MetricBadge tone={meeting.no_show ? "red" : "green"}>
+                          {meeting.no_show ? "No-Show" : "Attended"}
+                        </MetricBadge>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <MetricBadge tone={meeting.meeting_mode === "Virtual" ? "blue" : "slate"}>
+                          {meeting.meeting_mode}
+                        </MetricBadge>
+                        {meeting.advisor_id ? (
+                          <Link href={`/advisors/${meeting.advisor_id}`}>
+                            <MetricBadge tone="slate" className="cursor-pointer hover:border-slate-300">
+                              {meeting.advisor?.advisor_name ?? "Advisor"}
+                            </MetricBadge>
+                          </Link>
+                        ) : null}
+                      </div>
+                      <p className="mt-3 text-sm leading-6 text-slate-600">
+                        {meeting.notes || "No notes recorded yet."}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="hidden overflow-x-auto md:block">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-gray-100">
@@ -448,7 +515,8 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                     ))}
                   </tbody>
                 </table>
-              </div>
+                </div>
+              </>
             )}
           </CardContent>
         </Card>
@@ -487,7 +555,24 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                 </Link>
               </div>
             ) : (
-              <div className="overflow-x-auto">
+              <>
+                <div className="space-y-3 md:hidden">
+                  {fellowshipThursday.map((record) => (
+                    <div key={record.attendance_id} className="rounded-2xl border border-border/70 bg-surface-subtle/70 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <MetricBadge tone={record.attended ? "green" : "red"}>
+                          {record.attended ? "Attended" : "Absent"}
+                        </MetricBadge>
+                        <MetricBadge tone="slate">Fellowship Thursday</MetricBadge>
+                      </div>
+                      <p className="mt-3 text-sm leading-6 text-slate-600">
+                        {record.source_info || "No source or context recorded."}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="hidden overflow-x-auto md:block">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-gray-100">
@@ -518,7 +603,8 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                     ))}
                   </tbody>
                 </table>
-              </div>
+                </div>
+              </>
             )}
           </CardContent>
         </Card>

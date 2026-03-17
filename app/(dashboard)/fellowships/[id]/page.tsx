@@ -184,65 +184,93 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
                 }
               />
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-200 bg-gray-50">
-                      <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-4 sm:py-3">
-                        Student
-                      </th>
-                      <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-4 sm:py-3">
-                        Stage
-                      </th>
-                      <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-4 sm:py-3 md:table-cell">
-                        Destination
-                      </th>
-                      <th className="hidden px-3 py-2 text-center text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-4 sm:py-3 lg:table-cell">
-                        Semi-Fin.
-                      </th>
-                      <th className="hidden px-3 py-2 text-center text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-4 sm:py-3 lg:table-cell">
-                        Finalist
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100 bg-white">
-                    {applications.map((app) => (
-                      <tr key={app.application_id} className="hover:bg-gray-50">
-                        <td className="px-3 py-2 font-medium sm:px-4 sm:py-3">
-                          <Link
-                            href={`/students/${app.student_id}`}
-                            className="text-slate-900 hover:text-[#006747] hover:underline"
-                          >
-                            {app.student?.full_name ?? `Student #${app.student_id}`}
-                          </Link>
-                        </td>
-                        <td className="px-3 py-2 sm:px-4 sm:py-3">
-                          <MetricBadge tone={app.stage_of_application === "Awarded" ? "amber" : app.stage_of_application === "Finalist" ? "green" : app.stage_of_application === "Semi-Finalist" ? "purple" : app.stage_of_application === "Rejected" ? "red" : app.stage_of_application === "Under Review" ? "amber" : app.stage_of_application === "Submitted" ? "blue" : "slate"} className={stageBadgeClass(app.stage_of_application)}>
-                            {app.stage_of_application}
-                          </MetricBadge>
-                        </td>
-                        <td className="hidden px-3 py-2 text-slate-600 sm:px-4 sm:py-3 md:table-cell">
-                          {app.destination_country ?? "—"}
-                        </td>
-                        <td className="hidden px-3 py-2 text-center sm:px-4 sm:py-3 lg:table-cell">
-                          {app.is_semi_finalist ? (
-                            <MetricBadge tone="purple">Yes</MetricBadge>
-                          ) : (
-                            <span className="text-xs text-slate-400">—</span>
-                          )}
-                        </td>
-                        <td className="hidden px-3 py-2 text-center sm:px-4 sm:py-3 lg:table-cell">
-                          {app.is_finalist ? (
-                            <MetricBadge tone="green">Yes</MetricBadge>
-                          ) : (
-                            <span className="text-xs text-slate-400">—</span>
-                          )}
-                        </td>
+              <>
+                <div className="space-y-3 md:hidden">
+                  {applications.map((app) => (
+                    <div key={app.application_id} className="rounded-2xl border border-border/70 bg-surface-subtle/70 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <Link
+                          href={`/students/${app.student_id}`}
+                          className="min-w-0 text-sm font-semibold text-slate-900 hover:text-primary hover:underline"
+                        >
+                          <span className="line-clamp-2">{app.student?.full_name ?? `Student #${app.student_id}`}</span>
+                        </Link>
+                        <MetricBadge
+                          tone={app.stage_of_application === "Awarded" ? "amber" : app.stage_of_application === "Finalist" ? "green" : app.stage_of_application === "Semi-Finalist" ? "purple" : app.stage_of_application === "Rejected" ? "red" : app.stage_of_application === "Under Review" ? "amber" : app.stage_of_application === "Submitted" ? "blue" : "slate"}
+                          className={stageBadgeClass(app.stage_of_application)}
+                        >
+                          {app.stage_of_application}
+                        </MetricBadge>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <MetricBadge tone="slate">{app.destination_country ?? "No destination"}</MetricBadge>
+                        {app.is_semi_finalist ? <MetricBadge tone="purple">Semi-Finalist</MetricBadge> : null}
+                        {app.is_finalist ? <MetricBadge tone="green">Finalist</MetricBadge> : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="hidden overflow-x-auto md:block">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-200 bg-gray-50">
+                        <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-4 sm:py-3">
+                          Student
+                        </th>
+                        <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-4 sm:py-3">
+                          Stage
+                        </th>
+                        <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-4 sm:py-3 md:table-cell">
+                          Destination
+                        </th>
+                        <th className="hidden px-3 py-2 text-center text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-4 sm:py-3 lg:table-cell">
+                          Semi-Fin.
+                        </th>
+                        <th className="hidden px-3 py-2 text-center text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-4 sm:py-3 lg:table-cell">
+                          Finalist
+                        </th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 bg-white">
+                      {applications.map((app) => (
+                        <tr key={app.application_id} className="hover:bg-gray-50">
+                          <td className="px-3 py-2 font-medium sm:px-4 sm:py-3">
+                            <Link
+                              href={`/students/${app.student_id}`}
+                              className="text-slate-900 hover:text-[#006747] hover:underline"
+                            >
+                              {app.student?.full_name ?? `Student #${app.student_id}`}
+                            </Link>
+                          </td>
+                          <td className="px-3 py-2 sm:px-4 sm:py-3">
+                            <MetricBadge tone={app.stage_of_application === "Awarded" ? "amber" : app.stage_of_application === "Finalist" ? "green" : app.stage_of_application === "Semi-Finalist" ? "purple" : app.stage_of_application === "Rejected" ? "red" : app.stage_of_application === "Under Review" ? "amber" : app.stage_of_application === "Submitted" ? "blue" : "slate"} className={stageBadgeClass(app.stage_of_application)}>
+                              {app.stage_of_application}
+                            </MetricBadge>
+                          </td>
+                          <td className="hidden px-3 py-2 text-slate-600 sm:px-4 sm:py-3 md:table-cell">
+                            {app.destination_country ?? "—"}
+                          </td>
+                          <td className="hidden px-3 py-2 text-center sm:px-4 sm:py-3 lg:table-cell">
+                            {app.is_semi_finalist ? (
+                              <MetricBadge tone="purple">Yes</MetricBadge>
+                            ) : (
+                              <span className="text-xs text-slate-400">—</span>
+                            )}
+                          </td>
+                          <td className="hidden px-3 py-2 text-center sm:px-4 sm:py-3 lg:table-cell">
+                            {app.is_finalist ? (
+                              <MetricBadge tone="green">Yes</MetricBadge>
+                            ) : (
+                              <span className="text-xs text-slate-400">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
         </DetailSection>
 

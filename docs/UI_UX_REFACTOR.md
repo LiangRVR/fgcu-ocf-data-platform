@@ -79,8 +79,14 @@ If a page needs a new visual pattern, evaluate whether it belongs in one of thes
 - Use motion to reinforce hierarchy and responsiveness.
 - Prefer subtle CSS transitions for cards, rows, controls, and drawers.
 - Skeleton states should resemble the final layout rather than generic blocks.
+- Add route-specific loading skeletons for dense detail and analytics pages before falling back to the generic dashboard loader.
 
-## 8. Documentation Rules
+## 8. Responsive Data Views
+
+- Dense related-record tables should provide a stacked card treatment on small screens instead of relying only on horizontal scrolling.
+- Preserve the same status chips and key actions between mobile cards and desktop tables so routes do not lose meaning at narrower widths.
+
+## 9. Documentation Rules
 
 - Update this file and `docs/DESIGN_GUIDE.md` when the visual system changes.
 - Update `README.md` when route descriptions or feature maturity change.

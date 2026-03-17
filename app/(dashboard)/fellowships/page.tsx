@@ -209,7 +209,7 @@ export default async function FellowshipsPage({ searchParams }: Props) {
       <DataToolbar
         className="mb-4"
         leading={
-          <div className="relative w-full sm:w-72">
+          <div className="relative w-full sm:max-w-xs">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <Input
               placeholder="Search fellowships..."
@@ -277,7 +277,7 @@ export default async function FellowshipsPage({ searchParams }: Props) {
                 ))}
               </div>
               {/* Desktop table */}
-              <div className="hidden md:block overflow-x-auto">
+              <div className="hidden overflow-x-auto md:block">
               <table className="w-full">
                 <thead className="bg-gray-50">
                   <tr className="border-b border-gray-200">
@@ -351,12 +351,12 @@ export default async function FellowshipsPage({ searchParams }: Props) {
 
       {/* Pagination */}
       {visibleFellowships.length > 0 && (
-        <div className="mt-4 flex items-center justify-between">
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm text-slate-500">
             Showing <span className="font-medium">1</span>–<span className="font-medium">{visibleFellowships.length}</span> of{" "}
             <span className="font-medium">{visibleFellowships.length}</span> fellowships
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 self-start sm:self-auto">
             <Button variant="outline" size="sm" disabled>
               Previous
             </Button>
