@@ -9,6 +9,11 @@ body {
   overflow-x: hidden;
 }
 
+/* ── Prevent layout shift when modals/dropdowns lock scroll ── */
+html {
+  scrollbar-gutter: stable;
+}
+
 /* ── shadcn/ui CSS variables ─────────────────────────────────── */
 :root {
   /* FGCU brand anchors */

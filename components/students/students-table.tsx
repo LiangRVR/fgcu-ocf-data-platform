@@ -581,7 +581,7 @@ export function StudentsTable({
                             </div>
                           )}
                         </div>
-                        <DropdownMenu>
+                        <DropdownMenu modal={false}>
                           <DropdownMenuTrigger asChild>
                             <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0 text-slate-500">
                               <MoreHorizontal className="h-4 w-4" />

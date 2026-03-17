@@ -440,7 +440,7 @@ export function AdvisingTable({
                           )}
                         </div>
                       </div>
-                      <DropdownMenu>
+                      <DropdownMenu modal={false}>
                         <DropdownMenuTrigger asChild>
                           <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0 text-slate-500">
                             <MoreHorizontal className="h-4 w-4" />

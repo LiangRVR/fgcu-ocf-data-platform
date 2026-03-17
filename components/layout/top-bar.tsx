@@ -95,7 +95,7 @@ export function TopBar({ onMenuClick, advisorName, advisorEmail }: TopBarProps) 
         <Button variant="ghost" size="icon" aria-label="Notifications" className="text-slate-500 motion-safe:transition-colors">
           <Bell className="h-5 w-5 text-muted-foreground" />
         </Button>
-        <DropdownMenu>
+        <DropdownMenu modal={false}>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="h-11 gap-3 rounded-2xl px-2 motion-safe:transition-colors" aria-label="User menu">
               <div className="hidden text-right sm:block">
