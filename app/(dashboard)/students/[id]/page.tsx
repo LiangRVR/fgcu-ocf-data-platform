@@ -35,7 +35,6 @@ import { formatDate } from "@/lib/utils/format";
 
 type Student = Database["public"]["Tables"]["student"]["Row"];
 type Application = Database["public"]["Tables"]["application"]["Row"] & {
-  created_at?: string | null;
   fellowship: { fellowship_name: string } | null;
 };
 type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
@@ -80,7 +79,7 @@ async function getApplications(studentId: number): Promise<Application[]> {
       .from("application")
       .select("*, fellowship(fellowship_name)")
       .eq("student_id", studentId)
-      .order("created_at", { ascending: false });
+      .order("application_id", { ascending: false });
 
     if (error) {
       console.error("Error fetching applications:", error);
