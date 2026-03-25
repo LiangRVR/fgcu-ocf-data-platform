@@ -14,6 +14,16 @@ html {
   scrollbar-gutter: stable;
 }
 
+/* react-remove-scroll-bar injects a <style> with body[data-scroll-locked]
+   { margin-right: Xpx !important } to compensate for hiding the scrollbar.
+   But scrollbar-gutter: stable already reserves that space, so the
+   compensation causes a double-shift. Use higher specificity (0,1,2 vs
+   the injected 0,1,1) to win regardless of cascade order. */
+html body[data-scroll-locked] {
+  margin-right: 0 !important;
+  padding-right: 0 !important;
+}
+
 /* ── shadcn/ui CSS variables ─────────────────────────────────── */
 :root {
   /* FGCU brand anchors */

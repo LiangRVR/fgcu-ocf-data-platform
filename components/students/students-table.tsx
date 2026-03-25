@@ -351,9 +351,9 @@ export function StudentsTable({
   const openEdit = (student: Student) => {
     setEditingStudent(student);
     setEditForm({
+      ...EMPTY_STUDENT_FORM,
       full_name: student.full_name,
       email: student.email,
-      student_id: String(student.student_id),
       major: student.major ?? "",
       class_standing: student.class_standing ?? "",
       gpa: student.gpa != null ? String(student.gpa) : "",
@@ -1196,7 +1196,7 @@ export function StudentsTable({
               <Label htmlFor="edit_student_id">Student ID</Label>
               <Input
                 id="edit_student_id"
-                value={editForm.student_id}
+                value={editingStudent?.student_id ?? ""}
                 disabled
                 className="bg-gray-50"
               />
