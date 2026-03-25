@@ -78,10 +78,15 @@ interface StudentsTableProps {
 const EMPTY_STUDENT_FORM = {
   full_name: "",
   email: "",
-  student_id: "",
   major: "",
+  minor: "",
   class_standing: "",
   gpa: "",
+  age: "",
+  gender: "",
+  pronouns: "",
+  languages: "",
+  race_ethnicity: "",
   is_ch_student: false,
   first_gen: false,
   honors_college: false,
@@ -282,11 +287,10 @@ export function StudentsTable({
       errors.email = "Invalid email format";
     }
 
-    if (!isEdit) {
-      if (!data.student_id.trim()) {
-        errors.student_id = "Student ID is required";
-      } else if (!/^\d+$/.test(data.student_id)) {
-        errors.student_id = "Student ID must be numeric";
+    if (data.age.trim()) {
+      const ageNum = parseInt(data.age, 10);
+      if (isNaN(ageNum) || ageNum < 1 || ageNum > 120) {
+        errors.age = "Age must be a valid number";
       }
     }
 
@@ -310,12 +314,17 @@ export function StudentsTable({
       const { data, error } = await supabaseBrowserClient
         .from("student")
         .insert({
-          student_id: Number(newStudent.student_id),
           full_name: newStudent.full_name,
           email: newStudent.email,
           major: newStudent.major || null,
+          minor: newStudent.minor || null,
           class_standing: newStudent.class_standing || null,
           gpa: newStudent.gpa ? parseFloat(newStudent.gpa) : null,
+          age: newStudent.age ? parseInt(newStudent.age, 10) : null,
+          gender: newStudent.gender || null,
+          pronouns: newStudent.pronouns || null,
+          languages: newStudent.languages || null,
+          race_ethnicity: newStudent.race_ethnicity || null,
           is_ch_student: newStudent.is_ch_student,
           first_gen: newStudent.first_gen,
           honors_college: newStudent.honors_college,
@@ -886,69 +895,71 @@ export function StudentsTable({
               required.
             </DialogDescription>
           </DialogHeader>
+          <div className="max-h-[70vh] overflow-y-auto pr-1">
           <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="full_name">
-                Full Name <span className="text-red-500">*</span>
-              </Label>
-              <Input
-                id="full_name"
-                value={newStudent.full_name}
-                onChange={(e) =>
-                  setNewStudent({ ...newStudent, full_name: e.target.value })
-                }
-                placeholder="John Doe"
-              />
-              {formErrors.full_name && (
-                <p className="text-sm text-red-600">{formErrors.full_name}</p>
-              )}
+            {/* Basic Info */}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="full_name">
+                  Full Name <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="full_name"
+                  value={newStudent.full_name}
+                  onChange={(e) =>
+                    setNewStudent({ ...newStudent, full_name: e.target.value })
+                  }
+                  placeholder="John Doe"
+                />
+                {formErrors.full_name && (
+                  <p className="text-sm text-red-600">{formErrors.full_name}</p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="email">
+                  Email <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="email"
+                  type="email"
+                  value={newStudent.email}
+                  onChange={(e) =>
+                    setNewStudent({ ...newStudent, email: e.target.value })
+                  }
+                  placeholder="john.doe@fgcu.edu"
+                />
+                {formErrors.email && (
+                  <p className="text-sm text-red-600">{formErrors.email}</p>
+                )}
+              </div>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="email">
-                Email <span className="text-red-500">*</span>
-              </Label>
-              <Input
-                id="email"
-                type="email"
-                value={newStudent.email}
-                onChange={(e) =>
-                  setNewStudent({ ...newStudent, email: e.target.value })
-                }
-                placeholder="john.doe@fgcu.edu"
-              />
-              {formErrors.email && (
-                <p className="text-sm text-red-600">{formErrors.email}</p>
-              )}
-            </div>
+            {/* Academic */}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="major">Major</Label>
+                <Input
+                  id="major"
+                  value={newStudent.major}
+                  onChange={(e) =>
+                    setNewStudent({ ...newStudent, major: e.target.value })
+                  }
+                  placeholder="Computer Science"
+                />
+              </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="student_id">
-                Student ID <span className="text-red-500">*</span>
-              </Label>
-              <Input
-                id="student_id"
-                value={newStudent.student_id}
-                onChange={(e) =>
-                  setNewStudent({ ...newStudent, student_id: e.target.value })
-                }
-                placeholder="12345678"
-              />
-              {formErrors.student_id && (
-                <p className="text-sm text-red-600">{formErrors.student_id}</p>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="major">Major</Label>
-              <Input
-                id="major"
-                value={newStudent.major}
-                onChange={(e) =>
-                  setNewStudent({ ...newStudent, major: e.target.value })
-                }
-                placeholder="Computer Science"
-              />
+              <div className="space-y-2">
+                <Label htmlFor="minor">Minor</Label>
+                <Input
+                  id="minor"
+                  value={newStudent.minor}
+                  onChange={(e) =>
+                    setNewStudent({ ...newStudent, minor: e.target.value })
+                  }
+                  placeholder="Mathematics"
+                />
+              </div>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
@@ -969,6 +980,7 @@ export function StudentsTable({
                     <SelectItem value="Junior">Junior</SelectItem>
                     <SelectItem value="Senior">Senior</SelectItem>
                     <SelectItem value="Graduate">Graduate</SelectItem>
+                    <SelectItem value="Doctoral">Doctoral</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -993,6 +1005,78 @@ export function StudentsTable({
               </div>
             </div>
 
+            {/* Personal */}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="age">Age</Label>
+                <Input
+                  id="age"
+                  type="number"
+                  min="1"
+                  max="120"
+                  value={newStudent.age}
+                  onChange={(e) =>
+                    setNewStudent({ ...newStudent, age: e.target.value })
+                  }
+                  placeholder="21"
+                />
+                {formErrors.age && (
+                  <p className="text-sm text-red-600">{formErrors.age}</p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="gender">Gender</Label>
+                <Input
+                  id="gender"
+                  value={newStudent.gender}
+                  onChange={(e) =>
+                    setNewStudent({ ...newStudent, gender: e.target.value })
+                  }
+                  placeholder="e.g. Male, Female, Non-binary"
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="pronouns">Pronouns</Label>
+                <Input
+                  id="pronouns"
+                  value={newStudent.pronouns}
+                  onChange={(e) =>
+                    setNewStudent({ ...newStudent, pronouns: e.target.value })
+                  }
+                  placeholder="e.g. he/him, she/her"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="race_ethnicity">Race / Ethnicity</Label>
+                <Input
+                  id="race_ethnicity"
+                  value={newStudent.race_ethnicity}
+                  onChange={(e) =>
+                    setNewStudent({ ...newStudent, race_ethnicity: e.target.value })
+                  }
+                  placeholder="e.g. Hispanic or Latino"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="languages">Languages</Label>
+              <Input
+                id="languages"
+                value={newStudent.languages}
+                onChange={(e) =>
+                  setNewStudent({ ...newStudent, languages: e.target.value })
+                }
+                placeholder="e.g. English, Spanish"
+              />
+            </div>
+
+            {/* Flags */}
             <div className="grid gap-3 sm:grid-cols-2">
               <label htmlFor="is_ch_student" className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 hover:bg-gray-50">
                 <input
@@ -1043,6 +1127,7 @@ export function StudentsTable({
                 <span className="text-sm font-medium text-slate-700">US Citizen</span>
               </label>
             </div>
+          </div>
           </div>
           <DialogFooter>
             <Button

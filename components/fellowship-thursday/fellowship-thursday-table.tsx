@@ -634,16 +634,16 @@ function ThursdayForm({ form, setForm, formErrors, students }: ThursdayFormProps
       <div className="grid gap-1.5">
         <Label htmlFor="ft_source_info">Source</Label>
         <Select
-          value={form.source_info}
+          value={form.source_info === "" ? "__none__" : form.source_info}
           onValueChange={(v) =>
-            setForm((prev) => ({ ...prev, source_info: v as SourceInfo | "" }))
+            setForm((prev) => ({ ...prev, source_info: (v === "__none__" ? "" : v) as SourceInfo | "" }))
           }
         >
           <SelectTrigger id="ft_source_info">
             <SelectValue placeholder="Select source (optional)…" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">— None —</SelectItem>
+            <SelectItem value="__none__">— None —</SelectItem>
             <SelectItem value="OCF">OCF</SelectItem>
             <SelectItem value="HC">Honors College</SelectItem>
             <SelectItem value="MM">Mass Media</SelectItem>
