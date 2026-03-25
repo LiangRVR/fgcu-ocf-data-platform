@@ -9,6 +9,9 @@ export const metadata: Metadata = {
   },
   description:
     "FGCU Office of Competitive Fellowships — internal management platform",
+  icons: {
+    icon: "https://fgcucdn.fgcu.edu/favicon.ico",
+  },
 };
 
 export default function RootLayout({
