@@ -31,7 +31,7 @@ export function DashboardShell({ children, advisor }: DashboardShellProps) {
           advisorName={advisor.advisor_name}
           onMenuClick={() => setSidebarOpen(true)}
         />
-        <main className="mx-auto min-w-0 max-w-7xl px-4 py-5 sm:px-6 sm:py-6 lg:px-10 lg:py-8 xl:px-12">
+        <main className="mx-auto min-w-0 max-w-7xl px-4 py-8 sm:px-6 sm:py-10 lg:px-10 lg:py-12 xl:px-12">
           {children}
         </main>
       </div>

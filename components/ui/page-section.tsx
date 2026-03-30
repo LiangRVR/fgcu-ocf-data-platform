@@ -21,7 +21,7 @@ export function PageSection({
   contentClassName,
 }: PageSectionProps) {
   return (
-    <section className={cn("space-y-4", className)}>
+    <section className={cn("space-y-6", className)}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="max-w-2xl space-y-1.5">
           {kicker ? <p className="app-kicker">{kicker}</p> : null}

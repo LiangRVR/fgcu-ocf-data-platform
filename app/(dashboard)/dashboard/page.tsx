@@ -281,7 +281,8 @@ export default async function DashboardPage() {
         <MetricBadge tone="slate">{monthLabel}</MetricBadge>
       </PageHeader>
 
-      <AppCard variant="elevated" className="mb-8 overflow-hidden">
+      <div className="flex flex-col gap-14">
+      <AppCard variant="elevated" className="overflow-hidden">
         <AppCardContent className="grid gap-6 p-6 sm:p-7 lg:grid-cols-[1.45fr_0.95fr] lg:items-end">
           <div className="space-y-4">
             <div className="inline-flex items-center gap-2 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
@@ -569,6 +570,7 @@ export default async function DashboardPage() {
         </AppCard>
       </div>
       </PageSection>
+      </div>
     </>
   );
 }

@@ -13,7 +13,7 @@ interface PageHeaderProps {
  */
 export function PageHeader({ title, description, eyebrow, children }: PageHeaderProps) {
   return (
-    <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+    <div className="mb-10 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
       <div className="max-w-2xl">
         {eyebrow && <p className="app-kicker mb-2">{eyebrow}</p>}
         <h1 className="text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl">{title}</h1>
