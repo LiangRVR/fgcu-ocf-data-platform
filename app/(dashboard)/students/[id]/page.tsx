@@ -178,7 +178,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
     ...applications.map((a) => ({
       id: `application-${a.application_id}`,
       kind: "application" as const,
-      date: a.created_at ?? "",
+      date: "",
       title: a.fellowship?.fellowship_name ?? `Fellowship #${a.fellowship_id}`,
       description: [a.stage_of_application, a.destination_country].filter(Boolean).join(" · "),
       href: `/fellowships/${a.fellowship_id}`,
@@ -196,7 +196,6 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
       tone: (m.no_show ? "red" : "blue") as "red" | "blue",
     })),
   ]
-    .filter((event) => Boolean(event.date))
     .sort((a, b) => b.date.localeCompare(a.date));
 
   return (
