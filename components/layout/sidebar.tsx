@@ -98,7 +98,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
           </div>
             <div className="min-w-0 flex-1">
               <div className="text-xs font-medium text-slate-200">Office of Competitive Fellowships</div>
-              <div className="text-xs text-slate-400">Internal workspace • March 2026</div>
+              <div className="text-xs text-slate-400">Internal workspace • {new Date().toLocaleString("en-US", { month: "long", year: "numeric" })}</div>
             </div>
           </div>
         </div>

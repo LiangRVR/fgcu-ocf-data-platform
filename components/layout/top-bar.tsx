@@ -4,8 +4,16 @@ import Link from "next/link";
 import { useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Bell, LogOut, Menu, Settings, User } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { NAV_ITEMS } from "@/lib/config/nav";
+import { getInitials } from "@/lib/utils/format";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,15 +27,6 @@ interface TopBarProps {
   onMenuClick: () => void;
   advisorName: string;
   advisorEmail: string | null;
-}
-
-function getInitials(name: string) {
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("");
 }
 
 export function TopBar({ onMenuClick, advisorName, advisorEmail }: TopBarProps) {
@@ -53,10 +52,16 @@ export function TopBar({ onMenuClick, advisorName, advisorEmail }: TopBarProps) 
         throw new Error("Sign-out failed");
       }
 
+      const data = await response.json();
+      if (!data.success) {
+        throw new Error(data.message ?? "Sign-out failed");
+      }
+
       router.replace("/login");
       router.refresh();
     } catch (error) {
       console.error(error);
+      toast.error("Sign-out failed. Please try again.");
     } finally {
       setIsSigningOut(false);
     }
@@ -92,9 +97,16 @@ export function TopBar({ onMenuClick, advisorName, advisorEmail }: TopBarProps) 
 
       {/* Right-side actions */}
       <div className="flex items-center gap-2">
-        <Button variant="ghost" size="icon" aria-label="Notifications" className="text-slate-500 motion-safe:transition-colors">
-          <Bell className="h-5 w-5 text-muted-foreground" />
-        </Button>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label="Notifications" className="text-slate-500 motion-safe:transition-colors" disabled>
+                <Bell className="h-5 w-5 text-muted-foreground" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Notifications coming soon</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
         <DropdownMenu modal={false}>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="h-11 gap-3 rounded-2xl px-2 motion-safe:transition-colors" aria-label="User menu">

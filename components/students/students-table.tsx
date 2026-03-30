@@ -179,7 +179,7 @@ export function StudentsTable({
         if (statusFilter === "ch") return s.is_ch_student;
         if (statusFilter === "honors") return s.honors_college;
         if (statusFilter === "first_gen") return s.first_gen;
-        return !s.is_ch_student;
+        return !s.is_ch_student && !s.honors_college && !s.first_gen;
       });
     }
 
@@ -430,8 +430,72 @@ export function StudentsTable({
   };
 
   const handleExport = () => {
-    // TODO: Implement CSV export
-    toast.info("Export functionality coming soon");
+    if (filteredAndSortedStudents.length === 0) {
+      toast.info("No students to export");
+      return;
+    }
+
+    const headers = [
+      "student_id",
+      "full_name",
+      "email",
+      "major",
+      "minor",
+      "class_standing",
+      "gpa",
+      "age",
+      "gender",
+      "pronouns",
+      "languages",
+      "race_ethnicity",
+      "is_ch_student",
+      "first_gen",
+      "honors_college",
+      "us_citizen",
+    ];
+
+    const escapeCell = (val: unknown): string => {
+      const str = val == null ? "" : String(val);
+      if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    const rows = filteredAndSortedStudents.map((s) =>
+      [
+        s.student_id,
+        s.full_name,
+        s.email,
+        s.major ?? "",
+        s.minor ?? "",
+        s.class_standing ?? "",
+        s.gpa ?? "",
+        s.age ?? "",
+        s.gender ?? "",
+        s.pronouns ?? "",
+        s.languages ?? "",
+        s.race_ethnicity ?? "",
+        s.is_ch_student,
+        s.first_gen,
+        s.honors_college,
+        s.us_citizen,
+      ]
+        .map(escapeCell)
+        .join(",")
+    );
+
+    const csv = [headers.join(","), ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `students-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${filteredAndSortedStudents.length} students`);
   };
 
   const SortIcon = ({ field }: { field: SortField }) => {

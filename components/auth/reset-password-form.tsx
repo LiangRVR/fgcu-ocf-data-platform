@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { GraduationCap, ShieldCheck } from "lucide-react";
+import { GraduationCap, Loader2, ShieldCheck } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
@@ -27,6 +27,7 @@ import {
 export function ResetPasswordForm() {
   const router = useRouter();
   const [hasRecoverySession, setHasRecoverySession] = useState(false);
+  const [isCheckingSession, setIsCheckingSession] = useState(true);
   const {
     register,
     handleSubmit,
@@ -42,6 +43,7 @@ export function ResetPasswordForm() {
       if (isMounted && user) {
         setHasRecoverySession(true);
       }
+      if (isMounted) setIsCheckingSession(false);
     });
 
     const {
@@ -50,6 +52,7 @@ export function ResetPasswordForm() {
       if (event === "PASSWORD_RECOVERY" || !!session?.user) {
         setHasRecoverySession(true);
       }
+      if (isMounted) setIsCheckingSession(false);
     });
 
     return () => {
@@ -93,7 +96,12 @@ export function ResetPasswordForm() {
         </div>
       </CardHeader>
 
-      <form onSubmit={handleSubmit(handleResetPassword)} noValidate>
+      {isCheckingSession ? (
+        <CardContent className="flex items-center justify-center py-8">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </CardContent>
+      ) : (
+        <form onSubmit={handleSubmit(handleResetPassword)} noValidate>
         <CardContent className="space-y-4">
           <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
             {hasRecoverySession
@@ -149,6 +157,7 @@ export function ResetPasswordForm() {
           </Link>
         </CardFooter>
       </form>
+      )}
     </Card>
   );
 }

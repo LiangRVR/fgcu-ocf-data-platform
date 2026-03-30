@@ -26,6 +26,7 @@ export function FellowshipEditButton({
 }: FellowshipEditButtonProps) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(fellowshipName);
+  const [isDirty, setIsDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const router = useRouter();
 
@@ -60,6 +61,7 @@ export function FellowshipEditButton({
         title="Edit fellowship"
         onClick={() => {
           setName(fellowshipName);
+          setIsDirty(false);
           setOpen(true);
         }}
       >
@@ -77,10 +79,14 @@ export function FellowshipEditButton({
               <Input
                 id="fellowship-name"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => { setName(e.target.value); setIsDirty(true); }}
+                onBlur={() => setIsDirty(true)}
                 onKeyDown={(e) => e.key === "Enter" && handleSave()}
                 autoFocus
               />
+              {isDirty && !name.trim() && (
+                <p className="text-xs text-destructive">Name is required</p>
+              )}
             </div>
             <div className="flex justify-end gap-2 pt-1">
               <Button

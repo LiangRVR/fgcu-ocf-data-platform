@@ -178,7 +178,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
     ...applications.map((a) => ({
       id: `application-${a.application_id}`,
       kind: "application" as const,
-      date: "",
+      date: a.created_at ?? "",
       title: a.fellowship?.fellowship_name ?? `Fellowship #${a.fellowship_id}`,
       description: [a.stage_of_application, a.destination_country].filter(Boolean).join(" · "),
       href: `/fellowships/${a.fellowship_id}`,

@@ -49,7 +49,8 @@ async function getDashboardData() {
   const now = new Date();
   const startOfMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
 
-  const [
+  try {
+    const [
     studentsRes,
     fellowshipsRes,
     applicationsRes,
@@ -145,26 +146,31 @@ async function getDashboardData() {
     fellowship: { fellowship_name: string } | null;
   };
 
-  return {
-    stats: {
-      totalStudents: studentsRes.count ?? 0,
-      totalFellowships: fellowshipsRes.count ?? 0,
-      totalApplications: applicationsRes.count ?? 0,
-      finalists: finalistsRes.count ?? 0,
-      semiFinalists: semiFinalistsRes.count ?? 0,
-      meetingsThisMonth: meetingsThisMonthRes.count ?? 0,
-      noShows: noShowsRes.count ?? 0,
-      chStudents: chCount,
-      honorsStudents: honorsCount,
-      firstGenStudents: firstGenCount,
-      totalStudentsForFlags: flags.length,
-    },
-    distributions: { appsByStage, studentsByStanding, finalistsByFellowship },
-    recent: {
-      meetings: (recentMeetingsRes.data ?? []) as RecentMeeting[],
-      applications: (recentApplicationsRes.data ?? []) as RecentApplication[],
-    },
-  };
+    return {
+      error: false as const,
+      stats: {
+        totalStudents: studentsRes.count ?? 0,
+        totalFellowships: fellowshipsRes.count ?? 0,
+        totalApplications: applicationsRes.count ?? 0,
+        finalists: finalistsRes.count ?? 0,
+        semiFinalists: semiFinalistsRes.count ?? 0,
+        meetingsThisMonth: meetingsThisMonthRes.count ?? 0,
+        noShows: noShowsRes.count ?? 0,
+        chStudents: chCount,
+        honorsStudents: honorsCount,
+        firstGenStudents: firstGenCount,
+        totalStudentsForFlags: flags.length,
+      },
+      distributions: { appsByStage, studentsByStanding, finalistsByFellowship },
+      recent: {
+        meetings: (recentMeetingsRes.data ?? []) as RecentMeeting[],
+        applications: (recentApplicationsRes.data ?? []) as RecentApplication[],
+      },
+    };
+  } catch (err) {
+    console.error("Dashboard data fetch failed:", err);
+    return { error: true as const };
+  }
 }
 
 function DistributionList({
@@ -236,10 +242,29 @@ function DistributionList({
 // ─── page ─────────────────────────────────────────────────────────────────────
 
 export default async function DashboardPage() {
-  const { stats, distributions, recent } = await getDashboardData();
+  const result = await getDashboardData();
 
   const now = new Date();
   const monthLabel = now.toLocaleString("en-US", { month: "long", year: "numeric" });
+
+  if (result.error) {
+    return (
+      <>
+        <PageHeader
+          eyebrow="Command Center"
+          title="Dashboard"
+          description="Executive overview of pipeline health, student reach, and advising activity across the OCF workspace."
+        >
+          <MetricBadge tone="slate">{monthLabel}</MetricBadge>
+        </PageHeader>
+        <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-5 py-4 text-sm text-destructive">
+          <strong>Could not load dashboard data.</strong> The database may be temporarily unavailable. Please refresh the page.
+        </div>
+      </>
+    );
+  }
+
+  const { stats, distributions, recent } = result;
   const startedApplications = distributions.appsByStage.find(([label]) => label === "Started")?.[1] ?? 0;
   const underReviewApplications = distributions.appsByStage.find(([label]) => label === "Under Review")?.[1] ?? 0;
   const finalistRate = stats.totalApplications > 0 ? Math.round((stats.finalists / stats.totalApplications) * 100) : 0;

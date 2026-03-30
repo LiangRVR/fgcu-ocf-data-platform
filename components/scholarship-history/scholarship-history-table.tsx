@@ -32,7 +32,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Search, Trash2, Plus, BookOpen, SlidersHorizontal } from "lucide-react";
+import { Search, Trash2, Plus, Pencil, BookOpen, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
@@ -83,9 +83,13 @@ export function ScholarshipHistoryTable({
 
   const [addOpen, setAddOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [editId, setEditId] = useState<number | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
 
   const [form, setForm] = useState(EMPTY_FORM);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [editForm, setEditForm] = useState(EMPTY_FORM);
+  const [editFormErrors, setEditFormErrors] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
@@ -193,6 +197,52 @@ export function ScholarshipHistoryTable({
     setAddOpen(false);
   };
 
+  const openEdit = (record: ScholarshipHistory) => {
+    setEditId(record.history_id);
+    setEditForm({
+      student_id: String(record.student_id),
+      fellowship_id: String(record.fellowship_id),
+    });
+    setEditFormErrors({});
+    setEditOpen(true);
+  };
+
+  const handleEditSubmit = async () => {
+    const errors = validateForm(editForm);
+    setEditFormErrors(errors);
+    if (Object.keys(errors).length > 0) return;
+    if (!editId) return;
+
+    setIsLoading(true);
+    try {
+      const { data, error } = await supabaseBrowserClient
+        .from("scholarship_history")
+        .update({
+          student_id: Number(editForm.student_id),
+          fellowship_id: Number(editForm.fellowship_id),
+        })
+        .eq("history_id", editId)
+        .select(`*, student(full_name), fellowship(fellowship_name)`)
+        .single();
+
+      if (error) throw error;
+
+      setRecords((prev) =>
+        prev.map((r) => (r.history_id === editId ? (data as ScholarshipHistory) : r))
+      );
+      toast.success("Record updated.");
+      setEditOpen(false);
+      setEditId(null);
+      setEditForm(EMPTY_FORM);
+      setEditFormErrors({});
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to update record.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <>
       {/* Control Bar */}
@@ -290,15 +340,26 @@ export function ScholarshipHistoryTable({
                           </Link>
                         </div>
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 shrink-0 text-slate-500 hover:text-red-600"
-                        title="Delete record"
-                        onClick={() => setDeleteId(record.history_id)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0 text-slate-500 hover:text-slate-900"
+                          title="Edit record"
+                          onClick={() => openEdit(record)}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0 text-slate-500 hover:text-red-600"
+                          title="Delete record"
+                          onClick={() => setDeleteId(record.history_id)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -342,7 +403,16 @@ export function ScholarshipHistoryTable({
                         </Link>
                       </td>
                       <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
-                        <div className="flex items-center justify-end">
+                        <div className="flex items-center justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-slate-600 hover:text-slate-900"
+                            title="Edit record"
+                            onClick={() => openEdit(record)}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
                           <Button
                             variant="ghost"
                             size="icon"
@@ -450,6 +520,91 @@ export function ScholarshipHistoryTable({
               className="bg-[#006747] hover:bg-[#00563b]"
             >
               {isLoading ? "Saving…" : "Add Record"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Edit Dialog ─────────────────────────── */}
+      <Dialog open={editOpen} onOpenChange={(o) => { if (!o) { setEditOpen(false); setEditId(null); setEditForm(EMPTY_FORM); setEditFormErrors({}); } }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Scholarship Record</DialogTitle>
+            <DialogDescription>
+              Update the student or fellowship for this award record.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-4 py-2">
+            <div className="grid gap-1.5">
+              <Label htmlFor="edit_sh_student_id">
+                Student <span className="text-red-500">*</span>
+              </Label>
+              <Select
+                value={editForm.student_id}
+                onValueChange={(v) => setEditForm((prev) => ({ ...prev, student_id: v }))}
+              >
+                <SelectTrigger
+                  id="edit_sh_student_id"
+                  className={editFormErrors.student_id ? "border-red-500" : ""}
+                >
+                  <SelectValue placeholder="Select a student…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {students.map((s) => (
+                    <SelectItem key={s.student_id} value={String(s.student_id)}>
+                      {s.full_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {editFormErrors.student_id && (
+                <p className="text-xs text-destructive">{editFormErrors.student_id}</p>
+              )}
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label htmlFor="edit_sh_fellowship_id">
+                Fellowship / Scholarship <span className="text-red-500">*</span>
+              </Label>
+              <Select
+                value={editForm.fellowship_id}
+                onValueChange={(v) => setEditForm((prev) => ({ ...prev, fellowship_id: v }))}
+              >
+                <SelectTrigger
+                  id="edit_sh_fellowship_id"
+                  className={editFormErrors.fellowship_id ? "border-red-500" : ""}
+                >
+                  <SelectValue placeholder="Select a fellowship…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {fellowships.map((f) => (
+                    <SelectItem key={f.fellowship_id} value={String(f.fellowship_id)}>
+                      {f.fellowship_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {editFormErrors.fellowship_id && (
+                <p className="text-xs text-destructive">{editFormErrors.fellowship_id}</p>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => { setEditOpen(false); setEditId(null); setEditForm(EMPTY_FORM); setEditFormErrors({}); }}
+              disabled={isLoading}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleEditSubmit}
+              disabled={isLoading}
+              className="bg-[#006747] hover:bg-[#00563b]"
+            >
+              {isLoading ? "Saving…" : "Save Changes"}
             </Button>
           </DialogFooter>
         </DialogContent>
