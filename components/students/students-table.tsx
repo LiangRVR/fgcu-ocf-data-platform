@@ -66,7 +66,7 @@ import type { Database } from "@/types/database";
 
 type Student = Database["public"]["Tables"]["student"]["Row"];
 
-type SortField = "full_name" | "student_id" | "major" | "gpa" | "class_standing";
+type SortField = "full_name" | "major" | "gpa" | "class_standing";
 type SortDirection = "asc" | "desc" | null;
 
 interface StudentsTableProps {
@@ -456,7 +456,7 @@ export function StudentsTable({
                 <div className="relative flex-1 sm:w-80">
                   <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <Input
-                    placeholder="Search students by name, email, or ID…"
+                    placeholder="Search students by name or email…"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     className="pl-9"
@@ -644,15 +644,6 @@ export function StudentsTable({
                           Email
                         </th>
                         <th
-                          onClick={() => handleSort("student_id")}
-                          className="hidden cursor-pointer px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-600 hover:text-gray-900 sm:px-6 sm:py-3 lg:table-cell"
-                        >
-                          <div className="flex items-center">
-                            Student ID
-                            <SortIcon field="student_id" />
-                          </div>
-                        </th>
-                        <th
                           onClick={() => handleSort("major")}
                           className="hidden cursor-pointer px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-600 hover:text-gray-900 sm:px-6 sm:py-3 lg:table-cell"
                         >
@@ -706,11 +697,6 @@ export function StudentsTable({
                           <td className="hidden px-3 py-3 sm:px-6 sm:py-4 md:table-cell">
                             <div className="max-w-xs truncate text-sm text-slate-600">
                               {student.email}
-                            </div>
-                          </td>
-                          <td className="hidden whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4 lg:table-cell">
-                            <div className="text-sm text-slate-600">
-                              {student.student_id}
                             </div>
                           </td>
                           <td className="hidden whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4 lg:table-cell">
