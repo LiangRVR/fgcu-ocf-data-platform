@@ -11,6 +11,7 @@ import { StatCard } from "@/components/ui/stat-card";
 import Link from "next/link";
 import { Plus, Search, Eye, Trash2, Award } from "lucide-react";
 import { FellowshipEditButton } from "@/components/fellowships/fellowship-edit-button";
+import { AddFellowshipButton } from "@/components/fellowships/add-fellowship-button";
 import { createServerClient } from "@/lib/supabase/server";
 import type { Database } from "@/types/database";
 
@@ -144,10 +145,7 @@ export default async function FellowshipsPage({ searchParams }: Props) {
         <MetricBadge tone="blue">{fellowshipsWithMetrics.length} programs</MetricBadge>
         <MetricBadge tone="green">{totalFinalistsAll} finalists</MetricBadge>
         <MetricBadge tone="amber">{totalAwardedAll} awarded</MetricBadge>
-        <Button size="sm">
-          <Plus className="mr-2 h-4 w-4" />
-          Add Fellowship
-        </Button>
+        <AddFellowshipButton />
       </PageHeader>
 
       {/* Exception view pill bar */}
@@ -231,12 +229,7 @@ export default async function FellowshipsPage({ searchParams }: Props) {
                   ? "Every fellowship currently has at least one applicant."
                   : "Get started by adding your first fellowship opportunity."
               }
-              action={view === "all" ? (
-                <Button>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Add Fellowship
-                </Button>
-              ) : undefined}
+              action={view === "all" ? <AddFellowshipButton size="default" /> : undefined}
             />
           ) : (
             <>
