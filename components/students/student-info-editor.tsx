@@ -363,6 +363,7 @@ export function StudentInfoEditor({ initialStudent }: StudentInfoEditorProps) {
                       <SelectItem value="Junior">Junior</SelectItem>
                       <SelectItem value="Senior">Senior</SelectItem>
                       <SelectItem value="Graduate">Graduate</SelectItem>
+                      <SelectItem value="Doctoral">Doctoral</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -462,12 +463,23 @@ export function StudentInfoEditor({ initialStudent }: StudentInfoEditorProps) {
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="p_gender">Gender</Label>
-                  <Input
-                    id="p_gender"
-                    value={draft.gender}
-                    onChange={(e) => setDraft((p) => ({ ...p, gender: e.target.value }))}
-                    placeholder="e.g. Female"
-                  />
+                  <Select
+                    value={draft.gender || "none"}
+                    onValueChange={(v) =>
+                      setDraft((p) => ({ ...p, gender: v === "none" ? "" : v }))
+                    }
+                  >
+                    <SelectTrigger id="p_gender">
+                      <SelectValue placeholder="Select…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">— None —</SelectItem>
+                      <SelectItem value="F">Female</SelectItem>
+                      <SelectItem value="M">Male</SelectItem>
+                      <SelectItem value="NB">Non-binary</SelectItem>
+                      <SelectItem value="NR">Prefer not to say</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="p_pronouns">Pronouns</Label>

@@ -102,6 +102,13 @@ const CLASS_STANDINGS = [
   "Doctoral",
 ] as const;
 
+const GENDER_OPTIONS = [
+  { value: "F",  label: "Female" },
+  { value: "M",  label: "Male" },
+  { value: "NB", label: "Non-binary" },
+  { value: "NR", label: "Prefer not to say" },
+] as const;
+
 export function StudentsTable({
   initialStudents,
   initialStatusFilter,
@@ -895,7 +902,7 @@ export function StudentsTable({
               required.
             </DialogDescription>
           </DialogHeader>
-          <div className="max-h-[70vh] overflow-y-auto pr-1">
+          <div className="max-h-[70vh] overflow-y-auto px-1">
           <div className="space-y-4 py-4">
             {/* Basic Info */}
             <div className="grid gap-4 sm:grid-cols-2">
@@ -1027,14 +1034,22 @@ export function StudentsTable({
 
               <div className="space-y-2">
                 <Label htmlFor="gender">Gender</Label>
-                <Input
-                  id="gender"
-                  value={newStudent.gender}
-                  onChange={(e) =>
-                    setNewStudent({ ...newStudent, gender: e.target.value })
+                <Select
+                  value={newStudent.gender || "none"}
+                  onValueChange={(v) =>
+                    setNewStudent({ ...newStudent, gender: v === "none" ? "" : v })
                   }
-                  placeholder="e.g. Male, Female, Non-binary"
-                />
+                >
+                  <SelectTrigger id="gender">
+                    <SelectValue placeholder="Select…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">— None —</SelectItem>
+                    {GENDER_OPTIONS.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
@@ -1228,6 +1243,7 @@ export function StudentsTable({
                     <SelectItem value="Junior">Junior</SelectItem>
                     <SelectItem value="Senior">Senior</SelectItem>
                     <SelectItem value="Graduate">Graduate</SelectItem>
+                    <SelectItem value="Doctoral">Doctoral</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
