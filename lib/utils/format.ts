@@ -1,13 +1,15 @@
-import { format, parseISO } from "date-fns";
+import { format, isValid, parseISO } from "date-fns";
 
 /**
  * Format a date string or Date object to a readable format.
  */
 export function formatDate(
-  date: string | Date,
+  date: string | Date | null | undefined,
   pattern = "MMM d, yyyy"
 ): string {
+  if (!date) return "—";
   const d = typeof date === "string" ? parseISO(date) : date;
+  if (!isValid(d)) return "—";
   return format(d, pattern);
 }
 
