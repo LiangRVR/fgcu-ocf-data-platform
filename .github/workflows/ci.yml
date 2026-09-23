@@ -1,0 +1,167 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # Required only to upload Playwright failure artifacts (see e2e job).
+  actions: write
+
+jobs:
+  lint-build:
+    name: Lint, typecheck, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable pnpm via Corepack
+        run: corepack enable pnpm
+
+      - name: Activate pinned pnpm (pnpm@10.34.5)
+        run: corepack prepare pnpm@10.34.5 --activate
+
+      # pnpm is provisioned/activated above BEFORE the pnpm store cache is
+      # restored below, so the cache is always keyed by the pinned version
+      # and never by an unprovisioned pnpm.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Build
+        run: pnpm run build
+
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable pnpm via Corepack
+        run: corepack enable pnpm
+
+      - name: Activate pinned pnpm (pnpm@10.34.5)
+        run: corepack prepare pnpm@10.34.5 --activate
+
+      # pnpm is provisioned/activated above BEFORE the pnpm store cache is
+      # restored below, so the cache is always keyed by the pinned version
+      # and never by an unprovisioned pnpm.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Unit tests
+        run: pnpm run test:unit
+
+  contract:
+    name: Contract tests (Docker-local Supabase)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable pnpm via Corepack
+        run: corepack enable pnpm
+
+      - name: Activate pinned pnpm (pnpm@10.34.5)
+        run: corepack prepare pnpm@10.34.5 --activate
+
+      # pnpm is provisioned/activated above BEFORE the pnpm store cache is
+      # restored below, so the cache is always keyed by the pinned version
+      # and never by an unprovisioned pnpm.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Contract tests
+        # Spins up a local Supabase stack via Docker, applies the full
+        # migration chain, and runs schema/constraint/RLS tests against it.
+        # Runtime keys come from `supabase status -o env` inside the harness;
+        # no environment credentials are used or logged.
+        run: pnpm run test:contract
+
+  e2e:
+    name: E2E tests (Playwright Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable pnpm via Corepack
+        run: corepack enable pnpm
+
+      - name: Activate pinned pnpm (pnpm@10.34.5)
+        run: corepack prepare pnpm@10.34.5 --activate
+
+      # pnpm is provisioned/activated above BEFORE the pnpm store cache is
+      # restored below, so the cache is always keyed by the pinned version
+      # and never by an unprovisioned pnpm.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        run: pnpm run test:e2e:install
+
+      - name: E2E tests
+        # Builds the app against the Docker-local Supabase instance and runs
+        # Chromium specs against it. No production credentials involved.
+        run: pnpm run test:e2e
+
+      - name: Upload Playwright artifacts (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7

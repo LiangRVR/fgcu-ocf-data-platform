@@ -5,10 +5,6 @@ import type { Database } from "@/types/database";
 
 export type Advisor = Database["public"]["Tables"]["advisor"]["Row"];
 
-function normalizeEmail(email: string | null | undefined) {
-  return email?.trim().toLowerCase() ?? null;
-}
-
 export async function getSessionUser() {
   const supabase = createServerClient();
   const { data, error: claimsError } = await supabase.auth.getClaims();
@@ -30,6 +26,18 @@ export async function getSessionUser() {
   return user;
 }
 
+/**
+ * Resolve the authenticated caller's advisor row — by pre-bound
+ * `auth_user_id` ONLY.
+ *
+ * Identity binding is admin-only: an administrator pre-binds
+ * `advisor.auth_user_id` to the invited account's auth user id before first
+ * sign-in (server-only provisioning module). There is no email self-link, no
+ * self-link RPC, and no fallback to an unlinked email-matched row. An
+ * authenticated user whose JWT email merely matches an unlinked `advisor` row
+ * is NOT an advisor session (`null`), so a pre-existing matching account can
+ * never claim, bind, or take over an advisor identity.
+ */
 export async function getCurrentAdvisor(sessionUser?: User | null) {
   const user = sessionUser ?? (await getSessionUser());
 
@@ -38,52 +46,24 @@ export async function getCurrentAdvisor(sessionUser?: User | null) {
   }
 
   const supabase = createServerClient();
-  const normalizedEmail = normalizeEmail(user.email);
 
-  const { data: linkedAdvisor, error: linkedError } = await supabase
+  const { data: linkedAdvisor, error } = await supabase
     .from("advisor")
     .select("*")
     .eq("auth_user_id", user.id)
     .maybeSingle();
 
-  if (!linkedError && linkedAdvisor) {
-    return linkedAdvisor;
-  }
-
-  if (!normalizedEmail) {
+  if (error) {
     return null;
   }
 
-  const { data: emailAdvisor, error: emailError } = await supabase
-    .from("advisor")
-    .select("*")
-    .eq("email", normalizedEmail)
-    .maybeSingle();
-
-  if (emailError || !emailAdvisor) {
+  // Defense in depth: even if a row were somehow returned whose bound
+  // auth_user_id differs from the session user, it is never trusted.
+  if (!linkedAdvisor || linkedAdvisor.auth_user_id !== user.id) {
     return null;
   }
 
-  if (emailAdvisor.auth_user_id && emailAdvisor.auth_user_id !== user.id) {
-    return null;
-  }
-
-  if (!emailAdvisor.auth_user_id) {
-    const { data: updatedAdvisor } = await supabase
-      .from("advisor")
-      .update({
-        auth_user_id: user.id,
-        last_login_at: new Date().toISOString(),
-      })
-      .eq("advisor_id", emailAdvisor.advisor_id)
-      .is("auth_user_id", null)
-      .select("*")
-      .single();
-
-    return updatedAdvisor ?? emailAdvisor;
-  }
-
-  return emailAdvisor;
+  return linkedAdvisor;
 }
 
 export async function requireAdvisor() {

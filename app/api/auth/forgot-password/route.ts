@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
+import { getResetPasswordRedirectUrl } from "@/lib/config/app";
 import { forgotPasswordSchema } from "@/lib/validators/account";
 
 export async function POST(request: NextRequest) {
@@ -15,18 +16,32 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const supabase = createServerClient();
-  const redirectTo = `${request.nextUrl.origin}/reset-password`;
-  const { error } = await supabase.auth.resetPasswordForEmail(parsed.data.email, {
-    redirectTo,
-  });
+  try {
+    // Server-controlled origin only: the client request origin (Host header)
+    // is never consulted, so a malicious origin cannot redirect reset links.
+    // The origin is REQUIRED server configuration (`APP_URL`); missing or
+    // invalid config throws and is masked below like any provider failure.
+    const redirectTo = getResetPasswordRedirectUrl();
+    const supabase = createServerClient();
+    const { error } = await supabase.auth.resetPasswordForEmail(
+      parsed.data.email,
+      { redirectTo }
+    );
 
-  if (error) {
+    if (error) {
+      // Masked below through the same generic path as thrown provider errors.
+      throw error;
+    }
+
+    return NextResponse.json({ success: true });
+  } catch {
+    // Server-side trace only: never echo the provider's raw message (it can
+    // carry PII/credentials) into logs or responses. This also covers thrown
+    // provider/network rejections and reset-origin configuration failures.
+    console.error("[api:auth:forgot-password] Failed to send password reset email.");
     return NextResponse.json(
-      { error: error.message || "Unable to send reset email." },
+      { error: "Unable to send reset email." },
       { status: 500 }
     );
   }
-
-  return NextResponse.json({ success: true });
 }

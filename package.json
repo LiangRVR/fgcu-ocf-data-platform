@@ -2,13 +2,22 @@
   "name": "ocf-fellowship-management-system",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@10.34.5",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
     "db:types": "supabase gen types typescript --project-id ${SUPABASE_PROJECT_ID:-your-project-id} > types/database.ts",
-    "test:connection": "tsx scripts/test-connection.ts"
+    "test:connection": "tsx scripts/test-connection.ts",
+    "test": "pnpm run test:unit",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
+    "test:contract": "node scripts/contract/run.mjs",
+    "test:e2e": "node scripts/e2e/run.mjs",
+    "test:e2e:install": "playwright install --with-deps chromium",
+    "test:all": "pnpm run test:unit && pnpm run test:contract && pnpm run test:e2e"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
@@ -32,20 +41,29 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-separator": "^1.1.8",
     "@radix-ui/react-slot": "^1.2.4",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "^24.13.5",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "dotenv": "^17.3.1",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
+    "pg": "^8.23.0",
     "supabase": "^2.76.17",
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^5.0.1"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "supabase"
+    ]
   }
 }
