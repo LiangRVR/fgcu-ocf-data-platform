@@ -54,7 +54,7 @@ jobs:
         run: pnpm run build
 
   unit:
-    name: Unit tests
+    name: Unit tests + coverage
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -81,8 +81,21 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Unit tests
-        run: pnpm run test:unit
+      - name: Unit tests + coverage
+        # `test:unit:coverage` runs the Vitest unit suite with the V8 coverage
+        # provider enabled and enforces the baseline-driven thresholds for
+        # production logic (`lib/**`, `app/api/**`) configured in
+        # vitest.config.ts. A coverage regression fails this lane.
+        run: pnpm run test:unit:coverage
+
+      - name: Upload unit coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-coverage
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 14
 
   contract:
     name: Contract tests (Docker-local Supabase)

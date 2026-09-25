@@ -201,11 +201,17 @@ async function main(): Promise<void> {
     insertStudent(secondStudentName, secondStudentEmail),
   ]);
 
+  // Flags are set EXPLICITLY so the seed stays consistent with the forward-only
+  // local stage/flag invariant migration
+  // (supabase/migrations/20260318000002_application_stage_flag_invariant.sql):
+  // Submitted is an early stage and must carry neither flag.
   const { error: appError } = await service.from("application").insert({
     student_id: studentId,
     fellowship_id: fellowshipId,
     destination_country: "Testland",
     stage_of_application: "Submitted",
+    is_semi_finalist: false,
+    is_finalist: false,
   });
   if (appError) {
     throw new Error(`insert application: ${appError.message}`);
@@ -249,10 +255,13 @@ async function main(): Promise<void> {
   }
 
   // A second application on the second fellowship for dashboard variety.
+  // "Started" is an early stage: no flags.
   const { error: appTwoError } = await service.from("application").insert({
     student_id: secondStudentId,
     fellowship_id: secondFellowshipId,
     stage_of_application: "Started",
+    is_semi_finalist: false,
+    is_finalist: false,
   });
   if (appTwoError) {
     throw new Error(`insert application two: ${appTwoError.message}`);
@@ -270,6 +279,9 @@ async function main(): Promise<void> {
     fellowship_id: thirdFellowshipId,
     destination_country: "Testland",
     stage_of_application: "Awarded",
+    // "Awarded" implies BOTH flags under the local stage/flag invariant.
+    is_semi_finalist: true,
+    is_finalist: true,
   });
   if (awardedAppError) {
     throw new Error(`insert awarded application: ${awardedAppError.message}`);

@@ -11,9 +11,13 @@
     "typecheck": "tsc --noEmit",
     "db:types": "supabase gen types typescript --project-id ${SUPABASE_PROJECT_ID:-your-project-id} > types/database.ts",
     "test:connection": "tsx scripts/test-connection.ts",
-    "test": "pnpm run test:unit",
+    "schema-inventory:capture": "tsx scripts/schema-inventory/cli.ts capture",
+    "schema-inventory:diff": "tsx scripts/schema-inventory/cli.ts diff",
+    "schema-inventory:capture-local": "node scripts/schema-inventory/run-local.mjs",
+    "test:unit:schema-inventory": "vitest run tests/unit/scripts/schema-inventory",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
+    "test:unit:coverage": "vitest run --coverage --coverage.reporter=text --coverage.reporter=json-summary --coverage.reporter=html",
     "test:contract": "node scripts/contract/run.mjs",
     "test:e2e": "node scripts/e2e/run.mjs",
     "test:e2e:install": "playwright install --with-deps chromium",
@@ -51,6 +55,7 @@
     "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitest/coverage-v8": "^5.0.2",
     "dotenv": "^17.3.1",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
@@ -59,7 +64,7 @@
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
     "typescript": "^5",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.2"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

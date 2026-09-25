@@ -62,6 +62,30 @@ describe("validateConsistency", () => {
     }
   });
 
+  // Work 2 parity: validateConsistency must agree with deriveFlags on EVERY
+  // (stage, is_semi_finalist, is_finalist) combination — exactly the domain the
+  // forward-only local CHECK constraint enforces. This guards against future
+  // drift between the validator and the DB invariant.
+  it("agrees with deriveFlags on every possible stage/flag combination", () => {
+    const booleans = [false, true] as const;
+    for (const stage of STAGES) {
+      for (const is_semi_finalist of booleans) {
+        for (const is_finalist of booleans) {
+          const expected = deriveFlags(stage);
+          const invariantHolds =
+            expected.is_semi_finalist === is_semi_finalist &&
+            expected.is_finalist === is_finalist;
+          const verdict = validateConsistency(stage, is_semi_finalist, is_finalist);
+          if (invariantHolds) {
+            expect(verdict, `${stage} sf=${is_semi_finalist} f=${is_finalist} must be valid`).toBeNull();
+          } else {
+            expect(verdict, `${stage} sf=${is_semi_finalist} f=${is_finalist} must be rejected`).not.toBeNull();
+          }
+        }
+      }
+    }
+  });
+
   it("rejects a finalist who is not marked as a semi-finalist", () => {
     expect(validateConsistency("Finalist", false, true)).toBe(
       "A finalist must also be marked as a semi-finalist."
@@ -101,6 +125,16 @@ describe("validateConsistency", () => {
   it('rejects stage "Semi-Finalist" when the semi-finalist flag is not checked', () => {
     expect(validateConsistency("Semi-Finalist", false, false)).toBe(
       'Stage is "Semi-Finalist" but the Semi-Finalist flag is not checked.'
+    );
+  });
+
+  // Validator-consistency regression (hardening Work 2): the forward-only local
+  // stage/flag invariant CHECK (and deriveFlags) require a Semi-Finalist to have
+  // is_finalist = false. validateConsistency must agree, not silently accept a
+  // Semi-Finalist that is also marked as a finalist.
+  it('rejects stage "Semi-Finalist" when the Finalist flag is checked (a semi-finalist is not yet a finalist)', () => {
+    expect(validateConsistency("Semi-Finalist", true, true)).toBe(
+      'Stage is "Semi-Finalist" but the Finalist flag is checked; a semi-finalist cannot be marked as a finalist.'
     );
   });
 

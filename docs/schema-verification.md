@@ -30,15 +30,14 @@
    - Update the `.env.local` file with real values
 
 2. **Apply Database Schema**
-   - Go to Supabase Dashboard → SQL Editor
-   - Run `supabase/migrations/20260305000000_initial_schema.sql`
-   - Then run `supabase/migrations/20260305000001_allow_anon_read.sql`
-   - Then run `supabase/migrations/20260305000002_allow_anon_write.sql`
-   - Then run `supabase/migrations/20260317000003_advisor_auth.sql`
-   - Backfill confirmed advisor emails in `public.advisor.email`
-   - Create matching Supabase Auth users for advisors
-   - Then run `supabase/migrations/20260317000004_active_advisor_rls.sql`
-   - Or use CLI: `npx supabase db push` (after linking project)
+   - For a fresh/disposable project only: `npx supabase db push` (after linking)
+   - ⚠️ Do **not** run these migrations against the hosted production database.
+     Production is the physical-schema authority; its migration ledger records
+     only `20260924065221_advisor_self_activation_lockdown` while the repository
+     tracks six migrations, and the deployed schema differs materially. See
+     [`supabase/SCHEMA.md`](../supabase/SCHEMA.md#migration-deployment-freeze)
+     and the approval-gated
+     [reconciliation runbook](../aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
 
 3. **Generate TypeScript Types** (only needed if schema changes)
    - Run: `pnpm run db:types`

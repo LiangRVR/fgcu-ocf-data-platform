@@ -9,8 +9,16 @@
  * used strictly for local fixture creation and constraint isolation.
  *
  * Also documents the design fact that the denormalized
- * `is_semi_finalist`/`is_finalist` ↔ `stage_of_application` invariant has no
- * DB trigger — it is an application-layer invariant only.
+ * `is_semi_finalist`/`is_finalist` ↔ `stage_of_application` invariant is
+ * enforced by the forward-only local CHECK constraint added in migration
+ * 20260318000002_application_stage_flag_invariant.sql (mirroring
+ * lib/applications/pipeline.ts) — a CHECK, not a trigger.
+ *
+ * FK delete behavior is asserted FROM THE LOCAL SCHEMA (all local FKs are the
+ * Postgres default NO ACTION): deleting a parent with children fails with a
+ * foreign-key violation and every child row is preserved. Production
+ * delete/retention semantics differ (see the schema-provenance reconciliation);
+ * those differences are documented, never asserted here, and no FK is changed.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
@@ -28,6 +36,88 @@ beforeAll(() => {
 afterAll(async () => {
   await pool.end();
 });
+
+/** Fresh student + fellowship for one self-contained constraint assertion. */
+let fixtureSeq = 0;
+function nextUnique(prefix: string): string {
+  // syntheticName/syntheticEmail share one RUN_TOKEN per process, so a plain
+  // per-prefix call collides on unique name/email columns across repeated
+  // calls; a per-call sequence makes every fixture row unique within the run.
+  fixtureSeq += 1;
+  return `${prefix}-${fixtureSeq}`;
+}
+
+async function insertStudentAndFellowship(): Promise<{ studentId: number; fellowshipId: number }> {
+  const tag = nextUnique("constraint");
+  const { data: student, error: studentError } = await service
+    .from("student")
+    .insert({
+      full_name: syntheticName(tag),
+      email: syntheticEmail(tag),
+      us_citizen: true,
+    })
+    .select("student_id")
+    .single();
+  if (studentError) throw new Error(`insert constraint student: ${studentError.message}`);
+  const { data: fellowship, error: fellowshipError } = await service
+    .from("fellowship")
+    .insert({ fellowship_name: syntheticName(`${tag}-fellowship`) })
+    .select("fellowship_id")
+    .single();
+  if (fellowshipError) throw new Error(`insert constraint fellowship: ${fellowshipError.message}`);
+  return {
+    studentId: student!.student_id as number,
+    fellowshipId: fellowship!.fellowship_id as number,
+  };
+}
+
+/** Fresh (unbound, inactive) advisor row for one self-contained assertion. */
+async function insertAdvisor(): Promise<{ advisor_id: number }> {
+  const tag = nextUnique("constraint-advisor");
+  const { data, error } = await service
+    .from("advisor")
+    .insert({
+      advisor_name: syntheticName(tag),
+      email: syntheticEmail(tag),
+      is_active: false,
+    })
+    .select("advisor_id")
+    .single();
+  if (error) throw new Error(`insert constraint advisor: ${error.message}`);
+  return { advisor_id: data!.advisor_id as number };
+}
+
+/**
+ * Insert one child row into every table that references `studentId`/`advisorId`
+ * (application, advising_meeting, fellowship_thursday, scholarship_history) so
+ * a parent delete under NO ACTION semantics has children to collide with.
+ */
+async function insertChildRows(studentId: number, fellowshipId: number, advisorId: number): Promise<void> {
+  const application = await service.from("application").insert({
+    student_id: studentId,
+    fellowship_id: fellowshipId,
+    stage_of_application: "Started",
+  });
+  if (application.error) throw new Error(`insert constraint application child: ${application.error.message}`);
+  const meeting = await service.from("advising_meeting").insert({
+    student_id: studentId,
+    advisor_id: advisorId,
+    meeting_date: "2026-09-01",
+    meeting_mode: "Virtual",
+  });
+  if (meeting.error) throw new Error(`insert constraint advising_meeting child: ${meeting.error.message}`);
+  const attendance = await service.from("fellowship_thursday").insert({
+    student_id: studentId,
+    attended: true,
+    source_info: "OCF",
+  });
+  if (attendance.error) throw new Error(`insert constraint fellowship_thursday child: ${attendance.error.message}`);
+  const history = await service.from("scholarship_history").insert({
+    student_id: studentId,
+    fellowship_id: fellowshipId,
+  });
+  if (history.error) throw new Error(`insert constraint scholarship_history child: ${history.error.message}`);
+}
 
 describe("valid synthetic inserts succeed (service role, RLS bypassed)", () => {
   it("seeds one row into every operational table", async () => {
@@ -177,9 +267,27 @@ describe("NOT NULL enforcement", () => {
   });
 });
 
-describe("application stage denormalization invariant (documented design fact)", () => {
-  it("has no DB trigger enforcing is_semi_finalist/is_finalist vs stage_of_application", async () => {
+describe("application stage/flag invariant (forward-only local CHECK, hardening Work 2)", () => {
+  // The denormalized is_semi_finalist/is_finalist flags must be exactly
+  // consistent with stage_of_application. Migration
+  // 20260318000002_application_stage_flag_invariant.sql enforces this with a
+  // CHECK constraint that mirrors lib/applications/pipeline.ts
+  // (deriveFlags/validateConsistency). Enforcement is a CHECK, not a trigger.
+  it("enforces the invariant with a CHECK constraint (not a trigger)", async () => {
     const rows = await pool.query(
+      `SELECT conname
+         FROM pg_constraint
+        WHERE connamespace = 'public'::regnamespace
+          AND conrelid = 'public.application'::regclass
+          AND contype = 'c'`
+    );
+    const names = rows.rows.map((row) => row.conname as string);
+    expect(names, "application CHECK constraints").toContain(
+      "application_stage_flag_invariant_check"
+    );
+
+    // Pins that enforcement is by CHECK, not by a user trigger.
+    const triggers = await pool.query(
       `SELECT count(*)::int AS n
          FROM pg_trigger t
          JOIN pg_class c ON c.oid = t.tgrelid
@@ -188,6 +296,157 @@ describe("application stage denormalization invariant (documented design fact)",
           AND c.relname = 'application'
           AND NOT t.tgisinternal`
     );
-    expect(rows.rows[0].n).toBe(0);
+    expect(triggers.rows[0].n).toBe(0);
+  });
+
+  // Exactly the seven stage/flag combinations produced by deriveFlags.
+  const validCases: Array<{ stage: string; semi: boolean; final: boolean }> = [
+    { stage: "Started", semi: false, final: false },
+    { stage: "Submitted", semi: false, final: false },
+    { stage: "Under Review", semi: false, final: false },
+    { stage: "Rejected", semi: false, final: false },
+    { stage: "Semi-Finalist", semi: true, final: false },
+    { stage: "Finalist", semi: true, final: true },
+    { stage: "Awarded", semi: true, final: true },
+  ];
+
+  // Every other combination of the seven stages × two flags is invalid.
+  const invalidCases: Array<{ stage: string; semi: boolean; final: boolean }> = [];
+  for (const stage of ["Started", "Submitted", "Under Review", "Semi-Finalist", "Finalist", "Awarded", "Rejected"]) {
+    for (const semi of [false, true]) {
+      for (const final of [false, true]) {
+        if (!validCases.some((c) => c.stage === stage && c.semi === semi && c.final === final)) {
+          invalidCases.push({ stage, semi, final });
+        }
+      }
+    }
+  }
+  expect(invalidCases.length).toBe(28 - validCases.length);
+
+  it.each(validCases)(
+    "accepts stage $stage with is_semi_finalist=$semi, is_finalist=$final",
+    async ({ stage, semi, final }) => {
+      const ids = await insertStudentAndFellowship();
+      const { data, error } = await service
+        .from("application")
+        .insert({
+          student_id: ids.studentId,
+          fellowship_id: ids.fellowshipId,
+          stage_of_application: stage,
+          is_semi_finalist: semi,
+          is_finalist: final,
+        })
+        .select("application_id")
+        .single();
+      expect(error, `stage ${stage} sf=${semi} f=${final}`).toBeNull();
+      expect(data, `stage ${stage} sf=${semi} f=${final}`).not.toBeNull();
+    }
+  );
+
+  it.each(invalidCases)(
+    "rejects stage $stage with is_semi_finalist=$semi, is_finalist=$final",
+    async ({ stage, semi, final }) => {
+      const ids = await insertStudentAndFellowship();
+      const { data, error } = await service
+        .from("application")
+        .insert({
+          student_id: ids.studentId,
+          fellowship_id: ids.fellowshipId,
+          stage_of_application: stage,
+          is_semi_finalist: semi,
+          is_finalist: final,
+        });
+      expect(data, `stage ${stage} sf=${semi} f=${final} must not insert`).toBeNull();
+      expect(error, `stage ${stage} sf=${semi} f=${final} must be rejected`).not.toBeNull();
+      expect(error?.code, `stage ${stage} sf=${semi} f=${final} error code`).toBe("23514"); // check_violation
+    }
+  );
+});
+
+describe("foreign-key delete behavior (schema-derived NO ACTION, hardening Work 3)", () => {
+  // Every FK in the local migration chain is declared without ON DELETE/ON
+  // UPDATE, so Postgres gives each the default NO ACTION semantics. The
+  // expected delete behavior is derived from the schema (pg_constraint), never
+  // assumed from production (whose delete actions differ and are out of scope).
+  it("declares every local FK as NO ACTION on delete and update", async () => {
+    const rows = await pool.query(
+      `SELECT conname, confdeltype, confupdtype
+         FROM pg_constraint
+        WHERE connamespace = 'public'::regnamespace
+          AND contype = 'f'`
+    );
+    expect(rows.rows.length).toBeGreaterThan(0);
+    for (const row of rows.rows) {
+      // 'a' is the pg_constraint code for NO ACTION (the Postgres default for
+      // a plain FK with no ON DELETE/ON UPDATE clause).
+      expect(row.confdeltype, `${row.conname} confdeltype`).toBe("a");
+      expect(row.confupdtype, `${row.conname} confupdtype`).toBe("a");
+    }
+  });
+
+  it("blocks deleting a student with children and preserves every child (NO ACTION)", async () => {
+    const { studentId, fellowshipId } = await insertStudentAndFellowship();
+    const advisorId = (await insertAdvisor()).advisor_id;
+    await insertChildRows(studentId, fellowshipId, advisorId);
+
+    const { data, error } = await service.from("student").delete().eq("student_id", studentId);
+    expect(error, "NO ACTION delete of a parent student must fail").not.toBeNull();
+    expect(error?.code, "student delete FK violation code").toBe("23503");
+    expect(data).toBeNull();
+
+    // Child preservation proof: every child still references the student.
+    for (const table of ["application", "advising_meeting", "fellowship_thursday", "scholarship_history"] as const) {
+      const { data: children, error: childError } = await service
+        .from(table)
+        .select("student_id")
+        .eq("student_id", studentId);
+      expect(childError, `${table} child re-read`).toBeNull();
+      expect(children ?? [], `${table} child preserved after blocked student delete`).toHaveLength(1);
+    }
+    // Parent preserved too.
+    const { data: parent } = await service.from("student").select("student_id").eq("student_id", studentId);
+    expect(parent ?? [], "parent student preserved").toHaveLength(1);
+  });
+
+  it("blocks deleting an advisor with advising-meeting children and preserves the meetings (NO ACTION)", async () => {
+    const { studentId, fellowshipId } = await insertStudentAndFellowship();
+    const advisorId = (await insertAdvisor()).advisor_id;
+    await insertChildRows(studentId, fellowshipId, advisorId);
+
+    const { data, error } = await service.from("advisor").delete().eq("advisor_id", advisorId);
+    expect(error, "NO ACTION delete of a parent advisor must fail").not.toBeNull();
+    expect(error?.code, "advisor delete FK violation code").toBe("23503");
+    expect(data).toBeNull();
+
+    // The advising meetings survive and still reference the advisor.
+    const { data: meetings } = await service
+      .from("advising_meeting")
+      .select("meeting_id")
+      .eq("advisor_id", advisorId);
+    expect(meetings ?? [], "advising meetings preserved after blocked advisor delete").toHaveLength(1);
+    const { data: parent } = await service.from("advisor").select("advisor_id").eq("advisor_id", advisorId);
+    expect(parent ?? [], "parent advisor preserved").toHaveLength(1);
+  });
+
+  it("blocks deleting a fellowship with application/scholarship-history children and preserves them (NO ACTION)", async () => {
+    const { studentId, fellowshipId } = await insertStudentAndFellowship();
+    const advisorId = (await insertAdvisor()).advisor_id;
+    await insertChildRows(studentId, fellowshipId, advisorId);
+
+    const { data, error } = await service.from("fellowship").delete().eq("fellowship_id", fellowshipId);
+    expect(error, "NO ACTION delete of a parent fellowship must fail").not.toBeNull();
+    expect(error?.code, "fellowship delete FK violation code").toBe("23503");
+    expect(data).toBeNull();
+
+    // Application and scholarship-history children are preserved.
+    for (const table of ["application", "scholarship_history"] as const) {
+      const { data: children } = await service
+        .from(table)
+        .select("fellowship_id")
+        .eq("fellowship_id", fellowshipId);
+      expect(children ?? [], `${table} child preserved after blocked fellowship delete`).toHaveLength(1);
+    }
+    const { data: parent } = await service.from("fellowship").select("fellowship_id").eq("fellowship_id", fellowshipId);
+    expect(parent ?? [], "parent fellowship preserved").toHaveLength(1);
   });
 });

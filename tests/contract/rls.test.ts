@@ -215,6 +215,19 @@ let escalationInactiveCombinedClient: SupabaseClient;
 let triggerUnboundId: number;
 let triggerUserId: string;
 
+// Dedicated denial-target student/fellowship rows for the INSERT denial
+// matrices (Work 1 remediation). Each identity gets its OWN target pair so the
+// attempted INSERT payloads carry a deterministic, unique-per-payload
+// identifier (the target `student_id` for the FK-reference tables; the
+// synthetic email/name for student/fellowship) that no real row ever matches.
+// These targets are ONLY referenced by DENIED INSERT attempts, so a
+// service-role reread filtered on the identifier proves zero matching rows
+// were created (absence proof, R4).
+let inactiveDenialStudentId: number;
+let inactiveDenialFellowshipId: number;
+let noAdvisorDenialStudentId: number;
+let noAdvisorDenialFellowshipId: number;
+
 function freshClient(): SupabaseClient {
   return createClient(env.apiUrl, env.anonKey, {
     auth: { persistSession: false, autoRefreshToken: false },
@@ -302,6 +315,139 @@ async function assertReadBlocked(
     .maybeSingle();
   expect(reReadError, `service-role re-read ${table}.${idColumn}=${realId}`).toBeNull();
   expect(real, `service-role re-read proves ${table}.${idColumn}=${realId} exists`).not.toBeNull();
+}
+
+/**
+ * Prove a DELETE is denied against a REAL row: either a 42501 permission
+ * error (RLS) or a zero-row RLS filter, and — in every case — a service-role
+ * re-read proving the row is byte-for-byte unchanged (R4). `realId` is always
+ * a seeded real row's id, never a sentinel like -1.
+ */
+async function assertDeleteBlocked(
+  client: SupabaseClient,
+  table: (typeof TABLES)[number],
+  idColumn: string,
+  realId: number
+): Promise<void> {
+  const before = await readRow(table, idColumn, realId);
+  expect(before).not.toBeNull();
+
+  const { data, error } = await client.from(table).delete().eq(idColumn, realId);
+
+  if (error) {
+    expect(error.code, `${table} delete error code`).toBe("42501");
+  } else {
+    // RLS-filtered no-op: the row was not visible for deletion.
+    expect(data ?? [], `${table} delete affected rows`).toHaveLength(0);
+  }
+
+  // Deletion was denied, not silently applied: the real row still exists,
+  // byte-for-byte unchanged.
+  const after = await readRow(table, idColumn, realId);
+  expect(after).toEqual(before);
+}
+
+/** Real seeded ids for the six operational tables (lazy: filled in beforeAll). */
+function seededOperationalIds(): Record<OperationalTable, number> {
+  return {
+    student: fixtures.studentId,
+    fellowship: fixtures.fellowshipId,
+    application: fixtures.applicationId,
+    advising_meeting: fixtures.meetingId,
+    fellowship_thursday: fixtures.attendanceId,
+    scholarship_history: fixtures.historyId,
+  };
+}
+
+/**
+ * Attempted INSERT payload for one denied-insert case. Every payload carries a
+ * deterministic, unique-per-payload identifier (`label` is baked into the
+ * synthetic email/name and the per-identity target student id) so the absence
+ * reread can filter on exactly the attempted row and nothing else.
+ */
+function deniedInsertPayload(
+  table: OperationalTable,
+  label: string,
+  targetStudentId: number,
+  targetFellowshipId: number
+): Record<string, unknown> {
+  switch (table) {
+    case "student":
+      return {
+        full_name: syntheticName(`denied-${label}`),
+        email: syntheticEmail(`denied-${label}`),
+        us_citizen: true,
+      };
+    case "fellowship":
+      return { fellowship_name: syntheticName(`denied-${label}`) };
+    case "application":
+      return {
+        student_id: targetStudentId,
+        fellowship_id: targetFellowshipId,
+        stage_of_application: "Started",
+      };
+    case "advising_meeting":
+      return { student_id: targetStudentId, meeting_date: "2026-09-20", meeting_mode: "Virtual" };
+    case "fellowship_thursday":
+      return { student_id: targetStudentId, attended: true, source_info: "OCF" };
+    case "scholarship_history":
+      return { student_id: targetStudentId, fellowship_id: targetFellowshipId };
+  }
+}
+
+/**
+ * The deterministic unique attempted identifier inside a denied INSERT payload
+ * and the column it lives in, used for the service-role absence reread.
+ * student/fellowship use their unique synthetic email/name; the four
+ * FK-reference tables use the per-identity denial-target `student_id`, which
+ * no real row ever references.
+ */
+function deniedInsertIdentifier(
+  table: OperationalTable,
+  payload: Record<string, unknown>
+): { column: string; value: unknown } {
+  switch (table) {
+    case "student":
+      return { column: "email", value: payload.email };
+    case "fellowship":
+      return { column: "fellowship_name", value: payload.fellowship_name };
+    case "application":
+    case "advising_meeting":
+    case "fellowship_thursday":
+    case "scholarship_history":
+      return { column: "student_id", value: payload.student_id };
+  }
+}
+
+/**
+ * Prove an INSERT is denied AND that no row was created: 42501 (RLS WITH CHECK
+ * denial) and a zero-row result, followed by a service-role reread of the SAME
+ * table filtered on the payload's deterministic unique attempted identifier
+ * proving zero matching rows exist (absence proof, R4). A denied INSERT is
+ * never accepted on the 42501 alone.
+ */
+async function assertInsertBlocked(
+  client: SupabaseClient,
+  table: OperationalTable,
+  payload: Record<string, unknown>
+): Promise<void> {
+  const { data, error } = await client.from(table).insert(payload);
+  expect(data ?? [], `${table} insert affected rows`).toHaveLength(0);
+  expect(error, `${table} insert must be denied`).not.toBeNull();
+  expect(error?.code, `${table} insert denial error code`).toBe("42501");
+
+  // Absence proof: the denied INSERT created no row for its unique attempted
+  // identifier, even under the service role (RLS bypassed).
+  const { column, value } = deniedInsertIdentifier(table, payload);
+  const { data: created, error: reReadError } = await service
+    .from(table)
+    .select("*")
+    .eq(column, value);
+  expect(reReadError, `service-role absence re-read ${table}.${column}=${String(value)}`).toBeNull();
+  expect(
+    created ?? [],
+    `no ${table} row may exist for the denied insert identifier ${column}=${String(value)}`
+  ).toHaveLength(0);
 }
 
 beforeAll(async () => {
@@ -399,6 +545,37 @@ beforeAll(async () => {
   if (trigRowError) throw new Error(`seed trigger-bind advisor: ${trigRowError.message}`);
   triggerUnboundId = trigRow.advisor_id as number;
   triggerUserId = await createAuthUser(service, triggerEmail);
+
+  // Denial-target student/fellowship pairs for the INSERT denial matrices:
+  // one pair per identity, referenced ONLY by denied INSERT attempts, so the
+  // service-role absence reread (filtered on the target student_id or the
+  // synthetic email/name) can never match any real row.
+  const seedDenialTarget = async (label: string): Promise<{ studentId: number; fellowshipId: number }> => {
+    const { data: student, error: studentError } = await service
+      .from("student")
+      .insert({
+        full_name: syntheticName(`denial-target-${label}`),
+        email: syntheticEmail(`denial-target-${label}`),
+        us_citizen: true,
+      })
+      .select("student_id")
+      .single();
+    if (studentError) throw new Error(`seed denial-target student ${label}: ${studentError.message}`);
+    const { data: fellowship, error: fellowshipError } = await service
+      .from("fellowship")
+      .insert({ fellowship_name: syntheticName(`denial-target-${label}`) })
+      .select("fellowship_id")
+      .single();
+    if (fellowshipError) throw new Error(`seed denial-target fellowship ${label}: ${fellowshipError.message}`);
+    return { studentId: student!.student_id as number, fellowshipId: fellowship!.fellowship_id as number };
+  };
+
+  const inactiveTarget = await seedDenialTarget("inactive");
+  inactiveDenialStudentId = inactiveTarget.studentId;
+  inactiveDenialFellowshipId = inactiveTarget.fellowshipId;
+  const noAdvisorTarget = await seedDenialTarget("no-advisor");
+  noAdvisorDenialStudentId = noAdvisorTarget.studentId;
+  noAdvisorDenialFellowshipId = noAdvisorTarget.fellowshipId;
 
   selfClient = freshClient();
   inactiveClient = freshClient();
@@ -1094,6 +1271,69 @@ describe("authenticated user with no advisor row is blocked", () => {
     });
     expect(error).not.toBeNull();
     expect(error?.code).toBe("42501");
+  });
+});
+
+// Hardening Work 1 / R1–R2: table-driven CRUD denial matrices for the two
+// authenticated-but-not-staff identities — the pre-bound INACTIVE advisor and
+// the authenticated user with NO advisor row. Every assertion targets a real
+// seeded row (`seededOperationalIds()`) and every denial is proven by a
+// service-role re-read that the row still exists and is unchanged (R4);
+// denied INSERTs additionally carry a deterministic unique identifier and are
+// proven absent by a service-role re-read (no matching row exists).
+describe("pre-bound inactive advisor CRUD denial matrix on every operational table (Work 1)", () => {
+  it.each(OPERATIONAL_TABLES)("cannot read %s rows", async (table) => {
+    await assertReadBlocked(inactiveClient, table, ID_COLUMN[table], seededOperationalIds()[table]);
+  });
+
+  it.each(OPERATIONAL_TABLES)("cannot insert into %s (no row created)", async (table) => {
+    await assertInsertBlocked(
+      inactiveClient,
+      table,
+      deniedInsertPayload(table, "inactive", inactiveDenialStudentId, inactiveDenialFellowshipId)
+    );
+  });
+
+  it.each(OPERATIONAL_TABLES)("cannot update %s rows", async (table) => {
+    await assertMutationBlocked(
+      inactiveClient,
+      table,
+      ID_COLUMN[table],
+      seededOperationalIds()[table],
+      operationalUpdatePayload(table)
+    );
+  });
+
+  it.each(OPERATIONAL_TABLES)("cannot delete %s rows", async (table) => {
+    await assertDeleteBlocked(inactiveClient, table, ID_COLUMN[table], seededOperationalIds()[table]);
+  });
+});
+
+describe("no-advisor authenticated user CRUD denial matrix on every operational table (Work 1)", () => {
+  it.each(OPERATIONAL_TABLES)("cannot read %s rows", async (table) => {
+    await assertReadBlocked(noAdvisorClient, table, ID_COLUMN[table], seededOperationalIds()[table]);
+  });
+
+  it.each(OPERATIONAL_TABLES)("cannot insert into %s (no row created)", async (table) => {
+    await assertInsertBlocked(
+      noAdvisorClient,
+      table,
+      deniedInsertPayload(table, "no-advisor", noAdvisorDenialStudentId, noAdvisorDenialFellowshipId)
+    );
+  });
+
+  it.each(OPERATIONAL_TABLES)("cannot update %s rows", async (table) => {
+    await assertMutationBlocked(
+      noAdvisorClient,
+      table,
+      ID_COLUMN[table],
+      seededOperationalIds()[table],
+      operationalUpdatePayload(table)
+    );
+  });
+
+  it.each(OPERATIONAL_TABLES)("cannot delete %s rows", async (table) => {
+    await assertDeleteBlocked(noAdvisorClient, table, ID_COLUMN[table], seededOperationalIds()[table]);
   });
 });
 

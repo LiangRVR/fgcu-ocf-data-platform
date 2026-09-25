@@ -73,7 +73,7 @@ test.describe("application workflow", () => {
     await expect(page.locator("table tbody tr", { hasText: name })).toContainText(name);
   });
 
-  test("an advisor can advance a seeded application through a stage that persists across a reload", async ({ page }) => {
+  test("an advisor can advance a seeded application to Finalist (setting the flags), persist across a reload, and reverse to a non-finalist stage that clears the stale flags", async ({ page }) => {
     await signInAsActive(page);
 
     // The seed creates one application for the seeded student at "Submitted".
@@ -81,21 +81,51 @@ test.describe("application workflow", () => {
     const row = page.locator("table tbody tr", { hasText: STUDENT_NAME });
     await expect(row).toContainText("Submitted");
 
-    // Open the edit dialog for that application and advance it one stage.
+    // ── Advance through review into Finalist ────────────────────────────────
+    // Finalist is the strongest flag-carrying stage: selecting it via the edit
+    // dialog auto-sets BOTH the semi-finalist and finalist flags (the desktop
+    // table's "Semi-Fin." / "Finalist" columns render a "Yes" badge each).
     await row.getByTitle("Edit application").click();
     await page.locator("#app-stage").click();
     await page.getByRole("option", { name: "Under Review", exact: true }).click();
     await page.getByRole("dialog").getByRole("button", { name: "Save Changes" }).click();
-
-    // Row renders with the advanced stage.
     await expect(page.locator("table tbody tr", { hasText: STUDENT_NAME })).toContainText(
       "Under Review",
     );
 
-    // Reload → the stage change is persisted server-side.
+    // Advance to Finalist → both flags set.
+    await page.locator("table tbody tr", { hasText: STUDENT_NAME }).getByTitle("Edit application").click();
+    await page.locator("#app-stage").click();
+    await page.getByRole("option", { name: "Finalist", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Save Changes" }).click();
+
+    const finalistRow = page.locator("table tbody tr", { hasText: STUDENT_NAME });
+    await expect(finalistRow).toContainText("Finalist");
+    // Both flag columns ("Semi-Fin." and "Finalist") render "Yes".
+    await expect(finalistRow.getByText("Yes", { exact: true })).toHaveCount(2);
+
+    // Reload → the Finalist stage AND both flags persist server-side.
     await page.reload();
-    await expect(page.locator("table tbody tr", { hasText: STUDENT_NAME })).toContainText(
-      "Under Review",
-    );
+    const finalistRowAfterReload = page.locator("table tbody tr", { hasText: STUDENT_NAME });
+    await expect(finalistRowAfterReload).toContainText("Finalist");
+    await expect(finalistRowAfterReload.getByText("Yes", { exact: true })).toHaveCount(2);
+
+    // ── Reverse to a non-finalist stage → stale flags must clear ────────────
+    // Selecting "Submitted" auto-derives both flags to false in the form, and
+    // the saved row must no longer render any "Yes" flag badge.
+    await finalistRowAfterReload.getByTitle("Edit application").click();
+    await page.locator("#app-stage").click();
+    await page.getByRole("option", { name: "Submitted", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Save Changes" }).click();
+
+    const revertedRow = page.locator("table tbody tr", { hasText: STUDENT_NAME });
+    await expect(revertedRow).toContainText("Submitted");
+    await expect(revertedRow.getByText("Yes", { exact: true })).toHaveCount(0);
+
+    // Reload → the reverse transition and cleared flags persist server-side.
+    await page.reload();
+    const revertedRowAfterReload = page.locator("table tbody tr", { hasText: STUDENT_NAME });
+    await expect(revertedRowAfterReload).toContainText("Submitted");
+    await expect(revertedRowAfterReload.getByText("Yes", { exact: true })).toHaveCount(0);
   });
 });

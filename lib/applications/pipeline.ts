@@ -40,6 +40,9 @@ function validateConsistency(
   if (is_semi_finalist && earlyStages.includes(stage)) {
     return `Stage "${stage}" conflicts with Semi-Finalist status. A semi-finalist must have a stage of Semi-Finalist, Finalist, or Awarded.`;
   }
+  if (stage === "Semi-Finalist" && is_finalist) {
+    return 'Stage is "Semi-Finalist" but the Finalist flag is checked; a semi-finalist cannot be marked as a finalist.';
+  }
   if (stage === "Finalist" && !is_finalist) {
     return 'Stage is "Finalist" but the Finalist flag is not checked.';
   }

@@ -22,6 +22,16 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 
 ## Step 2: Apply Database Schema
 
+> ⚠️ **Production freeze (2026-09-25):** these steps describe a fresh-project
+> setup. Do **not** apply the repository migrations to the hosted production
+> database while provenance is unresolved — production is the physical-schema
+> authority, its migration ledger records only
+> `20260924065221_advisor_self_activation_lockdown`, and the deployed schema
+> materially differs from this repository chain. See
+> [SCHEMA.md — Migration deployment freeze](./SCHEMA.md#migration-deployment-freeze)
+> and the approval-gated
+> [reconciliation runbook](../aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
+
 ### Option A: Using Supabase Dashboard (Recommended for first-time setup)
 
 1. Log in to your Supabase project dashboard
@@ -37,10 +47,11 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 11. Backfill confirmed FGCU emails into `public.advisor.email` for any existing advisor rows before finalizing advisor auth on a populated database
 12. Create Supabase Auth users for each advisor with email addresses that exactly match `public.advisor.email`
 13. Repeat steps 3–6 for `supabase/migrations/20260317000004_active_advisor_rls.sql` — removes anon access and enables authenticated active-advisor policies
+14. **Required final step:** repeat steps 3–6 for `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` — removes the email self-link escalation path, adds the one-time-bind guard and the active-staff-only update policy. It must run **after** `20260317000004_active_advisor_rls.sql`; the migration chain is not complete without it.
 
-After migration `20260317000004_active_advisor_rls.sql`, bootstrap anon access is no longer the intended steady state. Operational access should come only from authenticated active advisors.
+Migrations 2 and 3 are temporary bootstrap steps. After the full chain ending with `20260318000001_advisor_self_activation_lockdown.sql`, bootstrap anon access is no longer the intended steady state. Operational access should come only from authenticated active advisors, and `advisor.auth_user_id` binding is admin-only.
 
-### Option B: Using Supabase CLI
+### Option B: Using Supabase CLI (disposable local instances only)
 
 ```bash
 # Link to your project (one time)
@@ -49,6 +60,14 @@ npx supabase link --project-ref <your-project-id>
 # Push all migrations to your Supabase project
 npx supabase db push
 ```
+
+> ⚠️ `supabase link` + `supabase db push` must **not** be run against the
+> hosted production project. The production migration ledger records only
+> `20260924065221_advisor_self_activation_lockdown`, while this repository
+> tracks six migrations and the deployed schema differs materially. Generic
+> `db push`, historical replay, and migration-history repair against production
+> are prohibited until a separately approved reconciliation exists. See the
+> [reconciliation runbook](../aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
 
 ## Step 3: Generate TypeScript Types
 
@@ -153,8 +172,9 @@ If you're getting permission errors:
 6. ✅ Backfill confirmed advisor emails in `public.advisor.email`
 7. ✅ Create matching Supabase Auth users for advisors
 8. ✅ Apply active-advisor RLS migration (`20260317000004_active_advisor_rls.sql`)
-9. ✅ Generate TypeScript types
-10. ✅ Verify connection
+9. ✅ Apply advisor self-activation lockdown migration (`20260318000001_advisor_self_activation_lockdown.sql`)
+10. ✅ Generate TypeScript types
+11. ✅ Verify connection
 
 ## Auth and Account Notes
 

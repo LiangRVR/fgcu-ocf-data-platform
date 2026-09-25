@@ -10,12 +10,13 @@
 
 ### ✅ Database Schema
 
-- 7-table schema with advisor-backed auth applied via five SQL migrations
+- 7-table schema with advisor-backed auth applied via the Git migration chain
   - `supabase/migrations/20260305000000_initial_schema.sql` — creates all tables
   - `supabase/migrations/20260305000001_allow_anon_read.sql` — temporary bootstrap anon read access
   - `supabase/migrations/20260305000002_allow_anon_write.sql` — temporary bootstrap anon write access
   - `supabase/migrations/20260317000003_advisor_auth.sql` — extends `public.advisor` for auth linkage and active status
   - `supabase/migrations/20260317000004_active_advisor_rls.sql` — removes anon access and enables active-advisor RLS
+  - `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` — removes the email self-link escalation path and adds the one-time-bind guard
 - Documented in `docs/schema-reference.md` and `supabase/SCHEMA.md`
 
 ### ✅ Live Data and Auth Features
@@ -60,6 +61,16 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 ### 3. Apply Database Schema and Auth Migrations
 
+> ⚠️ **Production freeze (2026-09-25):** these steps describe a fresh-project
+> setup. Do **not** apply the repository migrations to the hosted production
+> database while provenance is unresolved — production is the physical-schema
+> authority, its migration ledger records only
+> `20260924065221_advisor_self_activation_lockdown`, and the deployed schema
+> materially differs from this repository chain. See
+> [`supabase/SCHEMA.md`](../supabase/SCHEMA.md#migration-deployment-freeze) and
+> the approval-gated
+> [reconciliation runbook](../aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
+
 #### Method A: Supabase Dashboard
 
 1. Open **SQL Editor** in your Supabase project.
@@ -70,8 +81,9 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 6. Backfill the real FGCU advisor emails into `public.advisor.email`.
 7. Create Supabase Auth users whose emails exactly match `public.advisor.email`.
 8. Run `supabase/migrations/20260317000004_active_advisor_rls.sql`.
+9. **Required final step:** run `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` — removes the email self-link escalation path and adds the one-time-bind guard. It must run **after** step 8; the migration chain is not complete without it.
 
-#### Method B: Supabase CLI
+#### Method B: Supabase CLI (disposable local instances only)
 
 ```bash
 # Link to your project once
@@ -81,7 +93,15 @@ npx supabase link --project-ref YOUR_PROJECT_REF_ID
 npx supabase db push
 ```
 
-Migrations 2 and 3 are only bootstrap steps. After migration 5, authenticated active advisors are the intended steady state.
+> ⚠️ `supabase link` + `supabase db push` must **not** be run against the
+> hosted production project. The production migration ledger records only
+> `20260924065221_advisor_self_activation_lockdown`, while this repository
+> tracks six migrations and the deployed schema differs materially. Generic
+> `db push`, historical replay, and migration-history repair against production
+> are prohibited until a separately approved reconciliation exists. See the
+> [reconciliation runbook](../aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
+
+Migrations 2 and 3 are only bootstrap steps. After the full chain ending with `20260318000001_advisor_self_activation_lockdown.sql`, authenticated active advisors are the intended steady state.
 
 ### 4. Generate TypeScript Types
 
@@ -144,6 +164,7 @@ Before relying on the app day to day:
 - Confirm the signed-in email exactly matches `public.advisor.email`.
 - Confirm the advisor row has `is_active = true`.
 - Confirm `20260317000004_active_advisor_rls.sql` was applied only after an advisor account was validated.
+- Confirm `20260318000001_advisor_self_activation_lockdown.sql` was applied after `20260317000004_active_advisor_rls.sql`.
 
 ### Connection failed
 
