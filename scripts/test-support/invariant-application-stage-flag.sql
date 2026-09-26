@@ -1,7 +1,15 @@
 -- ============================================================================
 -- OCF Fellowship Management System — Application Stage/Flag Invariant
 --
--- Forward-only, LOCAL-TEST-ONLY migration (hardening plan Work 2, R3).
+-- TEST-ONLY SQL — NOT a migration. This file deliberately lives OUTSIDE
+-- `supabase/migrations/` and is NEVER part of a deployable migration chain
+-- (oracle P1 fix): the application stage/flag invariant must not remain in any
+-- production-deployable migration path.
+--
+-- The isolated contract (`scripts/contract/run.mjs`) and E2E
+-- (`scripts/e2e/run.mjs`) lanes apply this file AFTER the normal
+-- production-equivalent migration chain has been applied by
+-- `supabase db reset --no-seed` (via `scripts/test-support/apply-test-only-sql.mjs`).
 --
 -- The `application` table stores a denormalized pipeline position:
 --   stage_of_application  (controlled vocabulary)
@@ -16,16 +24,16 @@
 --   Semi-Finalist                                  ->  sf=true,  f=false
 --   Finalist / Awarded                             ->  sf=true,  f=true
 --
--- This migration adds a CHECK constraint that mirrors that mapping exactly,
+-- This file adds a CHECK constraint that mirrors that mapping exactly,
 -- so invalid stage/flag combinations fail at the database layer even when
 -- written directly through the API (bypassing UI/application validation).
 --
--- Forward-only: it only ADDs one CHECK constraint (DROP CONSTRAINT IF EXISTS
--- first keeps it idempotent on re-apply); no tables, columns, or data are
--- touched. It is validated ONLY against the disposable Docker-local contract
--- lane and is NOT authorized for production deployment (production schema
--- remains frozen per the production-schema-provenance authority decision).
--- Enforcement is a CHECK constraint, not a trigger.
+-- It only ADDs one CHECK constraint (DROP CONSTRAINT IF EXISTS first keeps it
+-- idempotent on re-apply); no tables, columns, or data are touched. It is
+-- validated ONLY against the disposable Docker-local contract/E2E lanes and
+-- is NOT authorized for production deployment (production schema remains
+-- frozen per the production-schema-provenance authority decision). Enforcement
+-- is a CHECK constraint, not a trigger.
 -- ============================================================================
 
 ALTER TABLE public.application
@@ -61,4 +69,4 @@ ALTER TABLE public.application
     );
 
 COMMENT ON CONSTRAINT application_stage_flag_invariant_check ON public.application IS
-    'Forward-only local invariant: stage_of_application and the denormalized is_semi_finalist/is_finalist flags must match lib/applications/pipeline.ts (Started/Submitted/Under Review/Rejected => ff, Semi-Finalist => tf, Finalist/Awarded => tt). Not authorized for production deployment.';
+    'TEST-ONLY local invariant (applied by the isolated contract/E2E lanes after the production-equivalent migration chain): stage_of_application and the denormalized is_semi_finalist/is_finalist flags must match lib/applications/pipeline.ts (Started/Submitted/Under Review/Rejected => ff, Semi-Finalist => tf, Finalist/Awarded => tt). Not a production migration.';

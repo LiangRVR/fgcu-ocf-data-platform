@@ -10,9 +10,12 @@
  *
  * Also documents the design fact that the denormalized
  * `is_semi_finalist`/`is_finalist` ↔ `stage_of_application` invariant is
- * enforced by the forward-only local CHECK constraint added in migration
- * 20260318000002_application_stage_flag_invariant.sql (mirroring
- * lib/applications/pipeline.ts) — a CHECK, not a trigger.
+ * enforced by the forward-only local CHECK constraint applied by the contract
+ * lane as TEST-ONLY SQL (`scripts/test-support/invariant-application-stage-flag.sql`)
+ * AFTER the production-equivalent migration chain (mirroring
+ * lib/applications/pipeline.ts) — a CHECK, not a trigger. The file
+ * deliberately lives OUTSIDE `supabase/migrations/`: it is never part of a
+ * deployable migration path.
  *
  * FK delete behavior is asserted FROM THE LOCAL SCHEMA (all local FKs are the
  * Postgres default NO ACTION): deleting a parent with children fails with a
@@ -267,10 +270,11 @@ describe("NOT NULL enforcement", () => {
   });
 });
 
-describe("application stage/flag invariant (forward-only local CHECK, hardening Work 2)", () => {
+describe("application stage/flag invariant (test-only CHECK, hardening Work 2)", () => {
   // The denormalized is_semi_finalist/is_finalist flags must be exactly
-  // consistent with stage_of_application. Migration
-  // 20260318000002_application_stage_flag_invariant.sql enforces this with a
+  // consistent with stage_of_application. The contract lane applies the
+  // TEST-ONLY file scripts/test-support/invariant-application-stage-flag.sql
+  // AFTER the production-equivalent migration chain; it enforces this with a
   // CHECK constraint that mirrors lib/applications/pipeline.ts
   // (deriveFlags/validateConsistency). Enforcement is a CHECK, not a trigger.
   it("enforces the invariant with a CHECK constraint (not a trigger)", async () => {

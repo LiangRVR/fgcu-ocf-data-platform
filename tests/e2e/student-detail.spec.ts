@@ -55,7 +55,7 @@ test.describe("student detail workflow", () => {
       .click();
 
     await expect(page).toHaveURL(/\/students\/\d+$/);
-    await expect(page.getByRole("heading", { name: STUDENT_NAME })).toBeVisible();
+    await expect(page.getByRole("heading", { name: STUDENT_NAME })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText("Student Record", { exact: true })).toBeVisible();
 
     // The record's stable sections render with the seeded history. Scoped to

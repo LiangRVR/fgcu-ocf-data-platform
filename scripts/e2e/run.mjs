@@ -29,7 +29,9 @@
  *      robustly (bare API_URL/ANON_KEY/SERVICE_ROLE_KEY/DB_URL + aliases);
  *      values are never logged; loopback-only URLs are enforced.
  *   5. `supabase db reset --no-seed --workdir <isolated>` – apply the FULL
- *      migration chain to a fresh database.
+ *      migration chain to a fresh database, then apply the TEST-ONLY pipeline
+ *      stage/flag invariant SQL from `scripts/test-support/`
+ *      (outside `supabase/migrations/`, never a deployable migration).
  *   6. `tsx tests/e2e/fixtures/seed.ts`           – seed synthetic active/inactive
  *                                                   advisor AUTH users plus OCF
  *                                                   fixtures through the server-only
@@ -133,6 +135,13 @@ let APP_URL = "";
 const START_TIMEOUT_MS = 15 * 60_000; // first run pulls Docker images
 const RESET_TIMEOUT_MS = 10 * 60_000;
 const SEED_TIMEOUT_MS = 5 * 60_000;
+// TEST-ONLY pipeline stage/flag invariant SQL, applied AFTER the
+// production-equivalent migration chain. Deliberately outside
+// `supabase/migrations/`: never part of a deployable migration path (oracle P1
+// fix), applied through the dedicated `apply-test-only-sql.mjs` runner.
+const TEST_ONLY_INVARIANT_SQL = path.join(ROOT, "scripts", "test-support", "invariant-application-stage-flag.sql");
+const APPLY_TEST_ONLY_SQL = path.join(ROOT, "scripts", "test-support", "apply-test-only-sql.mjs");
+const APPLY_TIMEOUT_MS = 60_000;
 const BUILD_TIMEOUT_MS = 10 * 60_000;
 const SUPABASE_HEALTH_TIMEOUT_MS = 30_000;
 const APP_HEALTH_TIMEOUT_MS = 120_000;
@@ -591,6 +600,19 @@ async function runLane(attempt, { supabaseBin, tsxBin, playwrightBin, sanitizedE
     error("The isolated Supabase API did not become healthy in time; refusing to run the suite against a partial stack.");
     return { code: 1 };
   }
+
+  // ---- Apply the test-only pipeline invariant after the migration chain ---
+  log("Applying the test-only pipeline stage/flag invariant (after the production-equivalent migration chain)...");
+  const apply = await runChild(process.execPath, [APPLY_TEST_ONLY_SQL, TEST_ONLY_INVARIANT_SQL], {
+    env: runtimeEnv(sanitizedEnv, runtime),
+    timeoutMs: APPLY_TIMEOUT_MS,
+    runtime,
+  });
+  if (apply.code !== 0) {
+    error("The test-only pipeline invariant SQL did not apply cleanly on the fresh instance.");
+    return { code: apply.code };
+  }
+  log("Test-only pipeline invariant applied.");
 
   // ---- Seed fixtures (server-only service role) ----------------------------
   log("Seeding synthetic advisor auth users + OCF fixtures (server-only service role)...");

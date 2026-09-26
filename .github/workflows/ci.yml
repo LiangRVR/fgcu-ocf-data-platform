@@ -11,9 +11,10 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
+  # Least privilege: every job only reads code or uploads artifacts
+  # (unit coverage, Playwright failure artifacts) via actions/upload-artifact,
+  # which does not require `actions: write`.
   contents: read
-  # Required only to upload Playwright failure artifacts (see e2e job).
-  actions: write
 
 jobs:
   lint-build:

@@ -32,6 +32,34 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 > and the approval-gated
 > [reconciliation runbook](../aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
 
+### Advisor identity binding: admin pre-binding, not email self-link
+
+Identity binding is **admin-only**. A person becomes an advisor through a
+server-only provisioning path — never by signing in with an email that happens
+to match `public.advisor.email`.
+
+- An administrator provisions each advisor **before first sign-in** using the
+  server-only provisioning module (`lib/provisioning/*`, executed server-side
+  with `SUPABASE_SERVICE_ROLE_KEY`). That key is a secret: it must never be
+  committed, placed in `.env.local`, sent to the browser, or logged.
+- The module creates/invites the auth account via the Supabase Admin API
+  (`inviteUserByEmail` or `createUser`), captures the returned `data.user.id`,
+  and conditionally binds that exact UUID to the chosen `public.advisor` row
+  **only while the row is still unbound** (`auth_user_id IS NULL`), so a
+  duplicate or retry can never re-bind an already-bound row.
+- `advisor.auth_user_id` is **one-time bind**: a non-NULL value may be created
+  (INSERT) or set (UPDATE NULL → non-NULL) only by a trusted
+  `service_role`/DBA session, and it can never be replaced, re-bound, or
+  cleared afterwards. There is no `link_current_advisor` RPC, no email
+  self-link, and no self-service fallback — an unbound, email-matched account
+  reads zero advisor rows by design.
+- Provisioning is sequenced **after** the complete migration chain: apply all
+  six migrations through `20260318000001_advisor_self_activation_lockdown.sql`
+  first — that final migration removes the remaining email self-link write path
+  and installs the one-time-bind guard under which the trusted `service_role`
+  bind is written. Never provision or pre-bind an advisor before the lockdown
+  migration is applied.
+
 ### Option A: Using Supabase Dashboard (Recommended for first-time setup)
 
 1. Log in to your Supabase project dashboard
@@ -45,11 +73,12 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 9. Repeat steps 3–6 for `supabase/migrations/20260305000002_allow_anon_write.sql` — temporary bootstrap write access for local development
 10. Repeat steps 3–6 for `supabase/migrations/20260317000003_advisor_auth.sql` — adds advisor auth columns and helper function
 11. Backfill confirmed FGCU emails into `public.advisor.email` for any existing advisor rows before finalizing advisor auth on a populated database
-12. Create Supabase Auth users for each advisor with email addresses that exactly match `public.advisor.email`
-13. Repeat steps 3–6 for `supabase/migrations/20260317000004_active_advisor_rls.sql` — removes anon access and enables authenticated active-advisor policies
-14. **Required final step:** repeat steps 3–6 for `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` — removes the email self-link escalation path, adds the one-time-bind guard and the active-staff-only update policy. It must run **after** `20260317000004_active_advisor_rls.sql`; the migration chain is not complete without it.
+12. Repeat steps 3–6 for `supabase/migrations/20260317000004_active_advisor_rls.sql` — removes anon access and enables authenticated active-advisor policies
+13. **Required final step:** repeat steps 3–6 for `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` — removes the email self-link escalation path, adds the one-time-bind guard and the active-staff-only update policy. It must run **after** `20260317000004_active_advisor_rls.sql`; the migration chain is not complete without it.
+14. **Only after the complete migration chain is applied (through step 13):** provision each advisor via the admin pre-binding path (see [Advisor identity binding](#advisor-identity-binding-admin-pre-binding-not-email-self-link) above) — never create auth users to "self-link" by email
+15. Verify the first active advisor can sign in — the pre-bound `auth_user_id` resolves their advisor row, and `is_active` is `true`
 
-Migrations 2 and 3 are temporary bootstrap steps. After the full chain ending with `20260318000001_advisor_self_activation_lockdown.sql`, bootstrap anon access is no longer the intended steady state. Operational access should come only from authenticated active advisors, and `advisor.auth_user_id` binding is admin-only.
+Migrations `20260305000001_allow_anon_read.sql` and `20260305000002_allow_anon_write.sql` are temporary bootstrap steps. After the full chain ending with `20260318000001_advisor_self_activation_lockdown.sql`, bootstrap anon access is no longer the intended steady state. Operational access comes only from authenticated active advisors, and `advisor.auth_user_id` binding is admin-only (see the identity-binding subsection above).
 
 ### Option B: Using Supabase CLI (disposable local instances only)
 
@@ -150,17 +179,20 @@ See [SCHEMA.md](./SCHEMA.md) for detailed documentation about:
 
 If you're getting permission errors:
 
-1. Review RLS policies in the SQL schema
-2. Temporarily disable RLS for testing (not recommended for production):
-
-   ```sql
-   ALTER TABLE table_name DISABLE ROW LEVEL SECURITY;
-   ```
-
-3. Confirm `public.advisor.email` contains the same email addresses used in Supabase Auth
-4. Ensure the active advisor has signed in at least once so `auth_user_id` can link to the advisor row
-5. Confirm the advisor row has `is_active = true`
-6. Update RLS policies to match your authentication setup
+1. Review the RLS policies in the schema (`supabase/SCHEMA.md`). Keep RLS
+   **enabled** on every table — never run
+   `ALTER TABLE ... DISABLE ROW LEVEL SECURITY`, even for local testing, as it
+   would expose student PII.
+2. Confirm the advisor row is **pre-bound**: `public.advisor.auth_user_id`
+   must already equal the sign-in user's auth UUID. Binding is admin-only and
+   one-time; it happens **before** first sign-in via the server-only
+   provisioning module, and is never "linked" automatically on sign-in.
+3. Confirm the advisor row has `is_active = true`
+4. Confirm the signed-in account is resolved by its pre-bound UUID, not by an
+   email match — an unbound, email-matched account receives zero advisor rows
+   by design
+5. For a new advisor, complete the admin pre-binding/invite path (see the
+   identity-binding subsection above) before asking them to sign in
 
 ## Next Steps
 
@@ -170,15 +202,19 @@ If you're getting permission errors:
 4. ✅ Apply bootstrap anon-write policy (`20260305000002_allow_anon_write.sql`)
 5. ✅ Apply advisor auth migration (`20260317000003_advisor_auth.sql`)
 6. ✅ Backfill confirmed advisor emails in `public.advisor.email`
-7. ✅ Create matching Supabase Auth users for advisors
-8. ✅ Apply active-advisor RLS migration (`20260317000004_active_advisor_rls.sql`)
-9. ✅ Apply advisor self-activation lockdown migration (`20260318000001_advisor_self_activation_lockdown.sql`)
-10. ✅ Generate TypeScript types
-11. ✅ Verify connection
+7. ✅ Apply active-advisor RLS migration (`20260317000004_active_advisor_rls.sql`)
+8. ✅ Apply advisor self-activation lockdown migration (`20260318000001_advisor_self_activation_lockdown.sql`)
+9. ✅ Provision each advisor via the admin pre-binding path (invite/create the auth account and bind its UUID to the unbound `advisor` row **before first sign-in**; one-time bind, no email self-link) — done only after the full migration chain (items 2–8) is applied
+10. ✅ Verify the first active advisor can sign in (pre-bound `auth_user_id` resolves the advisor row; `is_active = true`)
+11. ✅ Generate TypeScript types
+12. ✅ Verify connection
 
 ## Auth and Account Notes
 
 - Dashboard access is gated by `requireAdvisor()` on the server.
+- Advisor identity is resolved by `auth_user_id` only (never by an email match);
+  the session never self-links, so an advisor row must be pre-bound before
+  first sign-in.
 - The account page lives at `/dashboard/account` and allows advisors to update `advisor_name`, request an email change, and change their password.
 - Email updates should keep Supabase Auth and `public.advisor.email` synchronized.
 - Password recovery uses `supabase.auth.resetPasswordForEmail(...)` and redirects back to `/reset-password`.

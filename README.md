@@ -143,11 +143,12 @@ The application uses Supabase for the backend. To set up the database:
 4. **Apply migration 3** — bootstrap anon write: run `supabase/migrations/20260305000002_allow_anon_write.sql`
 5. **Apply migration 4** — advisor auth support: run `supabase/migrations/20260317000003_advisor_auth.sql`
 6. **Backfill confirmed advisor emails** in `public.advisor.email` before enforcing a non-null requirement on non-empty databases
-7. **Create Supabase Auth users** for your advisors with email addresses that exactly match `public.advisor.email`
-8. **Apply migration 5** — active-advisor RLS: run `supabase/migrations/20260317000004_active_advisor_rls.sql` after verifying at least one advisor can sign in
-9. **Apply migration 6 (required final step)** — advisor self-activation lockdown: run `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` after `20260317000004_active_advisor_rls.sql`; the migration chain is not complete without it
-10. **Generate types**: Run `pnpm run db:types`
-11. **Test connection**: Run `pnpm run test:connection`
+7. **Apply migration 5** — active-advisor RLS: run `supabase/migrations/20260317000004_active_advisor_rls.sql`
+8. **Apply migration 6 (required final step)** — advisor self-activation lockdown: run `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` after `20260317000004_active_advisor_rls.sql`; it removes the email self-link escalation path and installs the one-time `auth_user_id` guard — the migration chain is not complete without it
+9. **Provision each advisor only after the full migration chain (steps 2–8) is applied**, via the server-only provisioning module (`lib/provisioning/*`): it invites/creates the auth account and conditionally binds the returned Auth UUID to the unbound `public.advisor` row (`auth_user_id IS NULL`) before first sign-in; one-time bind, no email self-link
+10. **Verify the first active advisor can sign in** — the pre-bound `auth_user_id` resolves their advisor row, and `is_active` is `true`
+11. **Generate types**: Run `pnpm run db:types`
+12. **Test connection**: Run `pnpm run test:connection`
 
 Migrations 2 and 3 are bootstrap steps for early setup. After the full chain ending with `20260318000001_advisor_self_activation_lockdown.sql`, temporary anon access is replaced by authenticated active-advisor access as the intended steady state, with admin-only `advisor.auth_user_id` binding.
 

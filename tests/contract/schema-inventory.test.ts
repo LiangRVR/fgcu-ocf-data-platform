@@ -19,7 +19,7 @@
  *     is stored, only a body hash;
  *   - COMPLETE – every documented catalog section is present as an array, and
  *     the key expected local-chain catalog facts hold:
- *       * seven local migration-ledger rows (the exact Git chain);
+ *       * six local migration-ledger rows (the exact Git chain);
  *       * RLS enabled on all seven operational tables;
  *       * application foreign keys keep the default NO ACTION semantics;
  *       * the advisor identity/RLS lockdown trigger and policies are present.
@@ -51,7 +51,7 @@ const OPERATIONAL_TABLES = [
   "scholarship_history",
 ] as const;
 
-/** The exact Git migration chain recorded in the local ledger (seven rows). */
+/** The exact Git migration chain recorded in the local ledger (six rows). */
 const EXPECTED_LEDGER = [
   { version: "20260305000000", name: "initial_schema" },
   { version: "20260305000001", name: "allow_anon_read" },
@@ -59,7 +59,6 @@ const EXPECTED_LEDGER = [
   { version: "20260317000003", name: "advisor_auth" },
   { version: "20260317000004", name: "active_advisor_rls" },
   { version: "20260318000001", name: "advisor_self_activation_lockdown" },
-  { version: "20260318000002", name: "application_stage_flag_invariant" },
 ] as const;
 
 /** One shared capture: read-only catalog queries against the lane database. */
@@ -121,7 +120,7 @@ describe("schema inventory packet shape (local/schema-only/complete)", () => {
 });
 
 describe("migration ledger", () => {
-  it("records exactly the seven local-chain migrations", () => {
+  it("records exactly the six local-chain migrations", () => {
     const ledger = packet.catalog.migrationLedger;
     expect(ledger).toHaveLength(EXPECTED_LEDGER.length);
     const byVersion = new Map(ledger.map((record) => [record.fields.version, record.fields.name]));

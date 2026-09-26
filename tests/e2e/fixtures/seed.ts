@@ -201,9 +201,10 @@ async function main(): Promise<void> {
     insertStudent(secondStudentName, secondStudentEmail),
   ]);
 
-  // Flags are set EXPLICITLY so the seed stays consistent with the forward-only
-  // local stage/flag invariant migration
-  // (supabase/migrations/20260318000002_application_stage_flag_invariant.sql):
+  // Flags are set EXPLICITLY so the seed stays consistent with the TEST-ONLY
+  // local stage/flag invariant
+  // (scripts/test-support/invariant-application-stage-flag.sql, applied by the
+  // E2E lane after the production-equivalent migration chain):
   // Submitted is an early stage and must carry neither flag.
   const { error: appError } = await service.from("application").insert({
     student_id: studentId,

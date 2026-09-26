@@ -115,8 +115,9 @@ Before using the application with real data:
 - [ ] Bootstrap anon-write policy applied (`20260305000002_allow_anon_write.sql`)
 - [ ] Advisor auth migration applied (`20260317000003_advisor_auth.sql`)
 - [ ] Confirmed advisor emails backfilled in `public.advisor.email`
-- [ ] Matching Supabase Auth users created for advisors
 - [ ] Active-advisor RLS migration applied (`20260317000004_active_advisor_rls.sql`)
+- [ ] Advisor self-activation lockdown migration applied (`20260318000001_advisor_self_activation_lockdown.sql`) — removes any email self-link and adds the one-time-bind guard
+- [ ] Advisors provisioned via the admin pre-binding path: each auth account's exact UUID bound to its `advisor.auth_user_id` while unbound, before first sign-in (no email self-link, no sign-in auto-linking)
 - [ ] TypeScript types regenerated if schema was modified: `pnpm run db:types`
 - [ ] Connection test passes: `pnpm run test:connection`
 - [ ] Dev server starts: `pnpm dev`
@@ -127,8 +128,8 @@ Before using the application with real data:
 
 ### Auth Flow Smoke Test
 
-- [ ] Sign in with a Supabase Auth user whose email matches `public.advisor.email`
-- [ ] Confirm the advisor row links `auth_user_id` after first sign-in
+- [ ] Sign in with a Supabase Auth user whose UUID is pre-bound to an advisor row (`advisor.auth_user_id`)
+- [ ] Confirm the pre-bound advisor row resolves by `auth_user_id` (no sign-in auto-linking; an unbound, email-matched account gets no advisor row)
 - [ ] Confirm inactive advisors are redirected out of protected routes
 - [ ] Confirm profile updates save successfully from `/dashboard/account`
 - [ ] Confirm password updates succeed for an active session

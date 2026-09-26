@@ -1022,13 +1022,18 @@ describe("killChildGracefully", () => {
   it("escalates to SIGKILL when the child ignores SIGTERM", async () => {
     const child = spawn(
       process.execPath,
-      ["-e", "console.log('ready'); process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
-      { stdio: ["ignore", "pipe", "ignore"] }
+      ["-e", "process.on('SIGTERM', () => {}); process.send('ready'); setInterval(() => {}, 1000)"],
+      { stdio: ["ignore", "ignore", "ignore", "ipc"] }
     );
-    // Wait for the child to install its SIGTERM handler before signalling, so
-    // SIGTERM is genuinely ignored and only the SIGKILL escalation can kill it.
+    // Wait for the child's IPC "ready" message — sent only AFTER the SIGTERM
+    // handler is registered in the same synchronous script — so SIGTERM is
+    // genuinely ignored and only the SIGKILL escalation can kill it. A stdout
+    // readiness line cannot prove the handler is installed: the child's
+    // `console.log` write can reach the parent before its synchronous
+    // `process.on("SIGTERM", ...)` registration runs, letting a SIGTERM land
+    // with default disposition. IPC ordering removes that race.
     await new Promise<void>((resolve) => {
-      child.stdout?.once("data", () => resolve());
+      child.once("message", () => resolve());
     });
     const started = Date.now();
     await killChildGracefully(child, { graceMs: 300 });

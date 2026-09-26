@@ -79,9 +79,10 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 4. Run `supabase/migrations/20260305000002_allow_anon_write.sql`.
 5. Run `supabase/migrations/20260317000003_advisor_auth.sql`.
 6. Backfill the real FGCU advisor emails into `public.advisor.email`.
-7. Create Supabase Auth users whose emails exactly match `public.advisor.email`.
-8. Run `supabase/migrations/20260317000004_active_advisor_rls.sql`.
-9. **Required final step:** run `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` — removes the email self-link escalation path and adds the one-time-bind guard. It must run **after** step 8; the migration chain is not complete without it.
+7. Run `supabase/migrations/20260317000004_active_advisor_rls.sql`.
+8. **Required final step:** run `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` — removes the email self-link escalation path and adds the one-time-bind guard. It must run **after** step 7; the migration chain is not complete without it.
+9. **Only after the full migration chain is applied (steps 2–8):** provision each advisor before first sign-in via the server-only provisioning module (`lib/provisioning/*`): it invites/creates the auth account and conditionally binds the returned Auth UUID to the unbound `public.advisor` row (`auth_user_id IS NULL`); one-time bind, no email self-link.
+10. Verify the first active advisor can sign in — the pre-bound `auth_user_id` resolves their advisor row, and `is_active` is `true`.
 
 #### Method B: Supabase CLI (disposable local instances only)
 
@@ -161,9 +162,9 @@ Before relying on the app day to day:
 ### Permission denied or RLS errors
 
 - After the final RLS migration, this is expected for unauthenticated users or inactive advisors.
-- Confirm the signed-in email exactly matches `public.advisor.email`.
+- Confirm the advisor row is **pre-bound**: `public.advisor.auth_user_id` must already equal the sign-in user's auth UUID. Binding is admin-only and one-time; it happens before first sign-in via the server-only provisioning module, never by email match or auto-linking.
 - Confirm the advisor row has `is_active = true`.
-- Confirm `20260317000004_active_advisor_rls.sql` was applied only after an advisor account was validated.
+- Confirm the complete migration chain through `20260318000001_advisor_self_activation_lockdown.sql` was applied **before** any advisor was provisioned/pre-bound.
 - Confirm `20260318000001_advisor_self_activation_lockdown.sql` was applied after `20260317000004_active_advisor_rls.sql`.
 
 ### Connection failed
@@ -191,7 +192,7 @@ Before relying on the app day to day:
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Advisor provisioning | In progress | Real environments still need confirmed FGCU emails and matching Supabase Auth users |
+| Advisor provisioning | In progress | Real environments still need confirmed FGCU emails and admin pre-binding of each advisor row's `auth_user_id` via the server-only provisioning path |
 | Email delivery verification | In progress | Forgot-password and secure email-change confirmation need end-to-end testing |
 | Reports page | Implemented | Six report sections: Applications by Stage, Finalists by Fellowship, Students by Class Standing, Advising Activity by Advisor, Fellowship Thursday Attendance, and Recent Activity |
 | Server-side pagination | Not started | All pagination is currently client-side |

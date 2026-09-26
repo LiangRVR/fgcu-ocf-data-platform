@@ -42,11 +42,19 @@
  *                                                         URLs are enforced.
  *   5. `supabase db reset --no-seed --workdir <isolated>` – apply the FULL
  *                                                         migration chain to a
- *                                                         fresh database. The
- *                                                         seed step is skipped:
- *                                                         the contract lane
- *                                                         creates its own
- *                                                         synthetic fixtures.
+ *                                                         fresh database, then
+ *                                                         apply the TEST-ONLY
+ *                                                         pipeline stage/flag
+ *                                                         invariant SQL from
+ *                                                         `scripts/test-support/`
+ *                                                         (outside
+ *                                                         `supabase/migrations/`,
+ *                                                         never a deployable
+ *                                                         migration). The seed
+ *                                                         step is skipped: the
+ *                                                         contract lane creates
+ *                                                         its own synthetic
+ *                                                         fixtures.
  *   6. `pnpm exec vitest run --config vitest.contract.config.ts` with the
  *      captured env exported through a sanitized child environment.
  *   7. Teardown in a `finally` block (also on SIGINT/SIGTERM): stop ONLY the
@@ -86,6 +94,13 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const VITEST_CONFIG = path.join(ROOT, "vitest.contract.config.ts");
+// TEST-ONLY pipeline stage/flag invariant SQL, applied AFTER the
+// production-equivalent migration chain. Deliberately outside
+// `supabase/migrations/`: never part of a deployable migration path (oracle P1
+// fix), applied through the dedicated `apply-test-only-sql.mjs` runner.
+const TEST_ONLY_INVARIANT_SQL = path.join(ROOT, "scripts", "test-support", "invariant-application-stage-flag.sql");
+const APPLY_TEST_ONLY_SQL = path.join(ROOT, "scripts", "test-support", "apply-test-only-sql.mjs");
+const APPLY_TIMEOUT_MS = 60_000;
 const START_TIMEOUT_MS = 15 * 60_000; // first run pulls Docker images
 const RESET_TIMEOUT_MS = 10 * 60_000;
 const VITEST_TIMEOUT_MS = 20 * 60_000;
@@ -422,6 +437,19 @@ async function runLane(attempt) {
     error("The isolated Supabase API did not become healthy in time; refusing to run the suite against a possibly partial stack.");
     return { code: 1 };
   }
+
+  // ---- Apply the test-only pipeline invariant after the migration chain ---
+  log("Applying the test-only pipeline stage/flag invariant (after the production-equivalent migration chain)...");
+  const apply = await runChild(process.execPath, [APPLY_TEST_ONLY_SQL, TEST_ONLY_INVARIANT_SQL], {
+    env: runtimeEnv(sanitizedEnv, runtime),
+    timeoutMs: APPLY_TIMEOUT_MS,
+    runtime,
+  });
+  if (apply.code !== 0) {
+    error("The test-only pipeline invariant SQL did not apply cleanly on the fresh instance.");
+    return { code: apply.code };
+  }
+  log("Test-only pipeline invariant applied.");
 
   // ---- Run the contract Vitest suite -------------------------------------
   if (!toolAvailable("pnpm", ["exec", "vitest", "--version"])) {
