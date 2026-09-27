@@ -12,6 +12,12 @@
 
 # testing
 /coverage
+/playwright-report
+/test-results
+
+# supabase local (Docker-only) generated artifacts
+/supabase/.temp
+/supabase/.branches
 
 # next.js
 /.next/
@@ -47,3 +53,4 @@ next-env.d.ts
 
 /plan
 .codegraph
+/aidlc-docs

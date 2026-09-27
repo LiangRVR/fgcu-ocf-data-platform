@@ -3,8 +3,15 @@
 > Canonical tables, keys, foreign keys, constraints, and business rules for the
 > FGCU Office of Competitive Fellowships data platform.
 >
-> Current migration chain ends with `20260317000004_active_advisor_rls.sql`
 > Active auth model: Supabase Auth identity + `public.advisor` authorization
+>
+> ⚠️ **Provenance notice (2026-09-25):** the hosted production database is the
+> physical-schema authority. Its migration ledger records only
+> `20260924065221_advisor_self_activation_lockdown`, while this repository
+> tracks six migrations (`20260305000000` … `20260318000001`), and the deployed
+> schema materially differs from the repository chain. Do **not** run
+> `supabase db push`, replay migrations, or repair migration history against
+> production. See [Migration deployment freeze](#migration-deployment-freeze).
 >
 > For open design decisions (email uniqueness, stage denormalization, etc.) see
 > [`docs/schema-decisions.md`](../docs/schema-decisions.md).
@@ -195,15 +202,37 @@ fellowship (1) ─────────────────────�
 | `20260305000002_allow_anon_write.sql` | Temporary bootstrap anon-role `INSERT`, `UPDATE`, `DELETE` on every table + `USAGE`/`SELECT` on all sequences |
 | `20260317000003_advisor_auth.sql` | Extends `advisor` for auth linkage, active status, role, timestamps, and helper logic |
 | `20260317000004_active_advisor_rls.sql` | Removes anon access and enables authenticated active-advisor policies |
+| `20260318000001_advisor_self_activation_lockdown.sql` | Removes the email self-link escalation path; adds the one-time-bind guard, active-staff-only update policy, and case-insensitive advisor-email uniqueness |
 
-**All five migrations must be applied.** Migrations 2 and 3 are temporary bootstrap steps. Migration 5 establishes the intended steady state: authenticated active advisors only.
+Migrations 2 and 3 are temporary bootstrap steps. The chain must be applied in
+order and ends with `20260318000001_advisor_self_activation_lockdown.sql`,
+which is required and must follow `20260317000004_active_advisor_rls.sql`.
+Steady state after the full chain: authenticated active advisors only, with
+admin-only `advisor.auth_user_id` binding. The chain is **not proven
+equivalent** to the deployed production schema.
 
-Apply via Supabase Dashboard (SQL Editor) or CLI:
+### Migration deployment freeze
 
-```bash
-npx supabase link --project-ref <your-project-id>
-npx supabase db push
-```
+As of 2026-09-25 the production migration ledger contains only
+`20260924065221_advisor_self_activation_lockdown` while the repository tracks
+six migrations (`20260305000000` … `20260318000001`), and the live production
+schema materially differs from the repository chain. Production is the
+physical-schema authority. Until a reviewed reconciliation is approved:
+
+- **Do not** run `supabase db push`, `supabase db reset`, or `supabase config push` against production.
+- **Do not** replay historical migrations or mark them applied on the production ledger.
+- **Do not** run SQL Editor scripts derived from these migration files against production.
+- Any future production metadata write requires separate explicit approval.
+
+Approval-gated future-operation guidance:
+[`aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md`](../aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md)
+
+### Applying migrations locally
+
+For a fresh, disposable local Supabase instance only, the chain can be applied
+via the isolated local harness; this is safe and is how the reconciliation
+baseline is produced. Applying the chain to a hosted project remains prohibited
+while provenance is unresolved.
 
 Regenerate TypeScript types after any schema change:
 

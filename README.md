@@ -126,18 +126,31 @@ See the [full project structure details](docs/quickstart.md#project-structure) f
 
 The application uses Supabase for the backend. To set up the database:
 
+> ⚠️ **Production provenance freeze (2026-09-25):** these steps describe a
+> fresh-project setup. Do **not** run the migration files against the hosted
+> production database while provenance is unresolved. Production is the
+> physical-schema authority, its migration ledger records only
+> `20260924065221_advisor_self_activation_lockdown`, and the deployed schema
+> materially differs from the repository chain. Generic `db push`, replay, and
+> history repair against production are prohibited. See
+> [`supabase/SCHEMA.md`](supabase/SCHEMA.md#migration-deployment-freeze) and the
+> approval-gated
+> [reconciliation runbook](aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
+
 1. **Create a Supabase project** at [supabase.com](https://supabase.com)
 2. **Apply migration 1** — schema: run `supabase/migrations/20260305000000_initial_schema.sql`
 3. **Apply migration 2** — bootstrap anon read: run `supabase/migrations/20260305000001_allow_anon_read.sql`
 4. **Apply migration 3** — bootstrap anon write: run `supabase/migrations/20260305000002_allow_anon_write.sql`
 5. **Apply migration 4** — advisor auth support: run `supabase/migrations/20260317000003_advisor_auth.sql`
 6. **Backfill confirmed advisor emails** in `public.advisor.email` before enforcing a non-null requirement on non-empty databases
-7. **Create Supabase Auth users** for your advisors with email addresses that exactly match `public.advisor.email`
-8. **Apply migration 5** — active-advisor RLS: run `supabase/migrations/20260317000004_active_advisor_rls.sql` after verifying at least one advisor can sign in
-9. **Generate types**: Run `pnpm run db:types`
-10. **Test connection**: Run `pnpm run test:connection`
+7. **Apply migration 5** — active-advisor RLS: run `supabase/migrations/20260317000004_active_advisor_rls.sql`
+8. **Apply migration 6 (required final step)** — advisor self-activation lockdown: run `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` after `20260317000004_active_advisor_rls.sql`; it removes the email self-link escalation path and installs the one-time `auth_user_id` guard — the migration chain is not complete without it
+9. **Provision each advisor only after the full migration chain (steps 2–8) is applied**, via the server-only provisioning module (`lib/provisioning/*`): it invites/creates the auth account and conditionally binds the returned Auth UUID to the unbound `public.advisor` row (`auth_user_id IS NULL`) before first sign-in; one-time bind, no email self-link
+10. **Verify the first active advisor can sign in** — the pre-bound `auth_user_id` resolves their advisor row, and `is_active` is `true`
+11. **Generate types**: Run `pnpm run db:types`
+12. **Test connection**: Run `pnpm run test:connection`
 
-Migrations 2 and 3 are bootstrap steps for early setup. Migration 5 replaces that temporary anon access with authenticated active-advisor access as the intended steady state.
+Migrations 2 and 3 are bootstrap steps for early setup. After the full chain ending with `20260318000001_advisor_self_activation_lockdown.sql`, temporary anon access is replaced by authenticated active-advisor access as the intended steady state, with admin-only `advisor.auth_user_id` binding.
 
 For detailed instructions, see the [Supabase Setup Guide](supabase/README.md).
 
@@ -199,6 +212,20 @@ pnpm lint             # Run ESLint
 pnpm db:types         # Generate TypeScript types from Supabase
 pnpm test:connection  # Test Supabase connection
 ```
+
+### Testing
+
+There is deliberately **no bare `pnpm test`**. The test layers are explicit:
+
+```bash
+pnpm run test:unit            # Fast unit tests (no coverage)
+pnpm run test:unit:coverage   # Unit tests + threshold-enforced V8 coverage of lib/** and app/api/**
+pnpm run test:contract       # Contract/RLS tests (Docker-local Supabase, requires Docker)
+pnpm run test:e2e            # Playwright Chromium E2E (requires Docker + built app)
+pnpm run test:all            # Full aggregate: unit + contract + e2e
+```
+
+See the [testing & verification guide](aidlc-docs/project/testing.md) for command semantics, coverage scope/baseline, and prerequisites.
 
 ---
 
