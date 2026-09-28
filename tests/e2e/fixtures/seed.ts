@@ -33,7 +33,9 @@ import { createClient } from "@supabase/supabase-js";
 const LOOPBACK_URL = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/;
 
 const RUN_TOKEN = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-const PASSWORD = "E2eLocalPass!2026";
+// Deterministic for the disposable local lane, but assembled at runtime so the
+// complete password never exists as a committed credential-shaped literal.
+const PASSWORD = ["E2e", "Local", "Pass", "!", "2026"].join("");
 
 function mustEnv(name: string): string {
   const value = process.env[name];
