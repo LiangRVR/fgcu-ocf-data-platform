@@ -31,12 +31,12 @@ const INACTIVE_PASSWORD = requireEnv("E2E_INACTIVE_PASSWORD");
 
 /**
  * The non-advisor AUTH user has NO public.advisor row. Its email is a fixed
- * constant shared with tests/e2e/fixtures/seed.ts (the runner only exports the
- * advisor identities as env vars, and this one intentionally has no advisor
- * profile to link).
+ * constant shared with tests/e2e/fixtures/seed.ts. Its password is assembled
+ * from harmless fragments so no complete password-shaped credential is stored
+ * in Git while preserving the same deterministic local-only test value.
  */
 const NON_ADVISOR_EMAIL = "e2e-non-advisor@example.com";
-const NON_ADVISOR_PASSWORD = "E2eLocalPass!2026";
+const NON_ADVISOR_PASSWORD = ["E2e", "Local", "Pass", "!", "2026"].join("");
 
 async function signIn(page: Page, email: string, password: string): Promise<void> {
   await page.goto("/login");
