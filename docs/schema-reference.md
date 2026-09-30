@@ -135,6 +135,10 @@ Records each advising session between an advisor and a student.
 - Advisor-personalized meeting history is derived from `advising_meeting.advisor_id`.
 - The first version of `My students` is also derived from this table by grouping the current advisor's meetings by `student_id`.
 - This schema does **not** currently encode a formal advisor assignment or caseload model.
+- **Append-only history:** Database RLS permits active advisors to `SELECT` and
+  `INSERT` advising meetings only. `UPDATE` and `DELETE` are denied; there is
+  no application-admin bypass. Historic meeting records are preserved, so a
+  correction is recorded as a new meeting rather than changing or removing one.
 
 **Creation-metadata trigger (migration `20260929000001`):**
 
@@ -148,15 +152,17 @@ path that writes creator attribution:
   `created_by_advisor_id` and `created_at`; a session that cannot resolve an
   active advisor is rejected by the existing RLS INSERT policy (RLS remains the
   authorization gate).
-- **No-auth technical INSERT** (service-role/seed, no JWT claims): retains the
-  nullable creator as supplied and stamps the DB current timestamp.
+- **No-auth technical INSERT** (service-role/seed, no JWT claims): clears any
+  supplied creator attribution, writes `created_by_advisor_id = NULL`, and
+  stamps the DB current timestamp.
 - **UPDATE:** rejects any change to `created_at` or `created_by_advisor_id`
   fail-closed; the column-scoped trigger (`UPDATE OF created_at,
   created_by_advisor_id`) leaves ordinary meeting edits untouched.
 - `advisor_id` is never modified by the trigger.
 
-Indexes: `student_id`, `meeting_date`, `application_id` (single-column) and
-`(student_id, application_id)` (composite).
+Indexes: `student_id`, `meeting_date`, `application_id` (single-column),
+`(student_id, application_id)` (composite), `(application_id, student_id)`
+(reverse composite-FK), and `created_by_advisor_id`.
 
 ---
 

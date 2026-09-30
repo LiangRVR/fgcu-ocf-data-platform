@@ -29,10 +29,11 @@
  *     and never created), so an authenticated account whose email matches an
  *     unlinked `advisor` row can never claim, bind, or take over that identity
  *     (pre-existing-matching-account takeover, row 8);
- *   - pre-bound active advisors retain shared staff CRUD on EVERY operational
- *     table (`student`, `fellowship`, `application`, `advising_meeting`,
- *     `fellowship_thursday`, `scholarship_history`) and on advisor rows
- *     (insert/read/update/delete), unchanged from migration ...004;
+ *   - pre-bound active advisors retain shared staff CRUD on every mutable
+ *     operational table (`student`, `fellowship`, `application`,
+ *     `fellowship_thursday`, `scholarship_history`), while
+ *     `advising_meeting` is append-only: active advisors may SELECT and INSERT
+ *     but direct UPDATE and DELETE are denied;
  *   - pre-bound inactive advisors and authenticated users with no advisor row
  *     are blocked from operational data;
  *   - advisor email identity is case-normalized (R11, regression row 15): a
@@ -130,7 +131,7 @@ const UPDATE_PAYLOADS: Record<(typeof TABLES)[number], Record<string, unknown>> 
   scholarship_history: { student_id: 1 },
 };
 
-/** The six operational tables shared by active staff (row 11). */
+/** All operational tables covered by the authenticated denial matrices. */
 const OPERATIONAL_TABLES = [
   "student",
   "fellowship",
@@ -140,6 +141,15 @@ const OPERATIONAL_TABLES = [
   "scholarship_history",
 ] as const;
 type OperationalTable = (typeof OPERATIONAL_TABLES)[number];
+
+/** Tables that remain mutable by active staff; advising_meeting is append-only. */
+const ACTIVE_ADVISOR_MUTABLE_TABLES = [
+  "student",
+  "fellowship",
+  "application",
+  "fellowship_thursday",
+  "scholarship_history",
+] as const satisfies readonly OperationalTable[];
 
 /** Insert payload for one active-staff CRUD cycle on an operational table. */
 function operationalInsertPayload(table: OperationalTable): Record<string, unknown> {
@@ -1114,9 +1124,36 @@ describe("pre-bound active advisor has staff access", () => {
     expect(ids).toContain(fixtures.advisorOtherId);
   });
 
-  // Regression matrix row 11 — full active-staff coverage: CRUD is proven on
-  // EVERY operational table (insert → read → update → delete), not a sample.
-  it.each(OPERATIONAL_TABLES)(
+  it("can select and insert append-only advising_meeting rows", async () => {
+    const { data: visible, error: selectError } = await selfClient
+      .from("advising_meeting")
+      .select("meeting_id")
+      .eq("meeting_id", fixtures.meetingId);
+    expect(selectError, "active advisor advising_meeting SELECT").toBeNull();
+    expect(visible ?? []).toHaveLength(1);
+
+    const { data: inserted, error: insertError } = await selfClient
+      .from("advising_meeting")
+      .insert(operationalInsertPayload("advising_meeting"))
+      .select("meeting_id")
+      .single();
+    expect(insertError, "active advisor advising_meeting INSERT").toBeNull();
+    expect(inserted).not.toBeNull();
+  });
+
+  it("denies an active advisor direct advising_meeting UPDATE and leaves the real row unchanged", async () => {
+    await assertMutationBlocked(selfClient, "advising_meeting", "meeting_id", fixtures.meetingId, {
+      meeting_mode: "In-Person",
+    });
+  });
+
+  it("denies an active advisor direct advising_meeting DELETE and leaves the real row present", async () => {
+    await assertDeleteBlocked(selfClient, "advising_meeting", "meeting_id", fixtures.meetingId);
+  });
+
+  // Regression matrix row 11 — CRUD is proven on every operational table that
+  // remains mutable (insert → read → update → delete), not a sample.
+  it.each(ACTIVE_ADVISOR_MUTABLE_TABLES)(
     "active staff can insert, read, update, and delete %s rows",
     async (table) => {
       const idColumn = ID_COLUMN[table];
@@ -1206,6 +1243,191 @@ describe("pre-bound active advisor has staff access", () => {
       .select("advisor_id")
       .eq("advisor_id", inserted!.advisor_id);
     expect(remaining ?? []).toHaveLength(0);
+  });
+});
+
+describe("advising_meeting_amendment append-only corrections", () => {
+  it("lets an active advisor add and read multiple database-authored corrections without changing the original meeting", async () => {
+    const { data: originalBefore, error: originalBeforeError } = await service
+      .from("advising_meeting")
+      .select("*")
+      .eq("meeting_id", fixtures.meetingId)
+      .single();
+    expect(originalBeforeError).toBeNull();
+
+    const forgedTime = "2000-01-01T00:00:00.000Z";
+    const first = await selfClient
+      .from("advising_meeting_amendment")
+      .insert({
+        meeting_id: fixtures.meetingId,
+        reason: "Correct meeting summary",
+        details: "The original notes omitted the application discussion.",
+        created_by_advisor_id: fixtures.advisorOtherId,
+        created_at: forgedTime,
+      })
+      .select("amendment_id")
+      .single();
+    expect(first.error, "active advisor amendment INSERT").toBeNull();
+    expect(first.data).not.toBeNull();
+
+    const second = await selfClient
+      .from("advising_meeting_amendment")
+      .insert({
+        meeting_id: fixtures.meetingId,
+        reason: "Add follow-up detail",
+        details: "The student later confirmed the revised action item.",
+      })
+      .select("amendment_id")
+      .single();
+    expect(second.error, "a second correction for the same meeting").toBeNull();
+    expect(second.data).not.toBeNull();
+    expect(second.data!.amendment_id).not.toBe(first.data!.amendment_id);
+
+    const { data: visible, error: readError } = await selfClient
+      .from("advising_meeting_amendment")
+      .select("amendment_id, meeting_id, reason, details, created_by_advisor_id, created_at")
+      .in("amendment_id", [first.data!.amendment_id, second.data!.amendment_id])
+      .order("amendment_id");
+    expect(readError, "active advisor amendment SELECT").toBeNull();
+    expect(visible ?? []).toHaveLength(2);
+    expect(visible?.[0]).toMatchObject({
+      amendment_id: first.data!.amendment_id,
+      meeting_id: fixtures.meetingId,
+      reason: "Correct meeting summary",
+      details: "The original notes omitted the application discussion.",
+      created_by_advisor_id: fixtures.advisorSelfId,
+    });
+    expect(String(visible?.[0]?.created_at)).not.toBe(forgedTime);
+    expect(visible?.[1]).toMatchObject({
+      amendment_id: second.data!.amendment_id,
+      meeting_id: fixtures.meetingId,
+      reason: "Add follow-up detail",
+      created_by_advisor_id: fixtures.advisorSelfId,
+    });
+
+    const { data: originalAfter, error: originalAfterError } = await service
+      .from("advising_meeting")
+      .select("*")
+      .eq("meeting_id", fixtures.meetingId)
+      .single();
+    expect(originalAfterError).toBeNull();
+    // The COMPLETE source row is compared before/after the corrections: no
+    // column — including metadata, scoping, notes, or mode — may change.
+    expect(originalAfter, "a correction must not mutate its source meeting").toEqual(originalBefore);
+
+    const { data: amendmentBefore } = await service
+      .from("advising_meeting_amendment")
+      .select("*")
+      .eq("amendment_id", first.data!.amendment_id)
+      .single();
+    const update = await selfClient
+      .from("advising_meeting_amendment")
+      .update({ details: "This update must not apply." })
+      .eq("amendment_id", first.data!.amendment_id)
+      .select("amendment_id");
+    expect(update.data ?? [], "amendment UPDATE affected rows").toHaveLength(0);
+    expect(update.error, "active advisor amendment UPDATE is denied").not.toBeNull();
+    expect(update.error?.code).toBe("42501");
+
+    const deletion = await selfClient
+      .from("advising_meeting_amendment")
+      .delete()
+      .eq("amendment_id", first.data!.amendment_id);
+    expect(deletion.data ?? [], "amendment DELETE affected rows").toHaveLength(0);
+    expect(deletion.error, "active advisor amendment DELETE is denied").not.toBeNull();
+    expect(deletion.error?.code).toBe("42501");
+
+    const { data: amendmentAfter } = await service
+      .from("advising_meeting_amendment")
+      .select("*")
+      .eq("amendment_id", first.data!.amendment_id)
+      .single();
+    expect(amendmentAfter, "denied amendment mutations leave its real row unchanged").toEqual(amendmentBefore);
+  });
+
+  it("denies unauthenticated and inactive-advisor amendment creation", async () => {
+    for (const [label, client] of [["anon", anon], ["inactive", inactiveClient]] as const) {
+      const reason = syntheticName(`denied-amendment-${label}`);
+      const { data, error } = await client.from("advising_meeting_amendment").insert({
+        meeting_id: fixtures.meetingId,
+        reason,
+        details: "This correction must not be recorded.",
+      });
+      expect(data ?? [], `${label} amendment INSERT affected rows`).toHaveLength(0);
+      expect(error, `${label} amendment INSERT is denied`).not.toBeNull();
+      expect(error?.code, `${label} amendment INSERT denial code`).toBe("42501");
+
+      const { data: created, error: reReadError } = await service
+        .from("advising_meeting_amendment")
+        .select("amendment_id")
+        .eq("reason", reason);
+      expect(reReadError).toBeNull();
+      expect(created ?? [], `${label} denied amendment is absent`).toHaveLength(0);
+    }
+  });
+
+  it("rejects direct inserts carrying a blank, whitespace-only, or vertical-tab-only reason or details (23514)", async () => {
+    // The whitespace-trimming CHECK constraints reject the value at the
+    // database boundary even on a direct authenticated insert that would
+    // otherwise pass the trigger (creator resolution) and the RLS INSERT
+    // policy. Each case keeps a unique non-blank marker on the other field so
+    // the service-role absence re-read can prove no row was created (R4).
+    // Vertical tab is built with String.fromCharCode(11) so the test source
+    // never relies on an escape sequence.
+    const verticalTab = String.fromCharCode(11);
+    const cases = [
+      { label: "blank reason", blankField: "reason" as const, blankValue: "", marker: syntheticName("amendment-blank-reason") },
+      { label: "whitespace-only reason", blankField: "reason" as const, blankValue: "   ", marker: syntheticName("amendment-ws-reason") },
+      { label: "vertical-tab-only reason", blankField: "reason" as const, blankValue: verticalTab, marker: syntheticName("amendment-vt-reason") },
+      { label: "blank details", blankField: "details" as const, blankValue: "", marker: syntheticName("amendment-blank-details") },
+      { label: "whitespace-only details", blankField: "details" as const, blankValue: "\t  \n", marker: syntheticName("amendment-ws-details") },
+      { label: "vertical-tab-only details", blankField: "details" as const, blankValue: verticalTab, marker: syntheticName("amendment-vt-details") },
+    ];
+
+    for (const c of cases) {
+      const payload = {
+        meeting_id: fixtures.meetingId,
+        reason: c.blankField === "reason" ? c.blankValue : c.marker,
+        details: c.blankField === "details" ? c.blankValue : c.marker,
+      };
+      const { data, error } = await selfClient.from("advising_meeting_amendment").insert(payload);
+      expect(data ?? [], `${c.label} affected rows`).toHaveLength(0);
+      expect(error, `${c.label} direct insert must be rejected by the CHECK constraint`).not.toBeNull();
+      expect(error?.code, `${c.label} rejection code`).toBe("23514");
+
+      const { data: created, error: reReadError } = await service
+        .from("advising_meeting_amendment")
+        .select("amendment_id")
+        .eq(c.blankField === "reason" ? "details" : "reason", c.marker);
+      expect(reReadError, `${c.label} absence re-read`).toBeNull();
+      expect(created ?? [], `no amendment row may exist for ${c.label}`).toHaveLength(0);
+    }
+  });
+
+  it("never trims the literal letter v from reason or details", async () => {
+    // PostgreSQL has no \v escape in E'' strings, so the constraint must not
+    // treat 'v' as a vertical-tab trim character. A value consisting solely of
+    // the letter v is legitimate non-blank content and must be stored exactly.
+    const { data: inserted, error } = await selfClient
+      .from("advising_meeting_amendment")
+      .insert({
+        meeting_id: fixtures.meetingId,
+        reason: "v",
+        details: "vvv",
+      })
+      .select("amendment_id")
+      .single();
+    expect(error, "a literal-v reason/details must be accepted").toBeNull();
+    expect(inserted).not.toBeNull();
+
+    const { data: row, error: reReadError } = await service
+      .from("advising_meeting_amendment")
+      .select("reason, details")
+      .eq("amendment_id", inserted!.amendment_id)
+      .single();
+    expect(reReadError).toBeNull();
+    expect(row?.reason, "literal-v reason stored verbatim").toBe("v");
+    expect(row?.details, "literal-v details stored verbatim").toBe("vvv");
   });
 });
 

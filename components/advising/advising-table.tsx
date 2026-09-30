@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { Fragment, useState, useMemo, useEffect } from "react";
 import { AppCard, AppCardContent } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
 import { DataToolbar } from "@/components/ui/data-toolbar";
@@ -23,23 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Search, Pencil, Trash2, CalendarPlus, Calendar, MoreHorizontal, SlidersHorizontal } from "lucide-react";
+import { Search, CalendarPlus, Calendar, SlidersHorizontal, FilePenLine } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -50,6 +34,7 @@ import { formatApplicationLabel } from "@/lib/applications/pipeline";
 type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
   student: { full_name: string } | null;
   advisor: { advisor_name: string } | null;
+  recorded_by: { advisor_name: string } | null;
   application_id: number | null;
   application: {
     application_id: number;
@@ -57,6 +42,11 @@ type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] &
     fellowship_id: number;
     fellowship: { fellowship_name: string } | null;
   } | null;
+  amendments: AdvisingAmendment[];
+};
+
+type AdvisingAmendment = Database["public"]["Tables"]["advising_meeting_amendment"]["Row"] & {
+  created_by: { advisor_name: string } | null;
 };
 
 type StudentRow = Pick<
@@ -106,6 +96,19 @@ interface AdvisingTableProps {
 
 const GENERAL_ADVISING_VALUE = "general";
 
+function formatRecordedAt(createdAt: string | null | undefined): string {
+  if (!createdAt) return "date unavailable";
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return "date unavailable";
+  return date.toLocaleString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 const EMPTY_FORM = {
   student_id: "",
   advisor_id: "",
@@ -115,6 +118,8 @@ const EMPTY_FORM = {
   no_show: false,
   notes: "",
 };
+
+const EMPTY_CORRECTION_FORM = { reason: "", details: "" };
 
 export function AdvisingTable({
   initialMeetings,
@@ -135,14 +140,15 @@ export function AdvisingTable({
   const [noShowFilter, setNoShowFilter] = useState<string>(initialNoShowFilter ?? "all");
 
   const [addOpen, setAddOpen] = useState(false);
-  const [editOpen, setEditOpen] = useState(false);
-  const [deleteId, setDeleteId] = useState<number | null>(null);
-  const [editingMeeting, setEditingMeeting] = useState<AdvisingMeeting | null>(null);
 
   const [form, setForm] = useState(EMPTY_FORM);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [correctionMeeting, setCorrectionMeeting] = useState<AdvisingMeeting | null>(null);
+  const [correctionForm, setCorrectionForm] = useState(EMPTY_CORRECTION_FORM);
+  const [correctionErrors, setCorrectionErrors] = useState<Record<string, string>>({});
+  const [isCorrectionLoading, setIsCorrectionLoading] = useState(false);
 
   // Pre-fill and auto-open add dialog when arriving from a contextual link
   useEffect(() => {
@@ -236,7 +242,7 @@ export function AdvisingTable({
           no_show: form.no_show,
           notes: form.notes || null,
         } as Database["public"]["Tables"]["advising_meeting"]["Insert"])
-        .select(`*, student(full_name), advisor!advising_meeting_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))`)
+        .select(`*, student(full_name), advisor!advising_meeting_advisor_id_fkey(advisor_name), recorded_by:advisor!advising_meeting_created_by_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))`)
         .single();
 
       if (error) throw error;
@@ -260,111 +266,67 @@ export function AdvisingTable({
     }
   };
 
-  const openEdit = (meeting: AdvisingMeeting) => {
-    setEditingMeeting(meeting);
-    setForm({
-      student_id: String(meeting.student_id),
-      advisor_id: meeting.advisor_id ? String(meeting.advisor_id) : "",
-      application_id:
-        meeting.application_id == null
-          ? GENERAL_ADVISING_VALUE
-          : String(meeting.application_id),
-      meeting_date: meeting.meeting_date,
-      meeting_mode: meeting.meeting_mode as MeetingMode,
-      no_show: meeting.no_show,
-      notes: meeting.notes ?? "",
-    });
-    setFormErrors({});
-    setEditOpen(true);
-  };
-
-  const handleEditSubmit = async () => {
-    if (!editingMeeting) return;
-    const errors = validateForm(form);
-    setFormErrors(errors);
-    if (Object.keys(errors).length > 0) return;
-
-    const applicationId =
-      form.application_id === GENERAL_ADVISING_VALUE
-        ? null
-        : Number(form.application_id);
-
-    setIsLoading(true);
-    try {
-      const { data, error } = await supabaseBrowserClient
-        .from("advising_meeting")
-        .update({
-          student_id: Number(form.student_id),
-          advisor_id: form.advisor_id ? Number(form.advisor_id) : null,
-          application_id: applicationId,
-          meeting_date: form.meeting_date,
-          meeting_mode: form.meeting_mode,
-          no_show: form.no_show,
-          notes: form.notes || null,
-        } as Database["public"]["Tables"]["advising_meeting"]["Update"])
-        .eq("meeting_id", editingMeeting.meeting_id)
-        .select(`*, student(full_name), advisor!advising_meeting_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))`)
-        .single();
-
-      if (error) throw error;
-
-      setMeetings((prev) =>
-        prev.map((m) =>
-          m.meeting_id === editingMeeting.meeting_id ? (data as AdvisingMeeting) : m
-        )
-      );
-      toast.success("Meeting updated successfully.");
-      setEditOpen(false);
-      setEditingMeeting(null);
-      setForm({ ...EMPTY_FORM, advisor_id: String(currentAdvisorId) });
-      setFormErrors({});
-    } catch (err) {
-      console.error(err);
-      if (isApplicationForeignKeyViolation(err)) {
-        toast.error("Selected application is no longer valid for this student. Reset to General Advising.");
-        setForm((prev) => ({ ...prev, application_id: GENERAL_ADVISING_VALUE }));
-        router.refresh();
-      } else {
-        toast.error("Failed to update meeting.");
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleDeleteConfirm = async () => {
-    if (!deleteId) return;
-    setIsLoading(true);
-    try {
-      const { error } = await supabaseBrowserClient
-        .from("advising_meeting")
-        .delete()
-        .eq("meeting_id", deleteId);
-
-      if (error) throw error;
-
-      setMeetings((prev) => prev.filter((m) => m.meeting_id !== deleteId));
-      toast.success("Meeting deleted.");
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to delete meeting.");
-    } finally {
-      setIsLoading(false);
-      setDeleteId(null);
-    }
-  };
-
   const resetAndCloseAdd = () => {
     setForm({ ...EMPTY_FORM, advisor_id: String(currentAdvisorId) });
     setFormErrors({});
     setAddOpen(false);
   };
 
-  const resetAndCloseEdit = () => {
-    setForm({ ...EMPTY_FORM, advisor_id: String(currentAdvisorId) });
-    setFormErrors({});
-    setEditingMeeting(null);
-    setEditOpen(false);
+  const openCorrection = (meeting: AdvisingMeeting) => {
+    setCorrectionMeeting(meeting);
+    setCorrectionForm(EMPTY_CORRECTION_FORM);
+    setCorrectionErrors({});
+  };
+
+  const closeCorrection = () => {
+    if (isCorrectionLoading) return;
+    setCorrectionMeeting(null);
+    setCorrectionForm(EMPTY_CORRECTION_FORM);
+    setCorrectionErrors({});
+  };
+
+  const handleCorrectionSubmit = async () => {
+    if (!correctionMeeting) return;
+    const errors: Record<string, string> = {};
+    if (!correctionForm.reason.trim()) errors.reason = "Reason is required.";
+    if (!correctionForm.details.trim()) errors.details = "Details are required.";
+    setCorrectionErrors(errors);
+    if (Object.keys(errors).length) return;
+
+    setIsCorrectionLoading(true);
+    try {
+      const { data, error } = await supabaseBrowserClient
+        .from("advising_meeting_amendment")
+        .insert({
+          meeting_id: correctionMeeting.meeting_id,
+          reason: correctionForm.reason.trim(),
+          details: correctionForm.details.trim(),
+        } as Database["public"]["Tables"]["advising_meeting_amendment"]["Insert"])
+        .select("amendment_id, meeting_id, reason, details, created_at, created_by_advisor_id, created_by:advisor!advising_meeting_amendment_created_by_advisor_id_fkey(advisor_name)")
+        .single();
+      if (error) throw error;
+
+      const amendment = data as AdvisingAmendment;
+      setMeetings((previous) => previous.map((meeting) =>
+        meeting.meeting_id !== correctionMeeting.meeting_id
+          ? meeting
+          : {
+              ...meeting,
+              amendments: [...(meeting.amendments ?? []), amendment].sort((a, b) =>
+                a.created_at.localeCompare(b.created_at) || a.amendment_id - b.amendment_id
+              ),
+            }
+      ));
+      toast.success("Correction added to the meeting history.");
+      setCorrectionMeeting(null);
+      setCorrectionForm(EMPTY_CORRECTION_FORM);
+      setCorrectionErrors({});
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to add correction.");
+    } finally {
+      setIsCorrectionLoading(false);
+    }
   };
 
   return (
@@ -494,6 +456,9 @@ export function AdvisingTable({
                             </span>
                           )}
                         </div>
+                        <div className="mt-1 text-xs text-slate-400">
+                          Recorded by {meeting.recorded_by?.advisor_name ?? "Unknown (legacy record)"} · Recorded {formatRecordedAt(meeting.created_at)}
+                        </div>
                         <div className="mt-0.5 text-sm text-slate-500">
                           {new Date(meeting.meeting_date + "T00:00:00").toLocaleDateString(
                             "en-US",
@@ -530,27 +495,12 @@ export function AdvisingTable({
                             </MetricBadge>
                           )}
                         </div>
+                        <Button variant="outline" size="sm" className="mt-3 h-8 text-xs" onClick={() => openCorrection(meeting)}>
+                          <FilePenLine className="mr-1.5 h-3.5 w-3.5" />
+                          Add Correction
+                        </Button>
+                        <AmendmentHistory amendments={meeting.amendments ?? []} />
                       </div>
-                      <DropdownMenu modal={false}>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0 text-slate-500">
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => openEdit(meeting)}>
-                            <Pencil className="mr-2 h-4 w-4" />
-                            Edit
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            className="text-red-600 focus:text-red-600"
-                            onClick={() => setDeleteId(meeting.meeting_id)}
-                          >
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
                     </div>
                   </div>
                 ))}
@@ -582,16 +532,14 @@ export function AdvisingTable({
                       Notes
                     </th>
                     <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
-                      Actions
+                      History
                     </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 bg-white">
                   {filteredMeetings.map((meeting) => (
-                    <tr
-                      key={meeting.meeting_id}
-                      className="motion-safe:transition-colors motion-safe:duration-150 hover:bg-gray-50"
-                    >
+                    <Fragment key={meeting.meeting_id}>
+                    <tr className="motion-safe:transition-colors motion-safe:duration-150 hover:bg-gray-50">
                       <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <Link
                           href={`/students/${meeting.student_id}`}
@@ -631,6 +579,10 @@ export function AdvisingTable({
                             { year: "numeric", month: "short", day: "numeric" }
                           )}
                         </div>
+                        <div className="mt-1 text-xs text-slate-400">
+                          Recorded by {meeting.recorded_by?.advisor_name ?? "Unknown (legacy record)"}
+                          <span className="block">Recorded {formatRecordedAt(meeting.created_at)}</span>
+                        </div>
                       </td>
                       <td className="hidden whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4 sm:table-cell">
                         <MetricBadge tone={meeting.meeting_mode === "Virtual" ? "blue" : "slate"}>
@@ -653,29 +605,20 @@ export function AdvisingTable({
                           {meeting.notes ? meeting.notes : <span className="text-slate-300">—</span>}
                         </div>
                       </td>
-                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
-                        <div className="flex items-center justify-end gap-2">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-slate-600 hover:text-slate-900"
-                            title="Edit meeting"
-                            onClick={() => openEdit(meeting)}
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-slate-600 hover:text-red-600"
-                            title="Delete meeting"
-                            onClick={() => setDeleteId(meeting.meeting_id)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
+                      <td className="px-3 py-3 text-right sm:px-6 sm:py-4">
+                        <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => openCorrection(meeting)}>
+                          Add Correction
+                        </Button>
                       </td>
                     </tr>
+                    {meeting.amendments?.length > 0 ? (
+                      <tr className="bg-amber-50/40">
+                        <td colSpan={8} className="px-3 pb-4 pt-0 sm:px-6">
+                          <AmendmentHistory amendments={meeting.amendments} />
+                        </td>
+                      </tr>
+                    ) : null}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
@@ -727,62 +670,52 @@ export function AdvisingTable({
         </DialogContent>
       </Dialog>
 
-      {/* ── Edit Meeting Dialog ────────────────────────────── */}
-      <Dialog open={editOpen} onOpenChange={(o) => !o && resetAndCloseEdit()}>
+      <Dialog open={correctionMeeting !== null} onOpenChange={(open) => !open && closeCorrection()}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Edit Meeting</DialogTitle>
+            <DialogTitle>Add Correction</DialogTitle>
             <DialogDescription>
-              Update the details for this advising session.
+              Add an attached historical correction. The original meeting remains unchanged.
             </DialogDescription>
           </DialogHeader>
-
-          <MeetingForm
-            form={form}
-            setForm={setForm}
-            formErrors={formErrors}
-            students={students}
-            advisors={advisors}
-            applications={applications}
-          />
-
+          <div className="grid gap-4 py-2">
+            <div className="grid gap-1.5">
+              <Label htmlFor="correction_reason">Reason <span className="text-red-500">*</span></Label>
+              <Input id="correction_reason" value={correctionForm.reason} onChange={(event) => setCorrectionForm((form) => ({ ...form, reason: event.target.value }))} />
+              {correctionErrors.reason ? <p className="text-xs text-red-500">{correctionErrors.reason}</p> : null}
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="correction_details">Details <span className="text-red-500">*</span></Label>
+              <textarea id="correction_details" rows={4} value={correctionForm.details} onChange={(event) => setCorrectionForm((form) => ({ ...form, details: event.target.value }))} className="flex min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" />
+              {correctionErrors.details ? <p className="text-xs text-red-500">{correctionErrors.details}</p> : null}
+            </div>
+          </div>
           <DialogFooter>
-            <Button variant="outline" onClick={resetAndCloseEdit} disabled={isLoading}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleEditSubmit}
-              disabled={isLoading}
-              className="bg-[#006747] hover:bg-[#00563b]"
-            >
-              {isLoading ? "Saving…" : "Save Changes"}
-            </Button>
+            <Button variant="outline" onClick={closeCorrection} disabled={isCorrectionLoading}>Cancel</Button>
+            <Button onClick={handleCorrectionSubmit} disabled={isCorrectionLoading} className="bg-[#006747] hover:bg-[#00563b]">{isCorrectionLoading ? "Saving…" : "Add Correction"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* ── Delete Confirmation ────────────────────────────── */}
-      <AlertDialog open={deleteId !== null} onOpenChange={(o) => !o && setDeleteId(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete this meeting?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This action cannot be undone. The advising record will be permanently removed.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isLoading}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDeleteConfirm}
-              disabled={isLoading}
-              className="bg-red-600 hover:bg-red-700"
-            >
-              {isLoading ? "Deleting…" : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </>
+  );
+}
+
+function AmendmentHistory({ amendments }: { amendments: AdvisingAmendment[] }) {
+  if (!amendments.length) return null;
+  return (
+    <div className="mt-3 border-l-2 border-amber-300 pl-3">
+      <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">Corrections</p>
+      <div className="mt-2 space-y-2">
+        {amendments.map((amendment) => (
+          <div key={amendment.amendment_id} className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-sm text-slate-700">
+            <p className="font-medium text-slate-900">{amendment.reason}</p>
+            <p className="mt-1 whitespace-pre-wrap leading-5">{amendment.details}</p>
+            <p className="mt-2 text-xs text-slate-500">Added by {amendment.created_by?.advisor_name ?? "Unknown advisor"} · {formatRecordedAt(amendment.created_at)}</p>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

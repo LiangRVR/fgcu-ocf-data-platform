@@ -54,7 +54,7 @@ to match `public.advisor.email`.
   self-link, and no self-service fallback — an unbound, email-matched account
   reads zero advisor rows by design.
 - Provisioning is sequenced **after** the complete migration chain: apply the
-  full chain through `20260929000001_advising_application_link.sql` first — the
+  full chain through `20260930000003_advising_meeting_append_only.sql` first — the
   lockdown migration (`20260318000001_advisor_self_activation_lockdown.sql`)
   removes the remaining email self-link write path and installs the
   one-time-bind guard under which the trusted `service_role` bind is written.
@@ -77,12 +77,19 @@ to match `public.advisor.email`.
 12. Repeat steps 3–6 for `supabase/migrations/20260317000004_active_advisor_rls.sql` — removes anon access and enables authenticated active-advisor policies
 13. **Required final step (auth chain):** repeat steps 3–6 for `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` — removes the email self-link escalation path, adds the one-time-bind guard and the active-staff-only update policy. It must run **after** `20260317000004_active_advisor_rls.sql`; the auth chain is not complete without it.
 14. Repeat steps 3–6 for `supabase/migrations/20260929000001_advising_application_link.sql` — forward-only, additive: adds the nullable `application.application_year` cycle, the nullable `advising_meeting.application_id` advising↔application link (with direct and composite same-student FKs), the database-authored `created_at`/`created_by_advisor_id` creation metadata and hardened trigger, and advising indexes. Historic NULL values are preserved.
-15. **Only after the complete migration chain is applied (through step 14):** provision each advisor via the admin pre-binding path (see [Advisor identity binding](#advisor-identity-binding-admin-pre-binding-not-email-self-link) above) — never create auth users to "self-link" by email
-16. Verify the first active advisor can sign in — the pre-bound `auth_user_id` resolves their advisor row, and `is_active` is `true`
+15. Repeat steps 3–6 for `supabase/migrations/20260930000002_advising_application_fk_indexes.sql` — adds the reverse composite-FK index on `(application_id, student_id)` and the creator index on `created_by_advisor_id`.
+16. Repeat steps 3–6 for `supabase/migrations/20260930000003_advising_meeting_append_only.sql` — enforces database RLS append-only history: active advisors can `SELECT` and `INSERT` advising meetings, while `UPDATE` and `DELETE` are denied without an admin bypass.
+17. **Only after the complete migration chain is applied (through step 16):** provision each advisor via the admin pre-binding path (see [Advisor identity binding](#advisor-identity-binding-admin-pre-binding-not-email-self-link) above) — never create auth users to "self-link" by email
+18. Verify the first active advisor can sign in — the pre-bound `auth_user_id` resolves their advisor row, and `is_active` is `true`
 
-Migrations `20260305000001_allow_anon_read.sql` and `20260305000002_allow_anon_write.sql` are temporary bootstrap steps. After the full chain ending with `20260929000001_advising_application_link.sql`, bootstrap anon access is no longer the intended steady state. Operational access comes only from authenticated active advisors, and `advisor.auth_user_id` binding is admin-only (see the identity-binding subsection above).
+Migrations `20260305000001_allow_anon_read.sql` and `20260305000002_allow_anon_write.sql` are temporary bootstrap steps. After the full chain ending with `20260930000002_advising_application_fk_indexes.sql`, bootstrap anon access is no longer the intended steady state. Operational access comes only from authenticated active advisors, and `advisor.auth_user_id` binding is admin-only (see the identity-binding subsection above).
 
 ### Option B: Using Supabase CLI (disposable local instances only)
+
+The full chain ends with `20260930000003_advising_meeting_append_only.sql`.
+That migration enforces append-only advising history through database RLS:
+active advisors can SELECT and INSERT, while UPDATE and DELETE are denied with
+no admin bypass.
 
 ```bash
 # Link to your project (one time)
@@ -95,12 +102,15 @@ npx supabase db push
 > ⚠️ `supabase link` + `supabase db push` must **not** be run against the
 > hosted production project. The production migration ledger records only
 > `20260924065221_advisor_self_activation_lockdown`, while this repository
-> tracks seven migrations and the deployed schema differs materially. Generic
+> tracks nine migrations ending with `20260930000003_advising_meeting_append_only.sql` and the deployed schema differs materially. Generic
 > `db push`, historical replay, and migration-history repair against production
 > are prohibited until a separately approved reconciliation exists. See the
 > [reconciliation runbook](../aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
 
 ## Step 3: Generate TypeScript Types
+
+> The repository migration chain now contains nine migrations and ends with
+> `20260930000003_advising_meeting_append_only.sql`.
 
 After applying the schema, generate TypeScript types for type-safe database access:
 
@@ -207,10 +217,12 @@ If you're getting permission errors:
 7. ✅ Apply active-advisor RLS migration (`20260317000004_active_advisor_rls.sql`)
 8. ✅ Apply advisor self-activation lockdown migration (`20260318000001_advisor_self_activation_lockdown.sql`)
 9. ✅ Apply advising↔application link migration (`20260929000001_advising_application_link.sql`) — forward-only: adds the application cycle (`application.application_year`), the nullable advising↔application link with direct + composite same-student FKs, creation metadata and trigger, and advising indexes
-10. ✅ Provision each advisor via the admin pre-binding path (invite/create the auth account and bind its UUID to the unbound `advisor` row **before first sign-in**; one-time bind, no email self-link) — done only after the full migration chain (items 2–9) is applied
-11. ✅ Verify the first active advisor can sign in (pre-bound `auth_user_id` resolves the advisor row; `is_active = true`)
-12. ✅ Generate TypeScript types
-13. ✅ Verify connection
+10. ✅ Apply advising/application FK indexes (`20260930000002_advising_application_fk_indexes.sql`) — adds the reverse composite-FK index on `(application_id, student_id)` and creator index on `created_by_advisor_id`
+11. ✅ Apply append-only advising history (`20260930000003_advising_meeting_append_only.sql`) — database RLS grants active advisors `SELECT` and `INSERT` only; `UPDATE` and `DELETE` are denied without an admin bypass, preserving historic records
+12. ✅ Provision each advisor via the admin pre-binding path (invite/create the auth account and bind its UUID to the unbound `advisor` row **before first sign-in**; one-time bind, no email self-link) — done only after the full migration chain (items 2–11) is applied
+13. ✅ Verify the first active advisor can sign in (pre-bound `auth_user_id` resolves the advisor row; `is_active = true`)
+14. ✅ Generate TypeScript types
+15. ✅ Verify connection
 
 ## Auth and Account Notes
 

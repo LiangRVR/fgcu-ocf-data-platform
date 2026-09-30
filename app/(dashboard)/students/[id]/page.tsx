@@ -33,6 +33,7 @@ import { EntityHeader } from "@/components/ui/entity-header";
 import { MetricBadge } from "@/components/ui/metric-badge";
 import { formatDate } from "@/lib/utils/format";
 import { formatApplicationLabel } from "@/lib/applications/pipeline";
+import { Fragment } from "react";
 
 type Student = Database["public"]["Tables"]["student"]["Row"];
 type Application = Database["public"]["Tables"]["application"]["Row"] & {
@@ -41,6 +42,7 @@ type Application = Database["public"]["Tables"]["application"]["Row"] & {
 };
 type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
   advisor: { advisor_name: string } | null;
+  recorded_by: { advisor_name: string } | null;
   application_id: number | null;
   application: {
     application_id: number;
@@ -48,7 +50,41 @@ type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] &
     fellowship_id: number;
     fellowship: { fellowship_name: string } | null;
   } | null;
+  amendments: (Database["public"]["Tables"]["advising_meeting_amendment"]["Row"] & {
+    created_by: { advisor_name: string } | null;
+  })[];
 };
+
+function formatRecordedAt(createdAt: string | null | undefined): string {
+  if (!createdAt) return "date unavailable";
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return "date unavailable";
+  return date.toLocaleString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function AmendmentHistory({ amendments }: { amendments: AdvisingMeeting["amendments"] }) {
+  if (!amendments.length) return null;
+  return (
+    <div className="mt-3 border-l-2 border-amber-300 pl-3">
+      <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">Corrections</p>
+      <div className="mt-2 space-y-2">
+        {amendments.map((amendment) => (
+          <div key={amendment.amendment_id} className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-sm text-slate-700">
+            <p className="font-medium text-slate-900">{amendment.reason}</p>
+            <p className="mt-1 whitespace-pre-wrap leading-5">{amendment.details}</p>
+            <p className="mt-2 text-xs text-slate-500">Added by {amendment.created_by?.advisor_name ?? "Unknown advisor"} · {formatRecordedAt(amendment.created_at)}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 type FellowshipThursday = Database["public"]["Tables"]["fellowship_thursday"]["Row"];
 type ScholarshipHistory = Database["public"]["Tables"]["scholarship_history"]["Row"] & {
   fellowship: { fellowship_name: string } | null;
@@ -107,9 +143,11 @@ async function getAdvisingMeetings(studentId: number): Promise<AdvisingMeeting[]
   try {
     const { data, error } = await supabase
       .from("advising_meeting")
-      .select("*, advisor!advising_meeting_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))")
+      .select("*, advisor!advising_meeting_advisor_id_fkey(advisor_name), recorded_by:advisor!advising_meeting_created_by_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name)), amendments:advising_meeting_amendment(amendment_id, meeting_id, reason, details, created_at, created_by_advisor_id, created_by:advisor!advising_meeting_amendment_created_by_advisor_id_fkey(advisor_name))")
       .eq("student_id", studentId)
-      .order("meeting_date", { ascending: false });
+      .order("meeting_date", { ascending: false })
+      .order("created_at", { ascending: true, foreignTable: "amendments" })
+      .order("amendment_id", { ascending: true, foreignTable: "amendments" });
     if (error) return [];
     return (data as AdvisingMeeting[]) || [];
   } catch {
@@ -467,9 +505,13 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                           </Link>
                         ) : null}
                       </div>
+                      <p className="mt-3 text-xs text-slate-400">
+                        Recorded by {meeting.recorded_by?.advisor_name ?? "Unknown (legacy record)"} · Recorded {formatRecordedAt(meeting.created_at)}
+                      </p>
                       <p className="mt-3 text-sm leading-6 text-slate-600">
                         {meeting.notes || "No notes recorded yet."}
                       </p>
+                      <AmendmentHistory amendments={meeting.amendments ?? []} />
                     </div>
                   ))}
                 </div>
@@ -488,13 +530,20 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                   </thead>
                   <tbody className="divide-y divide-gray-50">
                     {advisingMeetings.map((meeting) => (
-                      <tr key={meeting.meeting_id}>
+                      <Fragment key={meeting.meeting_id}>
+                      <tr>
                         <td className="py-3 pr-4 text-slate-700">
-                          {new Date(meeting.meeting_date + "T00:00:00").toLocaleDateString("en-US", {
-                            year: "numeric",
-                            month: "short",
-                            day: "numeric",
-                          })}
+                          <div>
+                            {new Date(meeting.meeting_date + "T00:00:00").toLocaleDateString("en-US", {
+                              year: "numeric",
+                              month: "short",
+                              day: "numeric",
+                            })}
+                          </div>
+                          <div className="mt-1 text-xs text-slate-400">
+                            Recorded by {meeting.recorded_by?.advisor_name ?? "Unknown (legacy record)"}
+                            <span className="block">Recorded {formatRecordedAt(meeting.created_at)}</span>
+                          </div>
                         </td>
                         <td className="hidden py-3 pr-4 text-slate-700 sm:table-cell">
                           {meeting.meeting_mode}
@@ -536,6 +585,14 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                           {meeting.notes || <span className="text-slate-400">—</span>}
                         </td>
                       </tr>
+                      {meeting.amendments?.length > 0 ? (
+                        <tr className="bg-amber-50/40">
+                          <td colSpan={6} className="px-0 pb-4 pt-0">
+                            <AmendmentHistory amendments={meeting.amendments} />
+                          </td>
+                        </tr>
+                      ) : null}
+                      </Fragment>
                     ))}
                   </tbody>
                 </table>

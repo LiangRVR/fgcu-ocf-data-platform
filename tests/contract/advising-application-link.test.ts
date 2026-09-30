@@ -28,17 +28,17 @@
  *   - authenticated creation metadata: an authenticated ACTIVE-advisor INSERT
  *     OVERRIDES forged created_by_advisor_id/created_at with the resolved
  *     active advisor and a fresh database timestamp;
- *   - immutable metadata: UPDATEs that change created_at or
- *     created_by_advisor_id are rejected fail-closed and the row is proven
- *     unchanged, while ordinary meeting edits pass through untouched;
+ *   - append-only meetings: direct UPDATEs — including changes to immutable
+ *     metadata and ordinary meeting fields — are rejected and the row is
+ *     proven unchanged;
  *   - conducted advisor distinct from creator: advisor_id (who conducted the
  *     meeting) is never touched by the metadata trigger and stays distinct
  *     from created_by_advisor_id (who entered the record).
  *
  * Existing RLS expectations are preserved and NOT re-litigated here: the
  * authenticated paths below run through a pre-bound ACTIVE advisor session
- * (which retains full shared CRUD on advising_meeting); the inactive and
- * no-advisor INSERT/UPDATE denials remain covered by rls.test.ts. Constraint
+ * (which retains SELECT/INSERT access to append-only advising_meeting); the
+ * inactive and no-advisor denials remain covered by rls.test.ts. Constraint
  * isolation (FK semantics with no policy interference) runs through the LOCAL
  * service-role client, consistent with constraints.test.ts; the service role
  * is never asserted as an access grant.
@@ -128,8 +128,8 @@ let otherStudentAppId: number;
 beforeAll(async () => {
   fixtures = await seedCoreFixtures(service);
 
-  // A pre-bound ACTIVE advisor session (the only authenticated identity with
-  // staff CRUD on advising_meeting under the existing RLS policies).
+  // A pre-bound ACTIVE advisor session, which has SELECT/INSERT access to the
+  // append-only advising_meeting record.
   selfUserId = await createAuthUser(service, fixtures.advisorSelfEmail);
   // ADMIN PRE-BINDING (the only legitimate way auth_user_id is written).
   const { error: bindError } = await service
@@ -531,15 +531,15 @@ describe("authenticated active-advisor creation metadata (R4)", () => {
       .maybeSingle();
     expect(after).toEqual(before);
 
-    // (c) An ordinary meeting edit (no metadata columns) still passes through
-    // and leaves the immutable metadata untouched.
+    // (c) The append-only authorization also rejects an ordinary meeting edit.
     const edit = await selfClient
       .from("advising_meeting")
       .update({ meeting_mode: "In-Person" })
       .eq("meeting_id", meetingId)
       .select("meeting_mode");
-    expect(edit.error, "ordinary meeting edit must succeed").toBeNull();
-    expect(edit.data ?? []).toHaveLength(1);
+    expect(edit.data ?? []).toHaveLength(0);
+    expect(edit.error, "ordinary meeting edit must be rejected").not.toBeNull();
+    expect(edit.error?.code).toBe("42501");
 
     const { data: final } = await service
       .from("advising_meeting")
@@ -547,11 +547,7 @@ describe("authenticated active-advisor creation metadata (R4)", () => {
       .eq("meeting_id", meetingId)
       .maybeSingle();
     expect(final).not.toBeNull();
-    expect(final!.meeting_mode).toBe("In-Person");
-    expect(final!.created_by_advisor_id, "creator unchanged by ordinary edit").toBe(
-      before!.created_by_advisor_id
-    );
-    expect(final!.created_at, "created_at unchanged by ordinary edit").toBe(before!.created_at);
+    expect(final).toEqual(before);
   });
 });
 

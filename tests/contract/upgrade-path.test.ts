@@ -1,8 +1,9 @@
 /**
  * tests/contract/upgrade-path.test.ts
  *
- * Upgrade-path contract for migration 20260929000001 (advising ↔ application
- * link): the migration must apply cleanly ON TOP of the pre-link schema
+ * Upgrade-path contract for migrations 20260929000001 (advising ↔ application
+ * link) and 20260930000004 (advising-meeting amendments): they must apply
+ * cleanly ON TOP of the pre-link schema
  * (migrations 20260305000000 → 20260318000001) with existing LEGACY rows
  * present, and must preserve those rows without inventing values (R1/R2).
  *
@@ -20,7 +21,8 @@
  *   4. seed a legacy application (no application_year column yet) and a
  *      legacy advising meeting (no application_id/creator columns yet) with an
  *      exact meeting_date;
- *   5. apply ONLY 20260929000001_advising_application_link.sql;
+ *   5. apply 20260929000001_advising_application_link.sql and then the
+ *      forward-only amendment migration;
  *   6. prove the legacy rows stayed truthful: application_year NULL,
  *      application_id NULL, created_by_advisor_id NULL, exact meeting_date
  *      preserved byte-for-byte, created_at non-NULL (migration-time metadata);
@@ -45,6 +47,7 @@ const env = getContractEnv();
 // The runner always launches tests with the repository root as cwd.
 const MIGRATIONS_DIR = path.join(process.cwd(), "supabase", "migrations");
 const LINK_MIGRATION = "20260929000001_advising_application_link.sql";
+const AMENDMENT_MIGRATION = "20260930000004_advising_meeting_amendments.sql";
 
 /** Minimal auth-schema functions used by the pre-link migration chain. */
 const AUTH_SCAFFOLD_SQL = `
@@ -85,6 +88,13 @@ interface UpgradeFixtures {
   meetingId: number;
 }
 let upgraded: UpgradeFixtures | null = null;
+
+/**
+ * The advising_meeting policy set captured after the link migration and BEFORE
+ * the amendment migration is applied. The amendment migration must leave it
+ * byte-for-byte identical (forward-only, never touches advising_meeting).
+ */
+let meetingPoliciesBeforeAmendment: { policyname: string; cmd: string }[] = [];
 
 async function applySql(pool: Pool, sql: string, label: string): Promise<void> {
   try {
@@ -156,10 +166,24 @@ beforeAll(async () => {
     [student.rows[0].student_id, advisor.rows[0].advisor_id]
   );
 
-  // 5. Apply ONLY the advising↔application-link migration on top of the
-  // legacy chain and legacy rows.
+  // 5. Apply the advising↔application-link and amendment migrations on top of
+  // the legacy chain and legacy rows.
   const linkSql = await readFile(path.join(MIGRATIONS_DIR, LINK_MIGRATION), "utf8");
   await applySql(scratchPool, linkSql, `migration ${LINK_MIGRATION}`);
+
+  // Snapshot advising_meeting's policy set immediately before the amendment
+  // migration runs, so the test can prove the amendment migration is
+  // forward-only with respect to the existing meeting policies.
+  const policiesBefore = await scratchPool.query<{ policyname: string; cmd: string }>(
+    `SELECT policyname, cmd
+       FROM pg_policies
+      WHERE schemaname = 'public' AND tablename = 'advising_meeting'
+      ORDER BY policyname, cmd`
+  );
+  meetingPoliciesBeforeAmendment = policiesBefore.rows;
+
+  const amendmentSql = await readFile(path.join(MIGRATIONS_DIR, AMENDMENT_MIGRATION), "utf8");
+  await applySql(scratchPool, amendmentSql, `migration ${AMENDMENT_MIGRATION}`);
 
   upgraded = {
     advisorId: advisor.rows[0].advisor_id,
@@ -184,7 +208,7 @@ afterAll(async () => {
   }
 });
 
-describe("upgrade path: applying 20260929000001 on top of the legacy chain", () => {
+describe("upgrade path: applying advising-link and amendment migrations on top of the legacy chain", () => {
   it("keeps legacy application_year/application_id/creator NULL and preserves the exact meeting date", async () => {
     expect(upgraded).not.toBeNull();
     expect(scratchPool).not.toBeNull();
@@ -212,6 +236,39 @@ describe("upgrade path: applying 20260929000001 on top of the legacy chain", () 
     expect(row.creator_null, "legacy meeting created_by_advisor_id stays NULL (no fabricated creator)").toBe(true);
     expect(row.date_exact, "legacy meeting_date preserved byte-for-byte").toBe(true);
     expect(row.created_at_present, "legacy meeting created_at stamped (migration-time metadata)").toBe(true);
+  });
+
+  it("adds amendment history without changing the legacy advising_meeting row or its policies", async () => {
+    expect(upgraded).not.toBeNull();
+    expect(scratchPool).not.toBeNull();
+
+    const { rows } = await scratchPool!.query<{
+      date_exact: boolean;
+      amendment_table_exists: boolean;
+    }>(
+      `SELECT
+         (SELECT meeting_date::text = '2023-03-15'
+            FROM public.advising_meeting WHERE meeting_id = $1) AS date_exact,
+         to_regclass('public.advising_meeting_amendment') IS NOT NULL AS amendment_table_exists`,
+      [upgraded!.meetingId]
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].date_exact, "the original meeting remains unchanged").toBe(true);
+    expect(rows[0].amendment_table_exists).toBe(true);
+
+    // The amendment migration is forward-only with respect to the existing
+    // meeting policies: the advising_meeting policy set is byte-for-byte
+    // identical after the amendment migration ran.
+    const { rows: after } = await scratchPool!.query<{ policyname: string; cmd: string }>(
+      `SELECT policyname, cmd
+         FROM pg_policies
+        WHERE schemaname = 'public' AND tablename = 'advising_meeting'
+        ORDER BY policyname, cmd`
+    );
+    expect(after, "advising_meeting policies are preserved by the amendment migration").toEqual(
+      meetingPoliciesBeforeAmendment
+    );
+    expect(after.length, "the pre-amendment snapshot is not empty").toBeGreaterThan(0);
   });
 
   it("proves created_at is migration-time metadata, never the meeting date", async () => {
@@ -268,5 +325,39 @@ describe("upgrade path: applying 20260929000001 on top of the legacy chain", () 
     expect(rows[0].creator_null, "forged creator must be dropped to NULL").toBe(true);
     expect(rows[0].forged_dropped, "forged created_at must be replaced by now()").toBe(true);
     expect(rows[0].created_at_present, "created_at must be the database current timestamp").toBe(true);
+  });
+
+  it("rejects a direct SQL insert with a blank reason at the database boundary (23514)", async () => {
+    expect(upgraded).not.toBeNull();
+    expect(scratchPool).not.toBeNull();
+
+    // Simulate an authenticated ACTIVE advisor session on the scratch schema:
+    // pre-bind the seeded advisor (trusted postgres session) and set the JWT
+    // subject transaction-locally so the amendment trigger resolves a creator.
+    // The bind and the setting are rolled back, so no other test is affected.
+    const bindUuid = "00000000-0000-4000-8000-0000000000cd";
+    await scratchPool!.query("BEGIN");
+    try {
+      await scratchPool!.query(
+        `UPDATE public.advisor
+            SET auth_user_id = $1
+          WHERE advisor_id = $2`,
+        [bindUuid, upgraded!.advisorId]
+      );
+      await scratchPool!.query("SELECT set_config('request.jwt.claim.sub', $1, true)", [bindUuid]);
+
+      // The trim-aware CHECK constraint rejects the blank reason even though
+      // the trigger resolves an active creator and this trusted session
+      // bypasses RLS — enforcement lives in the database, not the client.
+      await expect(
+        scratchPool!.query(
+          `INSERT INTO public.advising_meeting_amendment (meeting_id, reason, details)
+           VALUES ($1, '   ', $2)`,
+          [upgraded!.meetingId, syntheticName("upgrade-blank-reason")]
+        )
+      ).rejects.toMatchObject({ code: "23514" });
+    } finally {
+      await scratchPool!.query("ROLLBACK");
+    }
   });
 });

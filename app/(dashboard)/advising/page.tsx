@@ -25,6 +25,7 @@ interface Props {
 type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
   student: { full_name: string } | null;
   advisor: { advisor_name: string } | null;
+  recorded_by: { advisor_name: string } | null;
   application_id: number | null;
   application: {
     application_id: number;
@@ -32,6 +33,9 @@ type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] &
     fellowship_id: number;
     fellowship: { fellowship_name: string } | null;
   } | null;
+  amendments: (Database["public"]["Tables"]["advising_meeting_amendment"]["Row"] & {
+    created_by: { advisor_name: string } | null;
+  })[];
 };
 
 type ApplicationOption = {
@@ -56,8 +60,10 @@ async function getAdvisingMeetings(): Promise<AdvisingMeeting[]> {
   try {
     const { data, error } = await supabase
       .from("advising_meeting")
-      .select(`*, student(full_name), advisor!advising_meeting_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))`)
-      .order("meeting_date", { ascending: false });
+      .select(`*, student(full_name), advisor!advising_meeting_advisor_id_fkey(advisor_name), recorded_by:advisor!advising_meeting_created_by_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name)), amendments:advising_meeting_amendment(amendment_id, meeting_id, reason, details, created_at, created_by_advisor_id, created_by:advisor!advising_meeting_amendment_created_by_advisor_id_fkey(advisor_name))`)
+      .order("meeting_date", { ascending: false })
+      .order("created_at", { ascending: true, foreignTable: "amendments" })
+      .order("amendment_id", { ascending: true, foreignTable: "amendments" });
     if (error) {
       console.error("Error fetching advising meetings:", error);
       return [];

@@ -18,6 +18,7 @@ import { formatApplicationLabel } from "@/lib/applications/pipeline";
 type Advisor = Database["public"]["Tables"]["advisor"]["Row"];
 type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
   student: { student_id: number; full_name: string } | null;
+  recorded_by: { advisor_name: string } | null;
   application_id: number | null;
   application: {
     application_id: number;
@@ -26,6 +27,19 @@ type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] &
     fellowship: { fellowship_name: string } | null;
   } | null;
 };
+
+function formatRecordedAt(createdAt: string | null | undefined): string {
+  if (!createdAt) return "date unavailable";
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return "date unavailable";
+  return date.toLocaleString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
 
 interface AdvisorDetailPageProps {
   params: Promise<{ id: string }>;
@@ -51,7 +65,7 @@ async function getMeetings(advisorId: number): Promise<AdvisingMeeting[]> {
   try {
     const { data, error } = await supabase
       .from("advising_meeting")
-      .select("*, student(student_id, full_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))")
+      .select("*, student(student_id, full_name), recorded_by:advisor!advising_meeting_created_by_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))")
       .eq("advisor_id", advisorId)
       .order("meeting_date", { ascending: false });
     if (error) return [];
@@ -190,6 +204,9 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
                         })}
                       </MetricBadge>
                     </div>
+                    <p className="mt-3 text-xs text-slate-400">
+                      Recorded by {meeting.recorded_by?.advisor_name ?? "Unknown (legacy record)"} · Recorded {formatRecordedAt(meeting.created_at)}
+                    </p>
                     <p className="mt-3 text-sm leading-6 text-slate-500">
                       {meeting.notes || "No notes recorded yet."}
                     </p>
@@ -233,10 +250,16 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
                         </Link>
                       </td>
                       <td className="px-4 py-3 text-slate-600">
-                        {new Date(meeting.meeting_date + "T00:00:00").toLocaleDateString(
-                          "en-US",
-                          { year: "numeric", month: "short", day: "numeric" }
-                        )}
+                        <div>
+                          {new Date(meeting.meeting_date + "T00:00:00").toLocaleDateString(
+                            "en-US",
+                            { year: "numeric", month: "short", day: "numeric" }
+                          )}
+                        </div>
+                        <div className="mt-1 text-xs text-slate-400">
+                          Recorded by {meeting.recorded_by?.advisor_name ?? "Unknown (legacy record)"}
+                          <span className="block">Recorded {formatRecordedAt(meeting.created_at)}</span>
+                        </div>
                       </td>
                       <td className="px-4 py-3">
                         <MetricBadge tone={meeting.meeting_mode === "Virtual" ? "blue" : "slate"}>

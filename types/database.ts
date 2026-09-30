@@ -89,6 +89,48 @@ export type Database = {
           },
         ]
       }
+      advising_meeting_amendment: {
+        Row: {
+          amendment_id: number
+          created_at: string
+          created_by_advisor_id: number
+          details: string
+          meeting_id: number
+          reason: string
+        }
+        Insert: {
+          amendment_id?: number
+          created_at?: string
+          created_by_advisor_id?: number
+          details: string
+          meeting_id: number
+          reason: string
+        }
+        Update: {
+          amendment_id?: number
+          created_at?: string
+          created_by_advisor_id?: number
+          details?: string
+          meeting_id?: number
+          reason?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "advising_meeting_amendment_created_by_advisor_id_fkey"
+            columns: ["created_by_advisor_id"]
+            isOneToOne: false
+            referencedRelation: "advisor"
+            referencedColumns: ["advisor_id"]
+          },
+          {
+            foreignKeyName: "advising_meeting_amendment_meeting_id_fkey"
+            columns: ["meeting_id"]
+            isOneToOne: false
+            referencedRelation: "advising_meeting"
+            referencedColumns: ["meeting_id"]
+          },
+        ]
+      }
       advisor: {
         Row: {
           advisor_id: number

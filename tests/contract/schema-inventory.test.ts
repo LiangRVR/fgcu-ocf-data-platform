@@ -19,8 +19,8 @@
  *     is stored, only a body hash;
  *   - COMPLETE – every documented catalog section is present as an array, and
  *     the key expected local-chain catalog facts hold:
- *       * seven local migration-ledger rows (the exact Git chain);
- *       * RLS enabled on all seven operational tables;
+ *       * ten local migration-ledger rows (the exact Git chain);
+ *       * RLS enabled on all eight operational tables;
  *       * application foreign keys keep the default NO ACTION semantics;
  *       * the advisor identity/RLS lockdown trigger and policies are present;
  *       * migration 20260929000001 adds the advising↔application link columns
@@ -28,7 +28,12 @@
  *         advising_meeting.application_id, NOT NULL created_at default now(),
  *         nullable created_by_advisor_id), the direct + composite application
  *         FKs, the unique (application_id, student_id) target, and the
- *         hardened SECURITY DEFINER creation-metadata trigger/function.
+ *         hardened SECURITY DEFINER creation-metadata trigger/function; and
+ *       * migration 20260930000002 adds indexes for the composite
+ *         advising/application FK and the creator-advisor FK.
+ *       * migration 20260930000003 makes advising meetings append-only for
+ *         authenticated users: active-advisor SELECT and INSERT policies only,
+ *         with no authenticated UPDATE or DELETE grant.
  *
  * Safety: this test writes no output files, reads no hosted values, and never
  * queries business rows — it only runs the read-only catalog SELECTs inside
@@ -46,18 +51,19 @@ import { getContractEnv } from "./helpers/setup";
 
 const env = getContractEnv();
 
-/** The seven operational tables created by the migration chain. */
+/** The eight operational tables created by the migration chain. */
 const OPERATIONAL_TABLES = [
   "advisor",
   "fellowship",
   "student",
   "application",
   "advising_meeting",
+  "advising_meeting_amendment",
   "fellowship_thursday",
   "scholarship_history",
 ] as const;
 
-/** The exact Git migration chain recorded in the local ledger (seven rows). */
+/** The exact Git migration chain recorded in the local ledger (ten rows). */
 const EXPECTED_LEDGER = [
   { version: "20260305000000", name: "initial_schema" },
   { version: "20260305000001", name: "allow_anon_read" },
@@ -66,6 +72,9 @@ const EXPECTED_LEDGER = [
   { version: "20260317000004", name: "active_advisor_rls" },
   { version: "20260318000001", name: "advisor_self_activation_lockdown" },
   { version: "20260929000001", name: "advising_application_link" },
+  { version: "20260930000002", name: "advising_application_fk_indexes" },
+  { version: "20260930000003", name: "advising_meeting_append_only" },
+  { version: "20260930000004", name: "advising_meeting_amendments" },
 ] as const;
 
 /** One shared capture: read-only catalog queries against the lane database. */
@@ -127,12 +136,132 @@ describe("schema inventory packet shape (local/schema-only/complete)", () => {
 });
 
 describe("migration ledger", () => {
-  it("records exactly the seven local-chain migrations", () => {
+  it("records exactly the ten local-chain migrations", () => {
     const ledger = packet.catalog.migrationLedger;
     expect(ledger).toHaveLength(EXPECTED_LEDGER.length);
     const byVersion = new Map(ledger.map((record) => [record.fields.version, record.fields.name]));
     for (const { version, name } of EXPECTED_LEDGER) {
       expect(byVersion.get(version), `ledger row ${version}`).toBe(name);
+    }
+  });
+});
+
+describe("advising_meeting append-only authorization (migration 20260930000003)", () => {
+  it("captures only authenticated active-advisor SELECT and INSERT policies", () => {
+    const policies = packet.catalog.policies
+      .filter((record) => record.fields.table === "advising_meeting")
+      .map((record) => ({
+        name: record.fields.name,
+        command: record.fields.command,
+        roles: record.fields.roles,
+      }))
+      .sort((left, right) => String(left.name).localeCompare(String(right.name)));
+    expect(policies).toEqual([
+      {
+        name: "active_advisor_insert_advising_meeting",
+        command: "INSERT",
+        roles: ["authenticated"],
+      },
+      {
+        name: "active_advisor_select_advising_meeting",
+        command: "SELECT",
+        roles: ["authenticated"],
+      },
+    ]);
+  });
+
+  it("captures no authenticated advising_meeting UPDATE or DELETE grant", () => {
+    const privileges = packet.catalog.grants
+      .filter(
+        (record) =>
+          record.fields.objectType === "TABLE" &&
+          record.fields.objectName === "advising_meeting" &&
+          record.fields.grantee === "authenticated"
+      )
+      .map((record) => record.fields.privilege);
+    expect(privileges).toContain("SELECT");
+    expect(privileges).toContain("INSERT");
+    expect(privileges).not.toContain("UPDATE");
+    expect(privileges).not.toContain("DELETE");
+  });
+});
+
+describe("advising_meeting_amendment append-only authorization (migration 20260930000004)", () => {
+  it("captures only authenticated active-advisor SELECT and INSERT policies", () => {
+    const policies = packet.catalog.policies
+      .filter((record) => record.fields.table === "advising_meeting_amendment")
+      .map((record) => ({
+        name: record.fields.name,
+        command: record.fields.command,
+        roles: record.fields.roles,
+      }))
+      .sort((left, right) => String(left.name).localeCompare(String(right.name)));
+    expect(policies).toEqual([
+      {
+        name: "active_advisor_insert_advising_meeting_amendment",
+        command: "INSERT",
+        roles: ["authenticated"],
+      },
+      {
+        name: "active_advisor_select_advising_meeting_amendment",
+        command: "SELECT",
+        roles: ["authenticated"],
+      },
+    ]);
+  });
+
+  it("captures no authenticated advising_meeting_amendment UPDATE or DELETE grant and no anon grant", () => {
+    const amendmentGrants = packet.catalog.grants.filter(
+      (record) =>
+        record.fields.objectType === "TABLE" &&
+        record.fields.objectName === "advising_meeting_amendment"
+    );
+    const authenticatedPrivileges = amendmentGrants
+      .filter((record) => record.fields.grantee === "authenticated")
+      .map((record) => record.fields.privilege);
+    expect(authenticatedPrivileges).toContain("SELECT");
+    expect(authenticatedPrivileges).toContain("INSERT");
+    expect(authenticatedPrivileges).not.toContain("UPDATE");
+    expect(authenticatedPrivileges).not.toContain("DELETE");
+    expect(
+      amendmentGrants.some((record) => record.fields.grantee === "anon"),
+      "anon must hold no grant on the amendment table"
+    ).toBe(false);
+  });
+
+  it("captures the amendment creation-metadata trigger/function as SECURITY DEFINER", () => {
+    const trigger = packet.catalog.triggers.find(
+      (record) => record.fields.name === "trg_advising_meeting_amendment_created_metadata"
+    );
+    expect(trigger, "amendment metadata trigger").toBeDefined();
+    expect(trigger!.fields.table).toBe("advising_meeting_amendment");
+    expect(String(trigger!.fields.function)).toContain("set_advising_meeting_amendment_created_metadata");
+    expect(trigger!.fields.state).toBe("O");
+    expect(String(trigger!.fields.events)).toContain("INSERT");
+    expect(String(trigger!.fields.definitionHash)).toMatch(/^[0-9a-f]{64}$/);
+
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "set_advising_meeting_amendment_created_metadata"
+    );
+    expect(fn, "amendment metadata function").toBeDefined();
+    expect(fn!.fields.securityMode).toBe("DEFINER");
+    expect(fn!.fields.searchPath).toEqual([]);
+    expect(String(fn!.fields.bodyHash)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("captures the trim-aware nonempty reason/details CHECK constraints", () => {
+    const constraints = packet.catalog.constraints;
+    const byName = new Map(constraints.map((record) => [record.fields.name, record]));
+
+    for (const name of [
+      "advising_meeting_amendment_reason_not_blank",
+      "advising_meeting_amendment_details_not_blank",
+    ]) {
+      const record = byName.get(name);
+      expect(record, `CHECK constraint ${name}`).toBeDefined();
+      expect(record!.fields.type, `${name} type`).toBe("CHECK");
+      // Schema-only inventory: the raw definition is reduced to a hash.
+      expect(String(record!.fields.definitionHash), `${name} definitionHash`).toMatch(/^[0-9a-f]{64}$/);
     }
   });
 });
@@ -303,10 +432,14 @@ describe("advising↔application link foreign keys (migration 20260929000001)", 
     expect(String(unique!.fields.definitionHash)).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it("captures the advising application indexes", () => {
+  it("captures the advising application indexes, including follow-up FK indexes", () => {
     const indexes = packet.catalog.indexes.map((record) => record.identity);
+    // The link migration's query indexes.
     expect(indexes).toContain("public.advising_meeting.idx_advising_meeting_application");
     expect(indexes).toContain("public.advising_meeting.idx_advising_meeting_student_application");
+    // 20260930000002 covers the composite application/student and creator FKs.
+    expect(indexes).toContain("public.advising_meeting.idx_advising_meeting_application_student");
+    expect(indexes).toContain("public.advising_meeting.idx_advising_meeting_created_by_advisor");
     // The unique constraint's backing index is captured too.
     expect(indexes).toContain("public.application.application_application_id_student_id_key");
   });

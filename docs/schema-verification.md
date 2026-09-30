@@ -13,6 +13,8 @@
 - [x] Active-advisor RLS migration (`supabase/migrations/20260317000004_active_advisor_rls.sql`)
 - [x] Advisor self-activation lockdown migration (`supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql`)
 - [x] Advising↔application link migration (`supabase/migrations/20260929000001_advising_application_link.sql`) — forward-only: nullable `application.application_year` (cycle), nullable `advising_meeting.application_id` with direct + composite same-student FKs, database-authored `created_at`/`created_by_advisor_id` creation metadata and hardened trigger, advising indexes
+- [x] Advising/application FK indexes migration (`supabase/migrations/20260930000002_advising_application_fk_indexes.sql`) — adds the reverse composite-FK index on `(application_id, student_id)` and creator index on `created_by_advisor_id`
+- [x] Append-only advising history migration (`supabase/migrations/20260930000003_advising_meeting_append_only.sql`) — database RLS permits active advisors to SELECT and INSERT advising meetings only; UPDATE and DELETE are denied without an admin bypass, preserving historic data
 - [x] Schema documentation (`docs/schema-reference.md`, `supabase/SCHEMA.md`)
 - [x] Auto-generated TypeScript types (`types/database.ts`)
 - [x] Application-level types (`types/index.ts`)
@@ -21,7 +23,7 @@
 - [x] Password recovery flow (`/forgot-password` → `/reset-password`)
 - [x] Advisor account page (`/dashboard/account`)
 - [x] All 9 dashboard destinations query live Supabase data
-- [x] Add / Edit / Delete operations implemented on all main tables (students, applications, advising, fellowship thursday, scholarship history)
+- [x] Add / Edit / Delete operations implemented on mutable main tables (students, applications, fellowship thursday, scholarship history); advising meetings are append-only history
 - [x] Form validation: Zod + React Hook Form on login/recovery; manual field-level + consistency validation on account page and CRUD dialogs
 
 ### ⚠️ Required From You Before First Use
@@ -36,18 +38,27 @@
    - ⚠️ Do **not** run these migrations against the hosted production database.
      Production is the physical-schema authority; its migration ledger records
      only `20260924065221_advisor_self_activation_lockdown` while the repository
-     tracks seven migrations, and the deployed schema differs materially. See
+     tracks eight migrations ending with `20260930000002_advising_application_fk_indexes.sql`, and the deployed schema differs materially. See
      [`supabase/SCHEMA.md`](../supabase/SCHEMA.md#migration-deployment-freeze)
      and the approval-gated
      [reconciliation runbook](../aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
 
 3. **Generate TypeScript Types** (only needed if schema changes)
+
+   - The repository now tracks **nine** migrations ending with
+     `20260930000003_advising_meeting_append_only.sql`; use that ninth migration
+     when applying or verifying the complete local chain.
    - Run: `pnpm run db:types`
 
 4. **Test Connection**
    - Run: `pnpm run test:connection`
 
 ## Schema Mapping
+
+The nine-migration repository chain ends with
+`20260930000003_advising_meeting_append_only.sql`, which enforces
+database-RLS append-only advising history: active advisors can SELECT and
+INSERT only; UPDATE and DELETE are denied without an admin bypass.
 
 Our database schema aligns with the application needs:
 
@@ -121,6 +132,8 @@ Before using the application with real data:
 - [ ] Active-advisor RLS migration applied (`20260317000004_active_advisor_rls.sql`)
 - [ ] Advisor self-activation lockdown migration applied (`20260318000001_advisor_self_activation_lockdown.sql`) — removes any email self-link and adds the one-time-bind guard
 - [ ] Advising↔application link migration applied (`20260929000001_advising_application_link.sql`) — forward-only: adds the nullable application cycle (`application.application_year`), the nullable advising↔application link with direct + composite same-student FKs, creation metadata and trigger, and advising indexes
+- [ ] Advising/application FK indexes migration applied (`20260930000002_advising_application_fk_indexes.sql`) — adds the reverse composite-FK index on `(application_id, student_id)` and creator index on `created_by_advisor_id`
+- [ ] Append-only advising history migration applied (`20260930000003_advising_meeting_append_only.sql`) — database RLS permits active advisors to SELECT and INSERT only; UPDATE and DELETE have no admin bypass
 - [ ] Advisors provisioned via the admin pre-binding path: each auth account's exact UUID bound to its `advisor.auth_user_id` while unbound, before first sign-in (no email self-link, no sign-in auto-linking)
 - [ ] TypeScript types regenerated if schema was modified: `pnpm run db:types`
 - [ ] Connection test passes: `pnpm run test:connection`
@@ -129,6 +142,8 @@ Before using the application with real data:
 - [ ] Advisor can open `/dashboard/account`
 - [ ] Forgot-password email flow reaches `/reset-password`
 - [ ] Dashboard loads with live (or empty) data
+- [ ] Active advisor can SELECT and INSERT an advising meeting
+- [ ] Active advisor receives a database permission denial for advising-meeting UPDATE and DELETE attempts
 
 ### Auth Flow Smoke Test
 

@@ -2,13 +2,15 @@
  * tests/contract/schema.test.ts
  *
  * Schema contract: asserts that the full migration chain
- * (20260305000000 → 20260929000001) produced exactly the expected steady state
+ * (20260305000000 → 20260930000004) produced exactly the expected steady state
  * on a fresh, isolated Docker-local instance:
- *   - all seven operational tables exist, with their PKs, FKs, and indexes;
+ *   - all eight operational tables exist, with their PKs, FKs, and indexes;
  *   - the documented CHECK constraints exist;
  *   - RLS is enabled on every table;
  *   - migration ...004 privilege steady state: `anon` has no schema/table/
- *     sequence access; `authenticated` has full CRUD and sequence access;
+ *     sequence access; `authenticated` has CRUD and sequence access except
+ *     advising_meeting and advising_meeting_amendment, which are
+ *     SELECT/INSERT-only;
  *   - migration 20260929000001 adds the advising↔application link columns
  *     (nullable `application.application_year`, nullable
  *     `advising_meeting.application_id`, NOT NULL `created_at` default
@@ -31,6 +33,7 @@ const TABLES = [
   "student",
   "application",
   "advising_meeting",
+  "advising_meeting_amendment",
   "fellowship_thursday",
   "scholarship_history",
 ] as const;
@@ -41,6 +44,7 @@ const EXPECTED_PKS: Record<string, string> = {
   student: "student_id",
   application: "application_id",
   advising_meeting: "meeting_id",
+  advising_meeting_amendment: "amendment_id",
   fellowship_thursday: "attendance_id",
   scholarship_history: "history_id",
 };
@@ -55,6 +59,8 @@ const EXPECTED_FKS: Record<string, { table: string; columns: string[]; foreignTa
   advising_meeting_application_id_fkey: { table: "advising_meeting", columns: ["application_id"], foreignTable: "application" },
   advising_meeting_application_student_fkey: { table: "advising_meeting", columns: ["application_id", "student_id"], foreignTable: "application" },
   advising_meeting_created_by_advisor_id_fkey: { table: "advising_meeting", columns: ["created_by_advisor_id"], foreignTable: "advisor" },
+  advising_meeting_amendment_meeting_id_fkey: { table: "advising_meeting_amendment", columns: ["meeting_id"], foreignTable: "advising_meeting" },
+  advising_meeting_amendment_created_by_advisor_id_fkey: { table: "advising_meeting_amendment", columns: ["created_by_advisor_id"], foreignTable: "advisor" },
   fellowship_thursday_student_id_fkey: { table: "fellowship_thursday", columns: ["student_id"], foreignTable: "student" },
   scholarship_history_student_id_fkey: { table: "scholarship_history", columns: ["student_id"], foreignTable: "student" },
   scholarship_history_fellowship_id_fkey: { table: "scholarship_history", columns: ["fellowship_id"], foreignTable: "fellowship" },
@@ -83,6 +89,10 @@ const EXPECTED_INDEXES = [
   "application_application_id_student_id_key",
   "idx_advising_meeting_application",
   "idx_advising_meeting_student_application",
+  "idx_advising_meeting_application_student",
+  "idx_advising_meeting_created_by_advisor",
+  "idx_advising_meeting_amendment_meeting",
+  "idx_advising_meeting_amendment_created_by_advisor",
 ];
 
 const EXPECTED_CHECKS = [
@@ -92,6 +102,8 @@ const EXPECTED_CHECKS = [
   "application_stage_check",
   "advising_meeting_mode_check",
   "fellowship_thursday_source_check",
+  "advising_meeting_amendment_reason_not_blank",
+  "advising_meeting_amendment_details_not_blank",
 ];
 
 const EXPECTED_SEQUENCES = [
@@ -100,6 +112,7 @@ const EXPECTED_SEQUENCES = [
   "student_student_id_seq",
   "application_application_id_seq",
   "advising_meeting_meeting_id_seq",
+  "advising_meeting_amendment_amendment_id_seq",
   "fellowship_thursday_attendance_id_seq",
   "scholarship_history_history_id_seq",
 ];
@@ -122,7 +135,7 @@ afterAll(async () => {
 });
 
 describe("tables exist", () => {
-  it("creates all seven operational tables", async () => {
+  it("creates all eight operational tables", async () => {
     const rows = await query(
       "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
     );
@@ -212,7 +225,7 @@ describe("CHECK constraints", () => {
 });
 
 describe("sequences", () => {
-  it("defines the seven backing sequences", async () => {
+  it("defines the eight backing sequences", async () => {
     const rows = await query(
       "SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public'"
     );
@@ -413,7 +426,7 @@ describe("invoker-security one-time-bind trigger (rows 16-24, R1/R11)", () => {
 });
 
 describe("migration ...004 privilege steady state", () => {
-  it("revokes all anon access and grants authenticated CRUD on every table", async () => {
+  it("revokes all anon access and makes advising history authenticated SELECT/INSERT-only", async () => {
     const rows = await query(
       `SELECT c.relname,
               has_table_privilege('anon', c.oid, 'SELECT')   AS anon_select,
@@ -437,8 +450,16 @@ describe("migration ...004 privilege steady state", () => {
       for (const col of ["anon_select", "anon_insert", "anon_update", "anon_delete"] as const) {
         expect(row[col], `${row.relname}.${col}`).toBe(false);
       }
-      for (const col of ["auth_select", "auth_insert", "auth_update", "auth_delete"] as const) {
+      for (const col of ["auth_select", "auth_insert"] as const) {
         expect(row[col], `${row.relname}.${col}`).toBe(true);
+      }
+      if (row.relname === "advising_meeting" || row.relname === "advising_meeting_amendment") {
+        expect(row.auth_update, `${row.relname}.auth_update`).toBe(false);
+        expect(row.auth_delete, `${row.relname}.auth_delete`).toBe(false);
+      } else {
+        for (const col of ["auth_update", "auth_delete"] as const) {
+          expect(row[col], `${row.relname}.${col}`).toBe(true);
+        }
       }
     }
   });
@@ -471,5 +492,92 @@ describe("migration ...004 privilege steady state", () => {
       expect(row.auth_usage, `${row.sequence_name}.auth_usage`).toBe(true);
       expect(row.auth_select, `${row.sequence_name}.auth_select`).toBe(true);
     }
+  });
+});
+
+describe("advising_meeting append-only policy shape (migration 20260930000003)", () => {
+  it("has only active-advisor SELECT and INSERT policies, never UPDATE or DELETE", async () => {
+    const rows = await query(
+      `SELECT policyname, cmd, roles::text[] AS roles
+         FROM pg_policies
+        WHERE schemaname = 'public'
+          AND tablename = 'advising_meeting'
+        ORDER BY policyname`
+    );
+    expect(rows).toEqual([
+      { policyname: "active_advisor_insert_advising_meeting", cmd: "INSERT", roles: ["authenticated"] },
+      { policyname: "active_advisor_select_advising_meeting", cmd: "SELECT", roles: ["authenticated"] },
+    ]);
+  });
+});
+
+describe("advising_meeting_amendment schema and policy shape (migration 20260930000004)", () => {
+  it("uses required meeting, creator, timestamp, reason, and details columns", async () => {
+    const rows = await query(
+      `SELECT column_name, data_type, is_nullable, column_default
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'advising_meeting_amendment'
+        ORDER BY ordinal_position`
+    );
+    expect(rows).toEqual([
+      { column_name: "amendment_id", data_type: "integer", is_nullable: "NO", column_default: expect.any(String) },
+      { column_name: "meeting_id", data_type: "integer", is_nullable: "NO", column_default: null },
+      { column_name: "created_by_advisor_id", data_type: "integer", is_nullable: "NO", column_default: null },
+      { column_name: "created_at", data_type: "timestamp with time zone", is_nullable: "NO", column_default: "now()" },
+      { column_name: "reason", data_type: "text", is_nullable: "NO", column_default: null },
+      { column_name: "details", data_type: "text", is_nullable: "NO", column_default: null },
+    ]);
+  });
+
+  it("has only active-advisor SELECT and INSERT policies, never UPDATE or DELETE", async () => {
+    const rows = await query(
+      `SELECT policyname, cmd, roles::text[] AS roles
+         FROM pg_policies
+        WHERE schemaname = 'public'
+          AND tablename = 'advising_meeting_amendment'
+        ORDER BY policyname`
+    );
+    expect(rows).toEqual([
+      { policyname: "active_advisor_insert_advising_meeting_amendment", cmd: "INSERT", roles: ["authenticated"] },
+      { policyname: "active_advisor_select_advising_meeting_amendment", cmd: "SELECT", roles: ["authenticated"] },
+    ]);
+  });
+
+  it("enforces trim-aware nonempty reason and details via CHECK constraints", async () => {
+    const rows = await query(
+      `SELECT c.conname, a.attname AS column_name, pg_get_constraintdef(c.oid) AS definition
+         FROM pg_constraint AS c
+         JOIN pg_class AS t ON t.oid = c.conrelid
+         JOIN pg_namespace AS n ON n.oid = t.relnamespace
+         JOIN pg_attribute AS a
+           ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+        WHERE n.nspname = 'public'
+          AND t.relname = 'advising_meeting_amendment'
+          AND c.contype = 'c'
+        ORDER BY c.conname`
+    );
+    expect(
+      rows.map((row) => ({ conname: row.conname, column_name: row.column_name }))
+    ).toEqual([
+      { conname: "advising_meeting_amendment_details_not_blank", column_name: "details" },
+      { conname: "advising_meeting_amendment_reason_not_blank", column_name: "reason" },
+    ]);
+    for (const row of rows) {
+      // Trim-aware: the CHECK trims whitespace and requires a non-empty result.
+      expect(String(row.definition), `${row.conname} is trim-aware`).toContain("btrim");
+      expect(String(row.definition), `${row.conname} rejects empty`).toContain("<>");
+    }
+  });
+
+  it("defines the amendment retrieval index on (meeting_id, created_at, amendment_id)", async () => {
+    const rows = await query(
+      `SELECT indexdef
+         FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname = 'idx_advising_meeting_amendment_meeting'`
+    );
+    expect(rows).toHaveLength(1);
+    expect(String(rows[0].indexdef)).toMatch(/\(meeting_id, created_at, amendment_id\)/);
   });
 });

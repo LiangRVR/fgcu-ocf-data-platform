@@ -7,7 +7,14 @@
  * a seeded value) AND one real synthetic UI write — logging a meeting, adding
  * an attendance record, and recording a scholarship award — each asserted again
  * after a reload to prove the write went through the server, not just the
- * client state.
+ * client state. Advising writes are deliberately retained: meeting history is
+ * append-only and the local E2E lane starts from a fresh seed.
+ *
+ * Amendment coverage: the advising lane asserts that an active advisor can open
+ * the Add Correction dialog on a historical meeting, fill only Reason and
+ * Details (no meeting ID / creator / timestamp fields are exposed), submit a
+ * direct typed insert, and observe the correction re-render under the
+ * unchanged original meeting across a reload.
  *
  * Exactness: the reports test is FULLY SELF-CONTAINED. Every expectation is
  * EXACT absolute equality derived from the seed-exported totals
@@ -256,20 +263,6 @@ async function restoreSeededApplicationStage(page: Page): Promise<void> {
 }
 
 /**
- * Delete one advising meeting row (by its unique notes marker) through the
- * desktop table's "Delete meeting" action and the confirmation dialog. The
- * advising write tests clean up after themselves so the reports test's EXACT
- * `Advising Meetings` total always derives from the seed export alone.
- */
-async function deleteMeeting(page: Page, note: string): Promise<void> {
-  const row = page.locator("table tbody tr", { hasText: note });
-  await expect(row).toBeVisible();
-  await row.getByTitle("Delete meeting").click();
-  await page.getByRole("alertdialog").getByRole("button", { name: "Delete" }).click();
-  await expect(page.locator("table tbody tr", { hasText: note })).toHaveCount(0);
-}
-
-/**
  * Assert the reports page against the seed export EXACTLY: all five System
  * Totals, every application stage from `E2E_REPORT_TOTALS`, and the funnel's
  * stage-count consistency (only the exported stages displayed, summing to the
@@ -358,6 +351,19 @@ test.describe("operational surfaces", () => {
     await page.goto("/advising");
     await expect(page.getByRole("heading", { name: "Advising", exact: true })).toBeVisible();
     await expect(visibleStudentName(page)).toBeVisible();
+    await expect(page.getByTitle("Edit meeting")).toHaveCount(0);
+    await expect(page.getByTitle("Delete meeting")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Edit" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Delete" })).toHaveCount(0);
+
+    // The advising history exposes immutable provenance for the seeded record
+    // without assuming how the runtime attributes a service-seeded write.
+    const seededMeetingRow = page.locator("table tbody tr", { hasText: "E2E seeded advising session" }).first();
+    await expect(seededMeetingRow.getByText(/^Recorded by /)).toBeVisible();
+    await expect(seededMeetingRow.getByText(/^Recorded (?!by)/)).toBeVisible();
+    // Each meeting row carries its own Add Correction affordance (no dropdown
+    // menu, no per-row Edit / Delete actions).
+    await expect(seededMeetingRow.getByRole("button", { name: "Add Correction" })).toBeVisible();
   });
 
   test("an advisor can log an advising meeting that persists across a reload", async ({ page }) => {
@@ -379,10 +385,169 @@ test.describe("operational surfaces", () => {
     const row = page.locator("table tbody tr", { hasText: MEETING_NOTE });
     await expect(row).toBeVisible();
     await expect(row).toContainText(STUDENT_NAME);
+    await expect(row).toContainText("Recorded by");
+    await expect(row).toContainText("Recorded");
 
     // Reload → the meeting is persisted server-side.
     await page.reload();
-    await expect(page.locator("table tbody tr", { hasText: MEETING_NOTE })).toBeVisible();
+    const persistedRow = page.locator("table tbody tr", { hasText: MEETING_NOTE });
+    await expect(persistedRow).toBeVisible();
+    await expect(persistedRow).toContainText("Recorded by");
+  });
+
+  test("an advisor can add a correction with Reason and Details only and the original meeting remains unchanged across a reload", async ({ page }) => {
+    await signInAsActive(page);
+
+    const correctionReason = `E2E correction reason ${Date.now()}`;
+    const correctionDetails = `E2E correction details ${Date.now()}`;
+
+    await page.goto("/advising");
+
+    // The seeded meeting row carries its Add Correction affordance.
+    const seededRow = page
+      .locator("table tbody tr", { hasText: "E2E seeded advising session" })
+      .first();
+    await expect(seededRow).toBeVisible();
+    await seededRow.getByRole("button", { name: "Add Correction" }).click();
+
+    // The Add Correction dialog exposes ONLY Reason and Details — the meeting
+    // context is bound by the row, and the creator/timestamp come from the
+    // database, so no editable meeting ID / creator / timestamp input exists.
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator("#correction_reason")).toBeVisible();
+    await expect(dialog.locator("#correction_details")).toBeVisible();
+    await expect(dialog.locator("input[name='meeting_id']")).toHaveCount(0);
+    await expect(dialog.locator("input[name='created_by_advisor_id']")).toHaveCount(0);
+    await expect(dialog.locator("input[name='created_at']")).toHaveCount(0);
+
+    // Submitting empty form shows the required-field errors (no insert yet).
+    await dialog.getByRole("button", { name: "Add Correction" }).click();
+    await expect(dialog.getByText("Reason is required.")).toBeVisible();
+    await expect(dialog.getByText("Details are required.")).toBeVisible();
+
+    // Fill in and submit a real correction.
+    await dialog.locator("#correction_reason").fill(correctionReason);
+    await dialog.locator("#correction_details").fill(correctionDetails);
+    await dialog.getByRole("button", { name: "Add Correction" }).click();
+
+    // The dialog dismisses once the typed direct insert succeeds.
+    await expect(dialog).toBeHidden();
+
+    // The correction is appended to that meeting's chronological display as an
+    // attached record; the original meeting notes are still visible and the
+    // row keeps its own Add Correction affordance for further corrections.
+    const correctionRow = page
+      .locator("table tbody tr.bg-amber-50\\/40", { hasText: correctionReason })
+      .first();
+    await expect(correctionRow).toBeVisible();
+    await expect(correctionRow).toContainText(correctionDetails);
+    await expect(correctionRow).toContainText("Added by");
+    // Original meeting content is unchanged beneath the correction.
+    await expect(
+      page.locator("table tbody tr", { hasText: "E2E seeded advising session" }).first(),
+    ).toContainText("E2E seeded advising session");
+
+    // Reload → the correction survives via the server loader and the original
+    // meeting row still carries its original notes verbatim.
+    await page.reload();
+    const persistedCorrection = page
+      .locator("table tbody tr.bg-amber-50\\/40", { hasText: correctionReason })
+      .first();
+    await expect(persistedCorrection).toBeVisible();
+    await expect(persistedCorrection).toContainText(correctionDetails);
+    const persistedMeeting = page
+      .locator("table tbody tr", { hasText: "E2E seeded advising session" })
+      .first();
+    await expect(persistedMeeting).toContainText("E2E seeded advising session");
+  });
+
+  test("multiple corrections attached to the same meeting render in chronological created_at order across a reload", async ({ page }) => {
+    await signInAsActive(page);
+
+    // Two corrections on the same seeded meeting, with a small delay between
+    // inserts so the database-authored `created_at` strictly increases and
+    // the loader's chronological order is observable in the DOM.
+    const earlierReason = `E2E earlier correction ${Date.now()}`;
+    const earlierDetails = `E2E earlier details ${Date.now()}`;
+    const laterReason = `E2E later correction ${Date.now() + 1}`;
+    const laterDetails = `E2E later details ${Date.now() + 1}`;
+
+    const submitCorrection = async (reason: string, details: string): Promise<void> => {
+      const seededRow = page
+        .locator("table tbody tr", { hasText: "E2E seeded advising session" })
+        .first();
+      await seededRow.getByRole("button", { name: "Add Correction" }).click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog).toBeVisible();
+      await dialog.locator("#correction_reason").fill(reason);
+      await dialog.locator("#correction_details").fill(details);
+      await dialog.getByRole("button", { name: "Add Correction" }).click();
+      await expect(dialog).toBeHidden();
+    };
+
+    await page.goto("/advising");
+    await submitCorrection(earlierReason, earlierDetails);
+    // Wait long enough that `now()` strictly advances; PostgreSQL timestamptz
+    // resolution is microseconds, so even 1100 ms guarantees a different value.
+    await page.waitForTimeout(1100);
+    await submitCorrection(laterReason, laterDetails);
+
+    // Both corrections render below the unchanged original meeting with their
+    // provenance (creator + database-authored timestamp) attached.
+    const earlierRow = page
+      .locator("table tbody tr.bg-amber-50\\/40", { hasText: earlierReason })
+      .first();
+    const laterRow = page
+      .locator("table tbody tr.bg-amber-50\\/40", { hasText: laterReason })
+      .first();
+    await expect(earlierRow).toBeVisible();
+    await expect(earlierRow).toContainText(earlierDetails);
+    await expect(earlierRow).toContainText("Added by");
+    await expect(laterRow).toBeVisible();
+    await expect(laterRow).toContainText(laterDetails);
+    await expect(laterRow).toContainText("Added by");
+
+    // Original meeting's notes remain visible and unchanged at the top of the
+    // meeting's attached history.
+    const meetingRow = page
+      .locator("table tbody tr", { hasText: "E2E seeded advising session" })
+      .first();
+    await expect(meetingRow).toContainText("E2E seeded advising session");
+
+    // Chronological order: the earlier correction appears in the DOM before
+    // the later correction. Compare text positions in the rendered HTML so
+    // layout / viewport concerns don't matter.
+    const meetingSectionHtml = await page
+      .locator("table", { hasText: "E2E seeded advising session" })
+      .first()
+      .innerHTML();
+    const earlierIndex = meetingSectionHtml.indexOf(earlierReason);
+    const laterIndex = meetingSectionHtml.indexOf(laterReason);
+    expect(earlierIndex).toBeGreaterThan(-1);
+    expect(laterIndex).toBeGreaterThan(earlierIndex);
+
+    // Reload → chronological order survives via the server loader and the
+    // corrections are still attached under the unchanged original meeting.
+    await page.reload();
+    const persistedMeeting = page
+      .locator("table tbody tr", { hasText: "E2E seeded advising session" })
+      .first();
+    await expect(persistedMeeting).toContainText("E2E seeded advising session");
+    await expect(
+      page.locator("table tbody tr.bg-amber-50\\/40", { hasText: earlierReason }).first(),
+    ).toBeVisible();
+    await expect(
+      page.locator("table tbody tr.bg-amber-50\\/40", { hasText: laterReason }).first(),
+    ).toBeVisible();
+    const persistedSectionHtml = await page
+      .locator("table", { hasText: "E2E seeded advising session" })
+      .first()
+      .innerHTML();
+    expect(persistedSectionHtml.indexOf(earlierReason)).toBeGreaterThan(-1);
+    expect(persistedSectionHtml.indexOf(laterReason)).toBeGreaterThan(
+      persistedSectionHtml.indexOf(earlierReason),
+    );
   });
 
   test("an advisor can log a General Advising meeting (null application) that persists across a reload", async ({ page }) => {
@@ -420,8 +585,6 @@ test.describe("operational surfaces", () => {
     await expect(rowAfterReload).toBeVisible();
     await expect(rowAfterReload).toContainText("General Advising");
 
-    // Clean up so the reports totals stay at the seed export.
-    await deleteMeeting(page, generalNote);
   });
 
   test("an advisor can log an application-scoped meeting whose cycle label persists across a reload", async ({ page }) => {
@@ -464,8 +627,6 @@ test.describe("operational surfaces", () => {
     await expect(rowAfterReload).toBeVisible();
     await expect(rowAfterReload).toContainText(cycleLabel);
 
-    // Clean up so the reports totals stay at the seed export.
-    await deleteMeeting(page, appMeetingNote);
   });
 
   test("changing the student in the Log Meeting dialog refreshes the application options, clears a stale selection, and persists General Advising after submit/reload", async ({ page }) => {
@@ -521,7 +682,6 @@ test.describe("operational surfaces", () => {
     const rowAfterReload = page.locator("table tbody tr", { hasText: staleNote });
     await expect(rowAfterReload).toContainText("General Advising");
 
-    await deleteMeeting(page, staleNote);
   });
 
   test("submitting a stale application selection resets to General Advising, refreshes options, and removes the stale option after reload", async ({ page }) => {
@@ -598,7 +758,6 @@ test.describe("operational surfaces", () => {
     await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
 
-    await deleteMeeting(page, recoveryNote);
   });
 
   test("an application belonging to another student cannot be selected in the advising dialog", async ({ page }) => {

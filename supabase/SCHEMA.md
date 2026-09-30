@@ -5,11 +5,11 @@
 >
 > Active auth model: Supabase Auth identity + `public.advisor` authorization
 >
-> ⚠️ **Provenance notice (2026-09-25, updated 2026-09-29):** the hosted
+> ⚠️ **Provenance notice (2026-09-25, updated 2026-09-30):** the hosted
 > production database is the physical-schema authority. Its migration ledger
 > records only `20260924065221_advisor_self_activation_lockdown`, while this
-> repository tracks seven migrations (`20260305000000` …
-> `20260929000001_advising_application_link`), and the deployed schema
+> repository tracks ten migrations (`20260305000000` …
+> `20260930000004_advising_meeting_amendments`), and the deployed schema
 > materially differs from the repository chain. Do **not** run
 > `supabase db push`, replay migrations, or repair migration history against
 > production. See [Migration deployment freeze](#migration-deployment-freeze).
@@ -28,6 +28,7 @@
 | `student` | FGCU student profiles | `student_id` |
 | `application` | One application attempt by one student | `application_id` |
 | `advising_meeting` | Advising sessions (student ↔ advisor) | `meeting_id` |
+| `advising_meeting_amendment` | Append-only corrections to advising meetings | `amendment_id` |
 | `fellowship_thursday` | Weekly Thursday meeting attendance | `attendance_id` |
 | `scholarship_history` | Confirmed past fellowship awards | `history_id` |
 
@@ -163,16 +164,56 @@ Indexed: `student_id`, `fellowship_id`, `stage_of_application`, `(application_id
   `trg_advising_meeting_created_metadata`) is authoritative for creation
   metadata: on authenticated browser INSERT it resolves the ACTIVE advisor
   whose `auth_user_id = auth.uid()` and overwrites any client-supplied creator
-  and timestamp; no-auth technical inserts retain a NULL creator and the DB
-  current timestamp. UPDATE changes to `created_at`/`created_by_advisor_id`
+  and timestamp; no-auth technical inserts clear any supplied creator,
+  writing `created_by_advisor_id = NULL`, and stamp the DB current timestamp.
+  UPDATE changes to `created_at`/`created_by_advisor_id`
   are rejected fail-closed. RLS remains the authorization gate — a session
   that cannot resolve an active advisor is denied by the existing INSERT policy.
   `advisor_id` is never touched by the trigger.
 
 Indexed: `student_id`, `meeting_date`, `application_id`,
-`(student_id, application_id)`.
+`(student_id, application_id)`, `(application_id, student_id)` (reverse
+composite-FK index), `created_by_advisor_id` (creator index).
 
 This table is also the source for advisor-personalized views such as `My meetings` and the meeting-derived `My students` roster on `/dashboard/account`.
+
+**Append-only history (migration `20260930000003`):** Database RLS allows an
+active advisor to `SELECT` and `INSERT` advising meetings only. `UPDATE` and
+`DELETE` are denied, with no application-admin policy or other admin bypass.
+Meeting rows are historic records: corrections require a new record rather than
+altering or removing the original.
+
+---
+
+## `advising_meeting_amendment`
+
+**Purpose:** Records a correction to an advising meeting without mutating or
+deleting the historic meeting row. More than one amendment may reference the
+same meeting.
+
+| Column | Type | Null | Default | Constraint |
+| --- | --- | --- | --- | --- |
+| `amendment_id` | integer | NO | nextval | **PK** |
+| `meeting_id` | integer | NO | — | **FK → `advising_meeting.meeting_id`** |
+| `created_by_advisor_id` | integer | NO | database trigger | **FK → `advisor.advisor_id`**; authenticated active creator |
+| `created_at` | timestamptz | NO | `now()` | Database-authored entry timestamp |
+| `reason` | text | NO | — | Short explanation of why the correction is needed; CHECK: non-empty after trimming whitespace |
+| `details` | text | NO | — | Correction details; does not overwrite the original meeting; CHECK: non-empty after trimming whitespace |
+
+**Append-only correction history (migration `20260930000004`):** Database RLS
+allows active advisors to `SELECT` and `INSERT` amendment rows only. The
+creation trigger replaces any client-supplied creator or timestamp with the
+authenticated active advisor and database timestamp. `UPDATE` and `DELETE` are
+denied; a correction is represented by another amendment row, never an edit to
+the original meeting or an earlier amendment. `reason` and `details` are
+enforced non-empty at the database boundary by whitespace-trimming CHECK
+constraints (`btrim(column, ' \t\n\r\f\x0b') <> ''` — space, tab, newline,
+carriage return, form feed, vertical tab), so a blank or whitespace-only
+correction is rejected even on a direct insert while a literal `v` is never
+trimmed (PostgreSQL has no `\v` escape; vertical tab is `\x0b`).
+
+Indexed: `(meeting_id, created_at, amendment_id)` (per-meeting retrieval,
+chronologically ordered), `created_by_advisor_id`.
 
 ---
 
@@ -240,13 +281,17 @@ fellowship (1) ────────────────┐            �
 | `20260317000004_active_advisor_rls.sql` | Removes anon access and enables authenticated active-advisor policies |
 | `20260318000001_advisor_self_activation_lockdown.sql` | Removes the email self-link escalation path; adds the one-time-bind guard, active-staff-only update policy, and case-insensitive advisor-email uniqueness |
 | `20260929000001_advising_application_link.sql` | Forward-only advising↔application link: adds nullable `application.application_year` (cycle), `UNIQUE (application_id, student_id)` as the composite-FK target, nullable `advising_meeting.application_id` with direct + composite FKs, `created_at` + nullable `created_by_advisor_id` with the hardened non-RPC creation-metadata trigger, and advising indexes |
+| `20260930000002_advising_application_fk_indexes.sql` | Adds `advising_meeting(application_id, student_id)` to cover reverse composite-FK checks and `advising_meeting(created_by_advisor_id)` for creator-FK checks |
+| `20260930000003_advising_meeting_append_only.sql` | Makes `advising_meeting` append-only under database RLS: active advisors can SELECT and INSERT; UPDATE and DELETE are denied without an admin bypass |
+| `20260930000004_advising_meeting_amendments.sql` | Adds append-only, active-advisor-only amendment records linked to historic advising meetings; creator and timestamp are database-authored; trim-aware nonempty `reason`/`details` CHECK constraints; retrieval index on `(meeting_id, created_at, amendment_id)` |
 
 Migrations 2 and 3 are temporary bootstrap steps. The chain must be applied in
-order and ends with `20260929000001_advising_application_link.sql`.
+order and ends with `20260930000004_advising_meeting_amendments.sql`.
 `20260318000001_advisor_self_activation_lockdown.sql` is required and must
 follow `20260317000004_active_advisor_rls.sql`; the forward-only
-`20260929000001_advising_application_link.sql` extends the model afterwards
-and does not alter the auth steady state.
+`20260929000001_advising_application_link.sql` extends the model afterwards,
+and `20260930000002_advising_application_fk_indexes.sql` adds its supporting
+indexes; neither alters the auth steady state.
 
 **Migration/history limits for `20260929000001`:** the migration is additive
 and forward-only — no existing migration, table, column, row, or RLS policy is
@@ -267,7 +312,7 @@ equivalent** to the deployed production schema.
 
 As of 2026-09-25 the production migration ledger contains only
 `20260924065221_advisor_self_activation_lockdown` while the repository tracks
-seven migrations (`20260305000000` … `20260929000001_advising_application_link`),
+ten migrations (`20260305000000` … `20260930000004_advising_meeting_amendments`),
 and the live production schema materially differs from the repository chain.
 Production is the physical-schema authority. Until a reviewed reconciliation is
 approved:
