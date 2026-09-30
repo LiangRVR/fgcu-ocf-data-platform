@@ -656,7 +656,12 @@ async function runLane(attempt, { supabaseBin, tsxBin, playwrightBin, sanitizedE
     E2E_INACTIVE_ADVISOR_NAME: seed.inactiveAdvisorName,
     E2E_STUDENT_NAME: seed.studentName,
     E2E_STUDENT_EMAIL: seed.studentEmail,
+    E2E_STUDENT_TWO_NAME: seed.secondStudentName,
     E2E_FELLOWSHIP_NAME: seed.fellowshipName,
+    E2E_FELLOWSHIP_TWO_NAME: seed.secondFellowshipName,
+    E2E_APPLICATION_YEAR: String(seed.studentApplicationYear),
+    E2E_CYCLE_YEAR_OLD: String(seed.cycleYearOld),
+    E2E_CYCLE_YEAR_NEW: String(seed.cycleYearNew),
     E2E_REPORT_TOTALS: JSON.stringify(seed.reportTotals),
   };
   if (Object.values(seedEnv).some((value) => value === undefined || value === null || value === "")) {

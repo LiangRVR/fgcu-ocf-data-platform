@@ -25,6 +25,20 @@ interface Props {
 type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
   student: { full_name: string } | null;
   advisor: { advisor_name: string } | null;
+  application_id: number | null;
+  application: {
+    application_id: number;
+    application_year: number | null;
+    fellowship_id: number;
+    fellowship: { fellowship_name: string } | null;
+  } | null;
+};
+
+type ApplicationOption = {
+  application_id: number;
+  student_id: number;
+  application_year: number | null;
+  fellowship: { fellowship_name: string } | null;
 };
 
 type StudentRow = Pick<
@@ -42,7 +56,7 @@ async function getAdvisingMeetings(): Promise<AdvisingMeeting[]> {
   try {
     const { data, error } = await supabase
       .from("advising_meeting")
-      .select(`*, student(full_name), advisor(advisor_name)`)
+      .select(`*, student(full_name), advisor!advising_meeting_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))`)
       .order("meeting_date", { ascending: false });
     if (error) {
       console.error("Error fetching advising meetings:", error);
@@ -81,6 +95,23 @@ async function getAdvisors(): Promise<AdvisorRow[]> {
   }
 }
 
+async function getApplications(): Promise<ApplicationOption[]> {
+  const supabase = createServerClient();
+  try {
+    const { data, error } = await supabase
+      .from("application")
+      .select("application_id, student_id, application_year, fellowship(fellowship_name)")
+      .order("application_id", { ascending: false });
+    if (error) {
+      console.error("Error fetching applications:", error);
+      return [];
+    }
+    return (data as ApplicationOption[]) || [];
+  } catch {
+    return [];
+  }
+}
+
 export default async function AdvisingPage({ searchParams }: Props) {
   const advisor = await requireAdvisor();
   const params = await searchParams;
@@ -89,10 +120,11 @@ export default async function AdvisingPage({ searchParams }: Props) {
   const defaultAdvisorId  = params.advisor_id ?? String(advisor.advisor_id);
   const initialNoShowFilter = params.no_show === "yes" ? "yes" : undefined;
 
-  const [meetings, students, advisors] = await Promise.all([
+  const [meetings, students, advisors, applications] = await Promise.all([
     getAdvisingMeetings(),
     getStudents(),
     getAdvisors(),
+    getApplications(),
   ]);
 
   // Compute exception counts for pill bar labels
@@ -177,6 +209,7 @@ export default async function AdvisingPage({ searchParams }: Props) {
         initialMeetings={meetings}
         students={students}
         advisors={advisors}
+        applications={applications}
         currentAdvisorId={advisor.advisor_id}
         autoOpenAdd={autoOpenAdd}
         defaultStudentId={defaultStudentId}

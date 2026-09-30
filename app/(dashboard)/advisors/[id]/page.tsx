@@ -13,10 +13,18 @@ import {
 import Link from "next/link";
 import { createServerClient } from "@/lib/supabase/server";
 import type { Database } from "@/types/database";
+import { formatApplicationLabel } from "@/lib/applications/pipeline";
 
 type Advisor = Database["public"]["Tables"]["advisor"]["Row"];
 type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
   student: { student_id: number; full_name: string } | null;
+  application_id: number | null;
+  application: {
+    application_id: number;
+    application_year: number | null;
+    fellowship_id: number;
+    fellowship: { fellowship_name: string } | null;
+  } | null;
 };
 
 interface AdvisorDetailPageProps {
@@ -43,7 +51,7 @@ async function getMeetings(advisorId: number): Promise<AdvisingMeeting[]> {
   try {
     const { data, error } = await supabase
       .from("advising_meeting")
-      .select("*, student(student_id, full_name)")
+      .select("*, student(student_id, full_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))")
       .eq("advisor_id", advisorId)
       .order("meeting_date", { ascending: false });
     if (error) return [];
@@ -162,6 +170,14 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
                         {meeting.no_show ? "No-Show" : "Attended"}
                       </MetricBadge>
                     </div>
+                    <div className="mt-2 text-sm text-slate-600">
+                      {meeting.application_id == null
+                        ? "General Advising"
+                        : formatApplicationLabel(
+                            meeting.application?.fellowship?.fellowship_name,
+                            meeting.application?.application_year
+                          )}
+                    </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <MetricBadge tone={meeting.meeting_mode === "Virtual" ? "blue" : "slate"}>
                         {meeting.meeting_mode}
@@ -195,6 +211,9 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
                       Mode
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                      Context
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
                       Attended
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
@@ -223,6 +242,14 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
                         <MetricBadge tone={meeting.meeting_mode === "Virtual" ? "blue" : "slate"}>
                           {meeting.meeting_mode}
                         </MetricBadge>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-600">
+                        {meeting.application_id == null
+                          ? "General Advising"
+                          : formatApplicationLabel(
+                              meeting.application?.fellowship?.fellowship_name,
+                              meeting.application?.application_year
+                            )}
                       </td>
                       <td className="px-4 py-3">
                         {meeting.no_show ? (

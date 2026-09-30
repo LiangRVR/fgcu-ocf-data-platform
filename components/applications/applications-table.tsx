@@ -56,12 +56,14 @@ import {
   type Stage,
   deriveFlags,
   validateConsistency,
+  formatApplicationLabel,
 } from "@/lib/applications/pipeline";
 import type { Database } from "@/types/database";
 
 type Application = Database["public"]["Tables"]["application"]["Row"] & {
   student: { full_name: string } | null;
   fellowship: { fellowship_name: string } | null;
+  application_year: number | null;
 };
 
 type StudentRow = Pick<
@@ -110,6 +112,7 @@ interface ApplicationsTableProps {
 const EMPTY_FORM = {
   student_id: "",
   fellowship_id: "",
+  application_year: "",
   destination_country: "",
   stage_of_application: "Started" as Stage,
   is_semi_finalist: false,
@@ -203,6 +206,7 @@ export function ApplicationsTable({
         (a) =>
           (a.student?.full_name ?? "").toLowerCase().includes(q) ||
           (a.fellowship?.fellowship_name ?? "").toLowerCase().includes(q) ||
+          String(a.application_year ?? "").includes(q) ||
           (a.destination_country ?? "").toLowerCase().includes(q) ||
           a.stage_of_application.toLowerCase().includes(q)
       );
@@ -220,6 +224,9 @@ export function ApplicationsTable({
 
     if (!f.student_id) errors.student_id = "Student is required.";
     if (!f.fellowship_id) errors.fellowship_id = "Fellowship is required.";
+    if (!f.application_year || !/^\d{4}$/.test(f.application_year)) {
+      errors.application_year = "Application year is required and must be a 4-digit year.";
+    }
     if (!f.stage_of_application)
       errors.stage_of_application = "Stage is required.";
 
@@ -245,11 +252,12 @@ export function ApplicationsTable({
         .insert({
           student_id: Number(form.student_id),
           fellowship_id: Number(form.fellowship_id),
+          application_year: Number(form.application_year),
           destination_country: form.destination_country || null,
           stage_of_application: form.stage_of_application,
           is_semi_finalist: form.is_semi_finalist,
           is_finalist: form.is_finalist,
-        })
+        } as Database["public"]["Tables"]["application"]["Insert"])
         .select(
           `*, student(full_name), fellowship(fellowship_name)`
         )
@@ -275,6 +283,7 @@ export function ApplicationsTable({
     setForm({
       student_id: String(app.student_id),
       fellowship_id: String(app.fellowship_id),
+      application_year: app.application_year ? String(app.application_year) : "",
       destination_country: app.destination_country ?? "",
       stage_of_application: app.stage_of_application as Stage,
       is_semi_finalist: app.is_semi_finalist,
@@ -297,11 +306,12 @@ export function ApplicationsTable({
         .update({
           student_id: Number(form.student_id),
           fellowship_id: Number(form.fellowship_id),
+          application_year: Number(form.application_year),
           destination_country: form.destination_country || null,
           stage_of_application: form.stage_of_application,
           is_semi_finalist: form.is_semi_finalist,
           is_finalist: form.is_finalist,
-        })
+        } as Database["public"]["Tables"]["application"]["Update"])
         .eq("application_id", editingApp.application_id)
         .select(`*, student(full_name), fellowship(fellowship_name)`)
         .single();
@@ -462,7 +472,7 @@ export function ApplicationsTable({
                             href={`/fellowships/${app.fellowship_id}`}
                             className="hover:text-[#006747] hover:underline"
                           >
-                            {app.fellowship?.fellowship_name ?? "—"}
+                            {formatApplicationLabel(app.fellowship?.fellowship_name, app.application_year)}
                           </Link>
                         </div>
                         {app.destination_country && (
@@ -547,7 +557,7 @@ export function ApplicationsTable({
                           href={`/fellowships/${app.fellowship_id}`}
                           className="text-sm text-slate-600 hover:text-[#006747] hover:underline"
                         >
-                          {app.fellowship?.fellowship_name ?? "—"}
+                          {formatApplicationLabel(app.fellowship?.fellowship_name, app.application_year)}
                         </Link>
                       </td>
                       <td className="hidden whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4 md:table-cell">
@@ -779,6 +789,25 @@ function ApplicationForm({
         </Select>
         {formErrors.fellowship_id && (
           <p className="text-xs text-red-600">{formErrors.fellowship_id}</p>
+        )}
+      </div>
+
+      {/* Application Year */}
+      <div className="grid gap-1.5">
+        <Label htmlFor="app-year">Application Year</Label>
+        <Input
+          id="app-year"
+          type="text"
+          inputMode="numeric"
+          placeholder="e.g. 2026"
+          value={form.application_year}
+          onChange={(e) =>
+            setForm((p) => ({ ...p, application_year: e.target.value }))
+          }
+          aria-invalid={!!formErrors.application_year}
+        />
+        {formErrors.application_year && (
+          <p className="text-xs text-red-600">{formErrors.application_year}</p>
         )}
       </div>
 

@@ -39,6 +39,8 @@ export interface SeededCore {
   studentEmail: string;
   fellowshipId: number;
   applicationId: number;
+  /** Explicit application cycle seeded on the core application row. */
+  applicationYear: number;
   meetingId: number;
   attendanceId: number;
   historyId: number;
@@ -100,6 +102,10 @@ export async function seedCoreFixtures(service: SupabaseClient): Promise<SeededC
   if (fellowshipError) throw new Error(`seed fellowship: ${fellowshipError.message}`);
   const fellowshipId = fellowship.fellowship_id as number;
 
+  // Known explicit application cycle: 2026. The seed never relies on the
+  // NULL legacy default — every synthetic application row names its year.
+  const APPLICATION_YEAR = 2026;
+
   const { data: application, error: applicationError } = await service
     .from("application")
     .insert({
@@ -107,6 +113,7 @@ export async function seedCoreFixtures(service: SupabaseClient): Promise<SeededC
       fellowship_id: fellowshipId,
       destination_country: "Testland",
       stage_of_application: "Submitted",
+      application_year: APPLICATION_YEAR,
     })
     .select("application_id")
     .single();
@@ -154,6 +161,7 @@ export async function seedCoreFixtures(service: SupabaseClient): Promise<SeededC
     studentEmail,
     fellowshipId,
     applicationId,
+    applicationYear: APPLICATION_YEAR,
     meetingId,
     attendanceId,
     historyId,

@@ -17,6 +17,9 @@ export type Database = {
       advising_meeting: {
         Row: {
           advisor_id: number | null
+          application_id: number | null
+          created_at: string
+          created_by_advisor_id: number | null
           meeting_date: string
           meeting_id: number
           meeting_mode: string
@@ -26,6 +29,9 @@ export type Database = {
         }
         Insert: {
           advisor_id?: number | null
+          application_id?: number | null
+          created_at?: string
+          created_by_advisor_id?: number | null
           meeting_date: string
           meeting_id?: number
           meeting_mode: string
@@ -35,6 +41,9 @@ export type Database = {
         }
         Update: {
           advisor_id?: number | null
+          application_id?: number | null
+          created_at?: string
+          created_by_advisor_id?: number | null
           meeting_date?: string
           meeting_id?: number
           meeting_mode?: string
@@ -46,6 +55,27 @@ export type Database = {
           {
             foreignKeyName: "advising_meeting_advisor_id_fkey"
             columns: ["advisor_id"]
+            isOneToOne: false
+            referencedRelation: "advisor"
+            referencedColumns: ["advisor_id"]
+          },
+          {
+            foreignKeyName: "advising_meeting_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: false
+            referencedRelation: "application"
+            referencedColumns: ["application_id"]
+          },
+          {
+            foreignKeyName: "advising_meeting_application_student_fkey"
+            columns: ["application_id", "student_id"]
+            isOneToOne: false
+            referencedRelation: "application"
+            referencedColumns: ["application_id", "student_id"]
+          },
+          {
+            foreignKeyName: "advising_meeting_created_by_advisor_id_fkey"
+            columns: ["created_by_advisor_id"]
             isOneToOne: false
             referencedRelation: "advisor"
             referencedColumns: ["advisor_id"]
@@ -95,6 +125,7 @@ export type Database = {
       application: {
         Row: {
           application_id: number
+          application_year: number | null
           destination_country: string | null
           fellowship_id: number
           is_finalist: boolean
@@ -104,6 +135,7 @@ export type Database = {
         }
         Insert: {
           application_id?: number
+          application_year?: number | null
           destination_country?: string | null
           fellowship_id: number
           is_finalist?: boolean
@@ -113,6 +145,7 @@ export type Database = {
         }
         Update: {
           application_id?: number
+          application_year?: number | null
           destination_country?: string | null
           fellowship_id?: number
           is_finalist?: boolean

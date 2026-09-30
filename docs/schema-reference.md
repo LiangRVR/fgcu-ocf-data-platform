@@ -79,6 +79,7 @@ Tracks a student's application to one fellowship program.
 | `application_id` | integer | NO | nextval | **Primary key** |
 | `student_id` | integer | NO | | FK → `student.student_id` |
 | `fellowship_id` | integer | NO | | FK → `fellowship.fellowship_id` |
+| `application_year` | smallint | YES | | Application **cycle** (e.g. `2026`) — not a creation year and not a fellowship attribute; NULL for legacy rows whose cycle is unknown |
 | `destination_country` | varchar | YES | | |
 | `stage_of_application` | varchar | NO | | CHECK: `Started`, `Submitted`, `Under Review`, `Semi-Finalist`, `Finalist`, `Awarded`, `Rejected` |
 | `is_semi_finalist` | boolean | NO | `false` | |
@@ -87,7 +88,10 @@ Tracks a student's application to one fellowship program.
 **Business rules:**
 
 - `stage_of_application` drives the pipeline view; `is_semi_finalist` and `is_finalist` are denormalized flags for fast filtering.
-- There is no unique constraint on `(student_id, fellowship_id)` — a student may have multiple application attempts to the same fellowship across years.
+- There is no unique constraint on `(student_id, fellowship_id)` — a student may have multiple application attempts to the same fellowship across years. There is also **no** `(student_id, fellowship_id, application_year)` uniqueness rule.
+- `application_year` is the explicit application cycle. It stays `NULL` for legacy rows whose cycle is unknown — the system never infers or backfills a year. New/edited application records require an explicit four-digit year.
+- `UNIQUE (application_id, student_id)` exists solely as the target for the `advising_meeting` composite FK; it adds no new application uniqueness rule.
+- Application labels use `{fellowship_name} — {application_year}` (e.g. `Fulbright — 2027`). Unknown legacy years render as `{fellowship_name} — year unknown`, never as a guess.
 
 ---
 
@@ -99,17 +103,60 @@ Records each advising session between an advisor and a student.
 | --- | --- | --- | --- | --- |
 | `meeting_id` | integer | NO | nextval | **Primary key** |
 | `student_id` | integer | NO | | FK → `student.student_id` |
-| `advisor_id` | integer | YES | | FK → `advisor.advisor_id` |
-| `meeting_date` | date | NO | | |
+| `advisor_id` | integer | YES | | FK → `advisor.advisor_id` (the advisor who **conducted** the meeting; nullable) |
+| `application_id` | integer | YES | | FK → `application.application_id` + composite FK `(application_id, student_id)` → `application(application_id, student_id)`; NULL = General Advising |
+| `meeting_date` | date | NO | | Real session date — distinct from `created_at` |
 | `meeting_mode` | varchar | NO | | CHECK: `In-Person`, `Virtual` |
 | `no_show` | boolean | NO | `false` | Student did not attend |
 | `notes` | text | YES | | |
+| `created_at` | timestamptz | NO | `now()` | Database-authored **entry** timestamp; never a substitute for `meeting_date` |
+| `created_by_advisor_id` | integer | YES | | FK → `advisor.advisor_id`; the advisor who **entered** the record, distinct from `advisor_id` |
 
 **Business rules:**
 
+- **General Advising:** `application_id = NULL` means the session was General
+  Advising (the explicit first option in the advising form). A non-NULL value
+  must reference an `application` that belongs to the meeting's own student —
+  the composite FK `(application_id, student_id) → application(application_id,
+  student_id)` enforces this at the database boundary, so a cross-student
+  application is impossible even on a direct write. NULL columns pass both FKs.
+- **Derivation:** the fellowship shown for a meeting is derived only through
+  `advising_meeting.application_id → application.fellowship_id → fellowship`.
+  `advising_meeting` carries no `fellowship_id`, and
+  `fellowship.fellowship_name` never encodes the cycle.
+- **Labels:** known-cycle contexts render as `{fellowship_name} — {application_year}`
+  (e.g. `Fulbright — 2027`); unknown legacy cycles render as
+  `{fellowship_name} — year unknown`.
+- **`advisor_id` vs `created_by_advisor_id`:** `advisor_id` is the advisor who
+  conducted the meeting; `created_by_advisor_id` is the advisor who entered the
+  record. They are independent and can differ (e.g. notes entered the next day).
+- **`meeting_date` vs `created_at`:** `meeting_date` is the real session date;
+  `created_at` is the database-authored timestamp of when the record was entered.
 - Advisor-personalized meeting history is derived from `advising_meeting.advisor_id`.
 - The first version of `My students` is also derived from this table by grouping the current advisor's meetings by `student_id`.
 - This schema does **not** currently encode a formal advisor assignment or caseload model.
+
+**Creation-metadata trigger (migration `20260929000001`):**
+
+`set_advising_meeting_created_metadata()` (trigger `trg_advising_meeting_created_metadata`)
+is a non-RPC `SECURITY DEFINER` function with `SET search_path = ''` and
+`EXECUTE` revoked from `PUBLIC`, `anon`, and `authenticated`. It is the only
+path that writes creator attribution:
+
+- **Authenticated browser INSERT:** resolves the ACTIVE advisor whose
+  `auth_user_id = auth.uid()` and overwrites any client-supplied
+  `created_by_advisor_id` and `created_at`; a session that cannot resolve an
+  active advisor is rejected by the existing RLS INSERT policy (RLS remains the
+  authorization gate).
+- **No-auth technical INSERT** (service-role/seed, no JWT claims): retains the
+  nullable creator as supplied and stamps the DB current timestamp.
+- **UPDATE:** rejects any change to `created_at` or `created_by_advisor_id`
+  fail-closed; the column-scoped trigger (`UPDATE OF created_at,
+  created_by_advisor_id`) leaves ordinary meeting edits untouched.
+- `advisor_id` is never modified by the trigger.
+
+Indexes: `student_id`, `meeting_date`, `application_id` (single-column) and
+`(student_id, application_id)` (composite).
 
 ---
 
@@ -142,13 +189,21 @@ Records past scholarships/fellowships that a student has already received.
 
 ```text
 student (1) ──────────────────────── (N) application (N) ─── (1) fellowship
-   │                                                                │
-   │                                                                │
-   ├── (N) advising_meeting (N) ─── (1) advisor              (N) scholarship_history
-   │
+   │                                        │                          │
+   │                                        │                          │
+   │                                        └── UNIQUE (application_id,│
+   │                                            student_id)            │
+   ├── (N) advising_meeting (N) ─── (1) advisor          (N) scholarship_history
+   │        │
+   │        └── (N) application — via nullable application_id:
+   │              NULL = General Advising; composite FK
+   │              (application_id, student_id) forces the application
+   │              to belong to the meeting's student
    ├── (N) fellowship_thursday
    │
    └── (N) scholarship_history
+
+advisor (1) ─── created_by_advisor_id (nullable, the record creator) ─── (N) advising_meeting
 ```
 
 ---
@@ -161,8 +216,15 @@ student (1) ──────────────────────�
 | Primary keys | `student_id` | `id` |
 | Key types | `integer` (sequence) | `uuid` |
 | App stage field | `stage_of_application` | `status` |
+| Application cycle field | `application_year` | `year` / encoding the year in `fellowship_name` |
 | Fellowship name field | `fellowship_name` | `name` |
 | Advisor name field | `advisor_name` | `name` |
+
+## Label Format
+
+- Application contexts render as `{fellowship_name} — {application_year}` (e.g. `Fulbright — 2027`).
+- Unknown legacy cycles render as `{fellowship_name} — year unknown` — never a guessed year.
+- Advising records with `application_id = NULL` render as **General Advising**.
 
 ---
 

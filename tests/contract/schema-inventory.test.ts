@@ -19,10 +19,16 @@
  *     is stored, only a body hash;
  *   - COMPLETE – every documented catalog section is present as an array, and
  *     the key expected local-chain catalog facts hold:
- *       * six local migration-ledger rows (the exact Git chain);
+ *       * seven local migration-ledger rows (the exact Git chain);
  *       * RLS enabled on all seven operational tables;
  *       * application foreign keys keep the default NO ACTION semantics;
- *       * the advisor identity/RLS lockdown trigger and policies are present.
+ *       * the advisor identity/RLS lockdown trigger and policies are present;
+ *       * migration 20260929000001 adds the advising↔application link columns
+ *         (nullable application.application_year, nullable
+ *         advising_meeting.application_id, NOT NULL created_at default now(),
+ *         nullable created_by_advisor_id), the direct + composite application
+ *         FKs, the unique (application_id, student_id) target, and the
+ *         hardened SECURITY DEFINER creation-metadata trigger/function.
  *
  * Safety: this test writes no output files, reads no hosted values, and never
  * queries business rows — it only runs the read-only catalog SELECTs inside
@@ -51,7 +57,7 @@ const OPERATIONAL_TABLES = [
   "scholarship_history",
 ] as const;
 
-/** The exact Git migration chain recorded in the local ledger (six rows). */
+/** The exact Git migration chain recorded in the local ledger (seven rows). */
 const EXPECTED_LEDGER = [
   { version: "20260305000000", name: "initial_schema" },
   { version: "20260305000001", name: "allow_anon_read" },
@@ -59,6 +65,7 @@ const EXPECTED_LEDGER = [
   { version: "20260317000003", name: "advisor_auth" },
   { version: "20260317000004", name: "active_advisor_rls" },
   { version: "20260318000001", name: "advisor_self_activation_lockdown" },
+  { version: "20260929000001", name: "advising_application_link" },
 ] as const;
 
 /** One shared capture: read-only catalog queries against the lane database. */
@@ -120,7 +127,7 @@ describe("schema inventory packet shape (local/schema-only/complete)", () => {
 });
 
 describe("migration ledger", () => {
-  it("records exactly the six local-chain migrations", () => {
+  it("records exactly the seven local-chain migrations", () => {
     const ledger = packet.catalog.migrationLedger;
     expect(ledger).toHaveLength(EXPECTED_LEDGER.length);
     const byVersion = new Map(ledger.map((record) => [record.fields.version, record.fields.name]));
@@ -213,6 +220,126 @@ describe("foreign keys", () => {
       expect(record.fields.onDelete, `${record.identity} onDelete`).toBe("NO ACTION");
       expect(record.fields.onUpdate, `${record.identity} onUpdate`).toBe("NO ACTION");
     }
+  });
+});
+
+describe("advising↔application link columns (migration 20260929000001)", () => {
+  it("captures the application_year, application_id, and creation-metadata columns", () => {
+    const columns = packet.catalog.columns;
+    const byIdentity = new Map(columns.map((record) => [record.identity, record]));
+
+    const applicationYear = byIdentity.get("public.application.application_year");
+    expect(applicationYear, "application.application_year").toBeDefined();
+    expect(applicationYear!.fields.dataType).toBe("smallint");
+    expect(applicationYear!.fields.nullable).toBe(true);
+    // No default: legacy rows keep a truthful NULL cycle.
+    expect(applicationYear!.fields.defaultHash).toBeNull();
+
+    const applicationId = byIdentity.get("public.advising_meeting.application_id");
+    expect(applicationId, "advising_meeting.application_id").toBeDefined();
+    expect(applicationId!.fields.dataType).toBe("integer");
+    expect(applicationId!.fields.nullable).toBe(true);
+    expect(applicationId!.fields.defaultHash).toBeNull();
+
+    const createdAt = byIdentity.get("public.advising_meeting.created_at");
+    expect(createdAt, "advising_meeting.created_at").toBeDefined();
+    expect(createdAt!.fields.dataType).toBe("timestamp with time zone");
+    expect(createdAt!.fields.nullable).toBe(false);
+    // Raw defaults are hashed (schema-only): the non-null default is present.
+    expect(String(createdAt!.fields.defaultHash)).toMatch(/^[0-9a-f]{64}$/);
+
+    const createdBy = byIdentity.get("public.advising_meeting.created_by_advisor_id");
+    expect(createdBy, "advising_meeting.created_by_advisor_id").toBeDefined();
+    expect(createdBy!.fields.dataType).toBe("integer");
+    expect(createdBy!.fields.nullable).toBe(true);
+    expect(createdBy!.fields.defaultHash).toBeNull();
+  });
+});
+
+describe("advising↔application link foreign keys (migration 20260929000001)", () => {
+  it("captures the direct, composite, and creator FKs with column order", () => {
+    const fks = packet.catalog.foreignKeys;
+    const byName = new Map(fks.map((record) => [record.fields.name, record]));
+
+    const expected: Record<string, { table: string; columns: string[]; referencedTable: string; referencedColumns: string[] }> = {
+      advising_meeting_application_id_fkey: {
+        table: "advising_meeting",
+        columns: ["application_id"],
+        referencedTable: "application",
+        referencedColumns: ["application_id"],
+      },
+      advising_meeting_application_student_fkey: {
+        table: "advising_meeting",
+        columns: ["application_id", "student_id"],
+        referencedTable: "application",
+        referencedColumns: ["application_id", "student_id"],
+      },
+      advising_meeting_created_by_advisor_id_fkey: {
+        table: "advising_meeting",
+        columns: ["created_by_advisor_id"],
+        referencedTable: "advisor",
+        referencedColumns: ["advisor_id"],
+      },
+    };
+    for (const [name, value] of Object.entries(expected)) {
+      const record = byName.get(name);
+      expect(record, `FK ${name}`).toBeDefined();
+      expect(record!.fields.table, `${name} table`).toBe(value.table);
+      expect(record!.fields.columns, `${name} columns`).toEqual(value.columns);
+      expect(record!.fields.referencedTable, `${name} referenced table`).toBe(value.referencedTable);
+      expect(record!.fields.referencedColumns, `${name} referenced columns`).toEqual(value.referencedColumns);
+      expect(record!.fields.onDelete, `${name} onDelete`).toBe("NO ACTION");
+      expect(record!.fields.onUpdate, `${name} onUpdate`).toBe("NO ACTION");
+    }
+  });
+
+  it("captures the application UNIQUE (application_id, student_id) key", () => {
+    const constraints = packet.catalog.constraints;
+    const unique = constraints.find(
+      (record) => record.identity === "public.application.application_application_id_student_id_key"
+    );
+    expect(unique, "application_application_id_student_id_key constraint").toBeDefined();
+    expect(unique!.fields.type).toBe("UNIQUE");
+    expect(String(unique!.fields.definitionHash)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("captures the advising application indexes", () => {
+    const indexes = packet.catalog.indexes.map((record) => record.identity);
+    expect(indexes).toContain("public.advising_meeting.idx_advising_meeting_application");
+    expect(indexes).toContain("public.advising_meeting.idx_advising_meeting_student_application");
+    // The unique constraint's backing index is captured too.
+    expect(indexes).toContain("public.application.application_application_id_student_id_key");
+  });
+});
+
+describe("advising_meeting creation-metadata trigger/function (migration 20260929000001)", () => {
+  it("records the metadata trigger on public.advising_meeting", () => {
+    const trigger = packet.catalog.triggers.find(
+      (record) => record.fields.name === "trg_advising_meeting_created_metadata"
+    );
+    expect(trigger, "creation-metadata trigger").toBeDefined();
+    expect(trigger!.fields.table).toBe("advising_meeting");
+    expect(String(trigger!.fields.function)).toContain("set_advising_meeting_created_metadata");
+    expect(trigger!.fields.state).toBe("O");
+    expect(String(trigger!.fields.timing)).toBe("ROW");
+    expect(trigger!.fields.events).toContain("INSERT");
+    expect(trigger!.fields.events).toContain("UPDATE");
+    expect(String(trigger!.fields.definitionHash)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("records the metadata function as SECURITY DEFINER with empty search_path and a non-empty ACL", () => {
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "set_advising_meeting_created_metadata"
+    );
+    expect(fn, "metadata function").toBeDefined();
+    expect(fn!.fields.securityMode).toBe("DEFINER");
+    // Empty search_path is the hardened configuration (`SET search_path = ''`).
+    expect(fn!.fields.searchPath).toEqual([]);
+    expect(String(fn!.fields.bodyHash)).toMatch(/^[0-9a-f]{64}$/);
+    // Non-empty effective ACL: PUBLIC/anon/authenticated EXECUTE revoked,
+    // service_role EXECUTE pins the ACL non-empty (never an empty fallback).
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "metadata function must carry an effective ACL").toBe(true);
   });
 });
 

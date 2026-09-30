@@ -30,6 +30,7 @@ interface Props {
 type Application = Database["public"]["Tables"]["application"]["Row"] & {
   student: { full_name: string } | null;
   fellowship: { fellowship_name: string } | null;
+  application_year: number | null;
 };
 
 type StudentRow = Pick<

@@ -2,7 +2,7 @@
   "name": "ocf-fellowship-management-system",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "pnpm@10.34.5",
+  "packageManager": "pnpm@12.6.0",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -65,10 +65,5 @@
     "tsx": "^4.21.0",
     "typescript": "^5",
     "vitest": "^5.0.2"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "supabase"
-    ]
   }
 }

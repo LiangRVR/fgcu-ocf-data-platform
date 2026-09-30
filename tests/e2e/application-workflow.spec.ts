@@ -24,6 +24,10 @@ function requireEnv(name: string): string {
 const ACTIVE_EMAIL = requireEnv("E2E_ACTIVE_EMAIL");
 const ACTIVE_PASSWORD = requireEnv("E2E_ACTIVE_PASSWORD");
 const STUDENT_NAME = requireEnv("E2E_STUDENT_NAME");
+const STUDENT_TWO_NAME = requireEnv("E2E_STUDENT_TWO_NAME");
+const FELLOWSHIP_TWO_NAME = requireEnv("E2E_FELLOWSHIP_TWO_NAME");
+const CYCLE_YEAR_OLD = requireEnv("E2E_CYCLE_YEAR_OLD");
+const CYCLE_YEAR_NEW = requireEnv("E2E_CYCLE_YEAR_NEW");
 
 let counter = 0;
 
@@ -127,5 +131,64 @@ test.describe("application workflow", () => {
     const revertedRowAfterReload = page.locator("table tbody tr", { hasText: STUDENT_NAME });
     await expect(revertedRowAfterReload).toContainText("Submitted");
     await expect(revertedRowAfterReload.getByText("Yes", { exact: true })).toHaveCount(0);
+  });
+
+  test("the seeded same-fellowship pair renders distinct cycle labels across different years", async ({ page }) => {
+    await signInAsActive(page);
+
+    // The seed creates TWO applications for the second student on the SAME
+    // fellowship (E2E_FELLOWSHIP_TWO_NAME) with EXPLICIT different cycles
+    // (CYCLE_YEAR_OLD / CYCLE_YEAR_NEW). They must render as two distinct
+    // "{fellowship} — {year}" labels — never collapse into one bare name.
+    const oldLabel = `${FELLOWSHIP_TWO_NAME} — ${CYCLE_YEAR_OLD}`;
+    const newLabel = `${FELLOWSHIP_TWO_NAME} — ${CYCLE_YEAR_NEW}`;
+    expect(oldLabel).not.toBe(newLabel);
+
+    await page.goto("/applications");
+
+    const oldRow = page.locator("table tbody tr", { hasText: oldLabel });
+    const newRow = page.locator("table tbody tr", { hasText: newLabel });
+    await expect(oldRow).toBeVisible();
+    await expect(newRow).toBeVisible();
+
+    // Exactly one row per cycle label, and both belong to the second student.
+    await expect(page.locator("table tbody tr", { hasText: FELLOWSHIP_TWO_NAME })).toHaveCount(2);
+    await expect(oldRow).toContainText(STUDENT_TWO_NAME);
+    await expect(newRow).toContainText(STUDENT_TWO_NAME);
+  });
+
+  test("an advisor can create an application with an explicit application year and the cycle label persists across a reload", async ({ page }) => {
+    await signInAsActive(page);
+
+    const createdYear = "2024";
+    const createdLabel = `${FELLOWSHIP_TWO_NAME} — ${createdYear}`;
+
+    await page.goto("/applications");
+    await page.getByRole("button", { name: "New Application" }).click();
+
+    await page.locator("#app-student").click();
+    await page.getByRole("option", { name: STUDENT_TWO_NAME, exact: true }).click();
+    await page.locator("#app-fellowship").click();
+    await page.getByRole("option", { name: FELLOWSHIP_TWO_NAME, exact: true }).click();
+    await page.locator("#app-year").fill(createdYear);
+    await page.locator("#app-country").fill(`E2E cycle ${Date.now()}`);
+
+    await page.getByRole("dialog").getByRole("button", { name: "Create Application" }).click();
+
+    // The new row renders the cycle-aware label (fellowship + year).
+    const row = page.locator("table tbody tr", { hasText: createdLabel });
+    await expect(row).toBeVisible();
+    await expect(row).toContainText(STUDENT_TWO_NAME);
+
+    // Reload → the explicit application year persists server-side.
+    await page.reload();
+    const rowAfterReload = page.locator("table tbody tr", { hasText: createdLabel });
+    await expect(rowAfterReload).toBeVisible();
+
+    // Clean up the created application so the reports spec's exact totals keep
+    // deriving from the seed export alone.
+    await rowAfterReload.getByTitle("Delete application").click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Delete" }).click();
+    await expect(page.locator("table tbody tr", { hasText: createdLabel })).toHaveCount(0);
   });
 });

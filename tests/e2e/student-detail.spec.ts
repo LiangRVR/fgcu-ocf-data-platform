@@ -31,6 +31,7 @@ const ACTIVE_EMAIL = requireEnv("E2E_ACTIVE_EMAIL");
 const ACTIVE_PASSWORD = requireEnv("E2E_ACTIVE_PASSWORD");
 const STUDENT_NAME = requireEnv("E2E_STUDENT_NAME");
 const FELLOWSHIP_NAME = requireEnv("E2E_FELLOWSHIP_NAME");
+const APPLICATION_YEAR = requireEnv("E2E_APPLICATION_YEAR");
 
 async function signInAsActive(page: Page): Promise<void> {
   await page.goto("/login");
@@ -67,8 +68,14 @@ test.describe("student detail workflow", () => {
     await expect(main.getByText("Advising Meetings").first()).toBeVisible();
     await expect(main.getByText("Scholarship History").first()).toBeVisible();
     // The seeded application row links the fellowship the student applied to.
+    // The link's accessible name is the CYCLE-AWARE label — the seeded
+    // application carries an explicit year (E2E_APPLICATION_YEAR), so the bare
+    // fellowship name alone no longer matches it.
     await expect(
-      page.getByRole("link", { name: FELLOWSHIP_NAME, exact: true }).filter({ visible: true }).first(),
+      page
+        .getByRole("link", { name: `${FELLOWSHIP_NAME} — ${APPLICATION_YEAR}`, exact: true })
+        .filter({ visible: true })
+        .first(),
     ).toBeVisible();
 
     // History navigation: the scholarship-history badge (the only fellowship

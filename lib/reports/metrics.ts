@@ -1,5 +1,7 @@
 // ── constants ─────────────────────────────────────────────────────────────────
 
+import { formatApplicationLabel } from "@/lib/applications/pipeline";
+
 export const STAGE_ORDER = [
   "Started",
   "Submitted",
@@ -24,6 +26,7 @@ export const CLASS_ORDER = [
 export type ReportApplicationRow = {
   student_id: number;
   fellowship_id: number;
+  application_year?: number | null;
   stage_of_application: string;
   is_finalist: boolean;
   is_semi_finalist: boolean;
@@ -122,22 +125,25 @@ export function computeReportMetrics(
     }
   }
 
-  // ── Report 2: Finalists & Awarded by Fellowship ───────────────────────────
+  // ── Report 2: Finalists & Awarded by Fellowship + Application Year ────────
+  // Group by fellowship AND application year so cycles are never merged.
   const fellowshipMap = new Map<
-    number,
-    { name: string; total: number; semiFinalists: number; finalists: number; awarded: number }
+    string,
+    { id: number; name: string; total: number; semiFinalists: number; finalists: number; awarded: number }
   >();
   for (const a of applications) {
-    const name = a.fellowship?.fellowship_name ?? `Fellowship ${a.fellowship_id}`;
-    const rec = fellowshipMap.get(a.fellowship_id) ?? { name, total: 0, semiFinalists: 0, finalists: 0, awarded: 0 };
+    const baseName = a.fellowship?.fellowship_name ?? `Fellowship ${a.fellowship_id}`;
+    const year = a.application_year ?? null;
+    const key = `${a.fellowship_id}:${year ?? "unknown"}`;
+    const name = formatApplicationLabel(baseName, year);
+    const rec = fellowshipMap.get(key) ?? { id: a.fellowship_id, name, total: 0, semiFinalists: 0, finalists: 0, awarded: 0 };
     rec.total += 1;
     if (a.is_semi_finalist || a.stage_of_application === "Semi-Finalist") rec.semiFinalists += 1;
     if (a.is_finalist || a.stage_of_application === "Finalist") rec.finalists += 1;
     if (a.stage_of_application === "Awarded") rec.awarded += 1;
-    fellowshipMap.set(a.fellowship_id, rec);
+    fellowshipMap.set(key, rec);
   }
-  const fellowshipsByFinalists: FellowshipSummary[] = [...fellowshipMap.entries()]
-    .map(([id, v]) => ({ id, ...v }))
+  const fellowshipsByFinalists: FellowshipSummary[] = [...fellowshipMap.values()]
     .sort((a, b) => b.finalists - a.finalists || b.awarded - a.awarded)
     .slice(0, 15);
 

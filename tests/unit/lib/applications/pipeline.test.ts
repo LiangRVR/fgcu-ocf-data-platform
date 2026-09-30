@@ -4,6 +4,7 @@ import {
   type Stage,
   deriveFlags,
   validateConsistency,
+  formatApplicationLabel,
 } from "@/lib/applications/pipeline";
 
 describe("STAGES", () => {
@@ -145,5 +146,51 @@ describe("validateConsistency", () => {
     expect(validateConsistency("Awarded", true, false)).toBe(
       'Stage is "Awarded" but the Finalist flag is not checked.'
     );
+  });
+});
+
+describe("formatApplicationLabel", () => {
+  it("renders a cycle-aware label for a known fellowship and year", () => {
+    expect(formatApplicationLabel("Fulbright", 2026)).toBe("Fulbright — 2026");
+  });
+
+  it("renders DISTINCT labels for the same fellowship across different cycle years", () => {
+    // The core same-fellowship-different-cycles requirement: two applications
+    // for one fellowship must never collapse into one label.
+    const oldCycle = formatApplicationLabel("Fulbright", 2025);
+    const newCycle = formatApplicationLabel("Fulbright", 2026);
+    expect(oldCycle).toBe("Fulbright — 2025");
+    expect(newCycle).toBe("Fulbright — 2026");
+    expect(oldCycle).not.toBe(newCycle);
+  });
+
+  it("accepts a string year and formats it identically to a numeric year", () => {
+    expect(formatApplicationLabel("Fulbright", "2026")).toBe("Fulbright — 2026");
+    expect(formatApplicationLabel("Fulbright", "2026")).toBe(
+      formatApplicationLabel("Fulbright", 2026)
+    );
+  });
+
+  it("never guesses a legacy null year: renders 'year unknown'", () => {
+    // Historic rows keep application_year NULL; the label must stay truthful.
+    expect(formatApplicationLabel("Fulbright", null)).toBe("Fulbright — year unknown");
+    expect(formatApplicationLabel("Fulbright", undefined)).toBe("Fulbright — year unknown");
+  });
+
+  it("renders 'Unknown fellowship — <year>' when only the year is known", () => {
+    expect(formatApplicationLabel(null, 2026)).toBe("Unknown fellowship — 2026");
+    expect(formatApplicationLabel(undefined, 2026)).toBe("Unknown fellowship — 2026");
+  });
+
+  it("renders 'Unknown application' when neither fellowship nor year is known", () => {
+    expect(formatApplicationLabel(null, null)).toBe("Unknown application");
+    expect(formatApplicationLabel(undefined, undefined)).toBe("Unknown application");
+    expect(formatApplicationLabel("", "")).toBe("Unknown application");
+  });
+
+  it("treats a falsy year (0) as unknown rather than rendering '— 0'", () => {
+    // A SMALLINT cycle of 0 is not a meaningful cycle; the label must fall back
+    // to the unknown-year wording instead of printing a misleading "— 0".
+    expect(formatApplicationLabel("Fulbright", 0)).toBe("Fulbright — year unknown");
   });
 });

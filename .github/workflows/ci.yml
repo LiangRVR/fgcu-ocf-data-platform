@@ -31,8 +31,8 @@ jobs:
       - name: Enable pnpm via Corepack
         run: corepack enable pnpm
 
-      - name: Activate pinned pnpm (pnpm@10.34.5)
-        run: corepack prepare pnpm@10.34.5 --activate
+      - name: Activate pinned pnpm (pnpm@12.6.0)
+        run: corepack prepare pnpm@12.6.0 --activate
 
       # pnpm is provisioned/activated above BEFORE the pnpm store cache is
       # restored below, so the cache is always keyed by the pinned version
@@ -68,8 +68,8 @@ jobs:
       - name: Enable pnpm via Corepack
         run: corepack enable pnpm
 
-      - name: Activate pinned pnpm (pnpm@10.34.5)
-        run: corepack prepare pnpm@10.34.5 --activate
+      - name: Activate pinned pnpm (pnpm@12.6.0)
+        run: corepack prepare pnpm@12.6.0 --activate
 
       # pnpm is provisioned/activated above BEFORE the pnpm store cache is
       # restored below, so the cache is always keyed by the pinned version
@@ -112,8 +112,8 @@ jobs:
       - name: Enable pnpm via Corepack
         run: corepack enable pnpm
 
-      - name: Activate pinned pnpm (pnpm@10.34.5)
-        run: corepack prepare pnpm@10.34.5 --activate
+      - name: Activate pinned pnpm (pnpm@12.6.0)
+        run: corepack prepare pnpm@12.6.0 --activate
 
       # pnpm is provisioned/activated above BEFORE the pnpm store cache is
       # restored below, so the cache is always keyed by the pinned version
@@ -147,8 +147,8 @@ jobs:
       - name: Enable pnpm via Corepack
         run: corepack enable pnpm
 
-      - name: Activate pinned pnpm (pnpm@10.34.5)
-        run: corepack prepare pnpm@10.34.5 --activate
+      - name: Activate pinned pnpm (pnpm@12.6.0)
+        run: corepack prepare pnpm@12.6.0 --activate
 
       # pnpm is provisioned/activated above BEFORE the pnpm store cache is
       # restored below, so the cache is always keyed by the pinned version

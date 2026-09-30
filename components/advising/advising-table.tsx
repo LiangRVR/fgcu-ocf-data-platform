@@ -41,13 +41,22 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Search, Pencil, Trash2, CalendarPlus, Calendar, MoreHorizontal, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
 import type { Database } from "@/types/database";
+import { formatApplicationLabel } from "@/lib/applications/pipeline";
 
 type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
   student: { full_name: string } | null;
   advisor: { advisor_name: string } | null;
+  application_id: number | null;
+  application: {
+    application_id: number;
+    application_year: number | null;
+    fellowship_id: number;
+    fellowship: { fellowship_name: string } | null;
+  } | null;
 };
 
 type StudentRow = Pick<
@@ -60,13 +69,34 @@ type AdvisorRow = Pick<
   "advisor_id" | "advisor_name"
 >;
 
+type ApplicationOption = {
+  application_id: number;
+  student_id: number;
+  application_year: number | null;
+  fellowship: { fellowship_name: string } | null;
+};
+
 const MEETING_MODES = ["In-Person", "Virtual"] as const;
 type MeetingMode = (typeof MEETING_MODES)[number];
+
+const APPLICATION_FK_CONSTRAINTS = [
+  "advising_meeting_application_id_fkey",
+  "advising_meeting_application_student_fkey",
+];
+
+function isApplicationForeignKeyViolation(err: unknown): boolean {
+  if (typeof err !== "object" || err === null || !("code" in err)) return false;
+  const e = err as { code: string; message?: string; details?: string };
+  if (e.code !== "23503") return false;
+  const text = `${e.message ?? ""} ${e.details ?? ""}`;
+  return APPLICATION_FK_CONSTRAINTS.some((name) => text.includes(name));
+}
 
 interface AdvisingTableProps {
   initialMeetings: AdvisingMeeting[];
   students: StudentRow[];
   advisors: AdvisorRow[];
+  applications: ApplicationOption[];
   currentAdvisorId: number;
   defaultStudentId?: string;
   defaultAdvisorId?: string;
@@ -74,9 +104,12 @@ interface AdvisingTableProps {
   initialNoShowFilter?: string;
 }
 
+const GENERAL_ADVISING_VALUE = "general";
+
 const EMPTY_FORM = {
   student_id: "",
   advisor_id: "",
+  application_id: GENERAL_ADVISING_VALUE,
   meeting_date: "",
   meeting_mode: "In-Person" as MeetingMode,
   no_show: false,
@@ -87,12 +120,14 @@ export function AdvisingTable({
   initialMeetings,
   students,
   advisors,
+  applications,
   currentAdvisorId,
   defaultStudentId,
   defaultAdvisorId,
   autoOpenAdd,
   initialNoShowFilter,
 }: AdvisingTableProps) {
+  const router = useRouter();
   const [meetings, setMeetings] = useState<AdvisingMeeting[]>(initialMeetings);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -137,7 +172,14 @@ export function AdvisingTable({
           (m.student?.full_name ?? "").toLowerCase().includes(q) ||
           (m.advisor?.advisor_name ?? "").toLowerCase().includes(q) ||
           (m.notes ?? "").toLowerCase().includes(q) ||
-          m.meeting_mode.toLowerCase().includes(q)
+          m.meeting_mode.toLowerCase().includes(q) ||
+          (m.application_id == null
+            ? "general advising"
+            : formatApplicationLabel(
+                m.application?.fellowship?.fellowship_name,
+                m.application?.application_year
+              )
+          ).toLowerCase().includes(q)
       );
     }
 
@@ -159,6 +201,15 @@ export function AdvisingTable({
     if (!f.student_id) errors.student_id = "Student is required.";
     if (!f.meeting_date) errors.meeting_date = "Meeting date is required.";
     if (!f.meeting_mode) errors.meeting_mode = "Meeting mode is required.";
+
+    if (f.student_id && f.application_id !== GENERAL_ADVISING_VALUE) {
+      const allowed = applications
+        .filter((a) => String(a.student_id) === f.student_id)
+        .map((a) => String(a.application_id));
+      if (!allowed.includes(f.application_id)) {
+        errors.application_id = "Selected application is not valid for this student.";
+      }
+    }
     return errors;
   };
 
@@ -167,6 +218,11 @@ export function AdvisingTable({
     setFormErrors(errors);
     if (Object.keys(errors).length > 0) return;
 
+    const applicationId =
+      form.application_id === GENERAL_ADVISING_VALUE
+        ? null
+        : Number(form.application_id);
+
     setIsLoading(true);
     try {
       const { data, error } = await supabaseBrowserClient
@@ -174,12 +230,13 @@ export function AdvisingTable({
         .insert({
           student_id: Number(form.student_id),
           advisor_id: form.advisor_id ? Number(form.advisor_id) : null,
+          application_id: applicationId,
           meeting_date: form.meeting_date,
           meeting_mode: form.meeting_mode,
           no_show: form.no_show,
           notes: form.notes || null,
-        })
-        .select(`*, student(full_name), advisor(advisor_name)`)
+        } as Database["public"]["Tables"]["advising_meeting"]["Insert"])
+        .select(`*, student(full_name), advisor!advising_meeting_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))`)
         .single();
 
       if (error) throw error;
@@ -191,7 +248,13 @@ export function AdvisingTable({
       setFormErrors({});
     } catch (err) {
       console.error(err);
-      toast.error("Failed to create meeting.");
+      if (isApplicationForeignKeyViolation(err)) {
+        toast.error("Selected application is no longer valid for this student. Reset to General Advising.");
+        setForm((prev) => ({ ...prev, application_id: GENERAL_ADVISING_VALUE }));
+        router.refresh();
+      } else {
+        toast.error("Failed to create meeting.");
+      }
     } finally {
       setIsLoading(false);
     }
@@ -202,6 +265,10 @@ export function AdvisingTable({
     setForm({
       student_id: String(meeting.student_id),
       advisor_id: meeting.advisor_id ? String(meeting.advisor_id) : "",
+      application_id:
+        meeting.application_id == null
+          ? GENERAL_ADVISING_VALUE
+          : String(meeting.application_id),
       meeting_date: meeting.meeting_date,
       meeting_mode: meeting.meeting_mode as MeetingMode,
       no_show: meeting.no_show,
@@ -217,6 +284,11 @@ export function AdvisingTable({
     setFormErrors(errors);
     if (Object.keys(errors).length > 0) return;
 
+    const applicationId =
+      form.application_id === GENERAL_ADVISING_VALUE
+        ? null
+        : Number(form.application_id);
+
     setIsLoading(true);
     try {
       const { data, error } = await supabaseBrowserClient
@@ -224,13 +296,14 @@ export function AdvisingTable({
         .update({
           student_id: Number(form.student_id),
           advisor_id: form.advisor_id ? Number(form.advisor_id) : null,
+          application_id: applicationId,
           meeting_date: form.meeting_date,
           meeting_mode: form.meeting_mode,
           no_show: form.no_show,
           notes: form.notes || null,
-        })
+        } as Database["public"]["Tables"]["advising_meeting"]["Update"])
         .eq("meeting_id", editingMeeting.meeting_id)
-        .select(`*, student(full_name), advisor(advisor_name)`)
+        .select(`*, student(full_name), advisor!advising_meeting_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))`)
         .single();
 
       if (error) throw error;
@@ -247,7 +320,13 @@ export function AdvisingTable({
       setFormErrors({});
     } catch (err) {
       console.error(err);
-      toast.error("Failed to update meeting.");
+      if (isApplicationForeignKeyViolation(err)) {
+        toast.error("Selected application is no longer valid for this student. Reset to General Advising.");
+        setForm((prev) => ({ ...prev, application_id: GENERAL_ADVISING_VALUE }));
+        router.refresh();
+      } else {
+        toast.error("Failed to update meeting.");
+      }
     } finally {
       setIsLoading(false);
     }
@@ -404,6 +483,18 @@ export function AdvisingTable({
                           {meeting.student?.full_name ?? "—"}
                         </Link>
                         <div className="mt-0.5 text-sm text-slate-500">
+                          {meeting.application_id == null ? (
+                            <span className="text-slate-500">General Advising</span>
+                          ) : (
+                            <span className="text-slate-600">
+                              {formatApplicationLabel(
+                                meeting.application?.fellowship?.fellowship_name,
+                                meeting.application?.application_year
+                              )}
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-0.5 text-sm text-slate-500">
                           {new Date(meeting.meeting_date + "T00:00:00").toLocaleDateString(
                             "en-US",
                             { year: "numeric", month: "short", day: "numeric" }
@@ -473,6 +564,9 @@ export function AdvisingTable({
                       Student
                     </th>
                     <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 md:table-cell">
+                      Context
+                    </th>
+                    <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 md:table-cell">
                       Advisor
                     </th>
                     <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
@@ -505,6 +599,18 @@ export function AdvisingTable({
                         >
                           {meeting.student?.full_name ?? "—"}
                         </Link>
+                      </td>
+                      <td className="hidden whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4 md:table-cell">
+                        {meeting.application_id == null ? (
+                          <span className="text-sm text-slate-500">General Advising</span>
+                        ) : (
+                          <span className="text-sm text-slate-600">
+                            {formatApplicationLabel(
+                              meeting.application?.fellowship?.fellowship_name,
+                              meeting.application?.application_year
+                            )}
+                          </span>
+                        )}
                       </td>
                       <td className="hidden whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4 md:table-cell">
                         {meeting.advisor_id ? (
@@ -603,6 +709,7 @@ export function AdvisingTable({
             formErrors={formErrors}
             students={students}
             advisors={advisors}
+            applications={applications}
           />
 
           <DialogFooter>
@@ -636,6 +743,7 @@ export function AdvisingTable({
             formErrors={formErrors}
             students={students}
             advisors={advisors}
+            applications={applications}
           />
 
           <DialogFooter>
@@ -686,9 +794,10 @@ interface MeetingFormProps {
   formErrors: Record<string, string>;
   students: StudentRow[];
   advisors: AdvisorRow[];
+  applications: ApplicationOption[];
 }
 
-function MeetingForm({ form, setForm, formErrors, students, advisors }: MeetingFormProps) {
+function MeetingForm({ form, setForm, formErrors, students, advisors, applications }: MeetingFormProps) {
   return (
     <div className="grid gap-4 py-2">
       {/* Student */}
@@ -698,7 +807,13 @@ function MeetingForm({ form, setForm, formErrors, students, advisors }: MeetingF
         </Label>
         <Select
           value={form.student_id}
-          onValueChange={(v) => setForm((prev) => ({ ...prev, student_id: v }))}
+          onValueChange={(v) =>
+            setForm((prev) => ({
+              ...prev,
+              student_id: v,
+              application_id: GENERAL_ADVISING_VALUE,
+            }))
+          }
         >
           <SelectTrigger id="student_id" className={formErrors.student_id ? "border-red-500" : ""}>
             <SelectValue placeholder="Select a student…" />
@@ -713,6 +828,36 @@ function MeetingForm({ form, setForm, formErrors, students, advisors }: MeetingF
         </Select>
         {formErrors.student_id && (
           <p className="text-xs text-red-500">{formErrors.student_id}</p>
+        )}
+      </div>
+
+      {/* Application (depends on selected student) */}
+      <div className="grid gap-1.5">
+        <Label htmlFor="application_id">Application</Label>
+        <Select
+          value={form.application_id}
+          onValueChange={(v) => setForm((prev) => ({ ...prev, application_id: v }))}
+          disabled={!form.student_id}
+        >
+          <SelectTrigger
+            id="application_id"
+            className={formErrors.application_id ? "border-red-500" : ""}
+          >
+            <SelectValue placeholder="Select a student first…" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={GENERAL_ADVISING_VALUE}>General Advising</SelectItem>
+            {applications
+              .filter((a) => String(a.student_id) === form.student_id)
+              .map((a) => (
+                <SelectItem key={a.application_id} value={String(a.application_id)}>
+                  {formatApplicationLabel(a.fellowship?.fellowship_name, a.application_year)}
+                </SelectItem>
+              ))}
+          </SelectContent>
+        </Select>
+        {formErrors.application_id && (
+          <p className="text-xs text-red-500">{formErrors.application_id}</p>
         )}
       </div>
 

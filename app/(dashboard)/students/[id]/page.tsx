@@ -32,13 +32,22 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { EntityHeader } from "@/components/ui/entity-header";
 import { MetricBadge } from "@/components/ui/metric-badge";
 import { formatDate } from "@/lib/utils/format";
+import { formatApplicationLabel } from "@/lib/applications/pipeline";
 
 type Student = Database["public"]["Tables"]["student"]["Row"];
 type Application = Database["public"]["Tables"]["application"]["Row"] & {
   fellowship: { fellowship_name: string } | null;
+  application_year: number | null;
 };
 type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
   advisor: { advisor_name: string } | null;
+  application_id: number | null;
+  application: {
+    application_id: number;
+    application_year: number | null;
+    fellowship_id: number;
+    fellowship: { fellowship_name: string } | null;
+  } | null;
 };
 type FellowshipThursday = Database["public"]["Tables"]["fellowship_thursday"]["Row"];
 type ScholarshipHistory = Database["public"]["Tables"]["scholarship_history"]["Row"] & {
@@ -98,7 +107,7 @@ async function getAdvisingMeetings(studentId: number): Promise<AdvisingMeeting[]
   try {
     const { data, error } = await supabase
       .from("advising_meeting")
-      .select("*, advisor(advisor_name)")
+      .select("*, advisor!advising_meeting_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))")
       .eq("student_id", studentId)
       .order("meeting_date", { ascending: false });
     if (error) return [];
@@ -179,7 +188,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
       id: `application-${a.application_id}`,
       kind: "application" as const,
       date: "",
-      title: a.fellowship?.fellowship_name ?? `Fellowship #${a.fellowship_id}`,
+      title: formatApplicationLabel(a.fellowship?.fellowship_name, a.application_year),
       description: [a.stage_of_application, a.destination_country].filter(Boolean).join(" · "),
       href: `/fellowships/${a.fellowship_id}`,
       badge: "Application",
@@ -308,7 +317,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                           className="min-w-0 text-sm font-semibold text-slate-900 hover:text-primary hover:underline"
                         >
                           <span className="line-clamp-2">
-                            {app.fellowship?.fellowship_name ?? `Fellowship #${app.fellowship_id}`}
+                            {formatApplicationLabel(app.fellowship?.fellowship_name, app.application_year)}
                           </span>
                         </Link>
                         <MetricBadge tone="slate">{app.stage_of_application || "Pending"}</MetricBadge>
@@ -347,7 +356,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                             href={`/fellowships/${app.fellowship_id}`}
                             className="text-slate-900 hover:text-[#006747] hover:underline"
                           >
-                            {app.fellowship?.fellowship_name ?? `Fellowship #${app.fellowship_id}`}
+                            {formatApplicationLabel(app.fellowship?.fellowship_name, app.application_year)}
                           </Link>
                         </td>
                         <td className="py-3 pr-4 text-slate-700">
@@ -438,6 +447,14 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                           {meeting.no_show ? "No-Show" : "Attended"}
                         </MetricBadge>
                       </div>
+                      <div className="mt-2 text-sm text-slate-600">
+                        {meeting.application_id == null
+                          ? "General Advising"
+                          : formatApplicationLabel(
+                              meeting.application?.fellowship?.fellowship_name,
+                              meeting.application?.application_year
+                            )}
+                      </div>
                       <div className="mt-3 flex flex-wrap gap-2">
                         <MetricBadge tone={meeting.meeting_mode === "Virtual" ? "blue" : "slate"}>
                           {meeting.meeting_mode}
@@ -463,6 +480,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                     <tr className="border-b border-gray-100">
                       <th className="pb-3 text-left font-medium text-slate-500">Date</th>
                       <th className="hidden pb-3 text-left font-medium text-slate-500 sm:table-cell">Mode</th>
+                      <th className="hidden pb-3 text-left font-medium text-slate-500 md:table-cell">Context</th>
                       <th className="hidden pb-3 text-left font-medium text-slate-500 md:table-cell">Advisor</th>
                       <th className="pb-3 text-left font-medium text-slate-500">No-Show</th>
                       <th className="hidden pb-3 text-left font-medium text-slate-500 lg:table-cell">Notes</th>
@@ -480,6 +498,14 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                         </td>
                         <td className="hidden py-3 pr-4 text-slate-700 sm:table-cell">
                           {meeting.meeting_mode}
+                        </td>
+                        <td className="hidden py-3 pr-4 md:table-cell">
+                          {meeting.application_id == null
+                            ? "General Advising"
+                            : formatApplicationLabel(
+                                meeting.application?.fellowship?.fellowship_name,
+                                meeting.application?.application_year
+                              )}
                         </td>
                         <td className="hidden py-3 pr-4 md:table-cell">
                           {meeting.advisor_id ? (

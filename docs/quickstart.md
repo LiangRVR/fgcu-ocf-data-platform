@@ -17,6 +17,7 @@
   - `supabase/migrations/20260317000003_advisor_auth.sql` — extends `public.advisor` for auth linkage and active status
   - `supabase/migrations/20260317000004_active_advisor_rls.sql` — removes anon access and enables active-advisor RLS
   - `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` — removes the email self-link escalation path and adds the one-time-bind guard
+  - `supabase/migrations/20260929000001_advising_application_link.sql` — forward-only: adds the application cycle (`application.application_year`), the nullable advising↔application link with direct + composite same-student FKs, creation metadata and trigger, and advising indexes
 - Documented in `docs/schema-reference.md` and `supabase/SCHEMA.md`
 
 ### ✅ Live Data and Auth Features
@@ -80,9 +81,10 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 5. Run `supabase/migrations/20260317000003_advisor_auth.sql`.
 6. Backfill the real FGCU advisor emails into `public.advisor.email`.
 7. Run `supabase/migrations/20260317000004_active_advisor_rls.sql`.
-8. **Required final step:** run `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` — removes the email self-link escalation path and adds the one-time-bind guard. It must run **after** step 7; the migration chain is not complete without it.
-9. **Only after the full migration chain is applied (steps 2–8):** provision each advisor before first sign-in via the server-only provisioning module (`lib/provisioning/*`): it invites/creates the auth account and conditionally binds the returned Auth UUID to the unbound `public.advisor` row (`auth_user_id IS NULL`); one-time bind, no email self-link.
-10. Verify the first active advisor can sign in — the pre-bound `auth_user_id` resolves their advisor row, and `is_active` is `true`.
+8. **Required final step (auth chain):** run `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` — removes the email self-link escalation path and adds the one-time-bind guard. It must run **after** step 7; the auth chain is not complete without it.
+9. Run `supabase/migrations/20260929000001_advising_application_link.sql` — forward-only: adds the application cycle, the nullable advising↔application link with direct + composite same-student FKs, creation metadata and trigger, and advising indexes. Historic NULL values are preserved.
+10. **Only after the full migration chain is applied (steps 2–9):** provision each advisor before first sign-in via the server-only provisioning module (`lib/provisioning/*`): it invites/creates the auth account and conditionally binds the returned Auth UUID to the unbound `public.advisor` row (`auth_user_id IS NULL`); one-time bind, no email self-link.
+11. Verify the first active advisor can sign in — the pre-bound `auth_user_id` resolves their advisor row, and `is_active` is `true`.
 
 #### Method B: Supabase CLI (disposable local instances only)
 
@@ -97,12 +99,12 @@ npx supabase db push
 > ⚠️ `supabase link` + `supabase db push` must **not** be run against the
 > hosted production project. The production migration ledger records only
 > `20260924065221_advisor_self_activation_lockdown`, while this repository
-> tracks six migrations and the deployed schema differs materially. Generic
+> tracks seven migrations and the deployed schema differs materially. Generic
 > `db push`, historical replay, and migration-history repair against production
 > are prohibited until a separately approved reconciliation exists. See the
 > [reconciliation runbook](../aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
 
-Migrations 2 and 3 are only bootstrap steps. After the full chain ending with `20260318000001_advisor_self_activation_lockdown.sql`, authenticated active advisors are the intended steady state.
+Migrations 2 and 3 are only bootstrap steps. After the full chain ending with `20260929000001_advising_application_link.sql`, authenticated active advisors are the intended steady state; the advising↔application link migration is additive and does not change the auth model.
 
 ### 4. Generate TypeScript Types
 
@@ -164,8 +166,8 @@ Before relying on the app day to day:
 - After the final RLS migration, this is expected for unauthenticated users or inactive advisors.
 - Confirm the advisor row is **pre-bound**: `public.advisor.auth_user_id` must already equal the sign-in user's auth UUID. Binding is admin-only and one-time; it happens before first sign-in via the server-only provisioning module, never by email match or auto-linking.
 - Confirm the advisor row has `is_active = true`.
-- Confirm the complete migration chain through `20260318000001_advisor_self_activation_lockdown.sql` was applied **before** any advisor was provisioned/pre-bound.
-- Confirm `20260318000001_advisor_self_activation_lockdown.sql` was applied after `20260317000004_active_advisor_rls.sql`.
+- Confirm the complete migration chain through `20260929000001_advising_application_link.sql` was applied **before** any advisor was provisioned/pre-bound.
+- Confirm `20260318000001_advisor_self_activation_lockdown.sql` was applied after `20260317000004_active_advisor_rls.sql`, and `20260929000001_advising_application_link.sql` was applied after the lockdown migration.
 
 ### Connection failed
 

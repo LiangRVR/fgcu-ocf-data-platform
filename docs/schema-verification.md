@@ -11,6 +11,8 @@
 - [x] Bootstrap anon write policy migration (`supabase/migrations/20260305000002_allow_anon_write.sql`)
 - [x] Advisor auth migration (`supabase/migrations/20260317000003_advisor_auth.sql`)
 - [x] Active-advisor RLS migration (`supabase/migrations/20260317000004_active_advisor_rls.sql`)
+- [x] Advisor self-activation lockdown migration (`supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql`)
+- [x] Advising↔application link migration (`supabase/migrations/20260929000001_advising_application_link.sql`) — forward-only: nullable `application.application_year` (cycle), nullable `advising_meeting.application_id` with direct + composite same-student FKs, database-authored `created_at`/`created_by_advisor_id` creation metadata and hardened trigger, advising indexes
 - [x] Schema documentation (`docs/schema-reference.md`, `supabase/SCHEMA.md`)
 - [x] Auto-generated TypeScript types (`types/database.ts`)
 - [x] Application-level types (`types/index.ts`)
@@ -34,7 +36,7 @@
    - ⚠️ Do **not** run these migrations against the hosted production database.
      Production is the physical-schema authority; its migration ledger records
      only `20260924065221_advisor_self_activation_lockdown` while the repository
-     tracks six migrations, and the deployed schema differs materially. See
+     tracks seven migrations, and the deployed schema differs materially. See
      [`supabase/SCHEMA.md`](../supabase/SCHEMA.md#migration-deployment-freeze)
      and the approval-gated
      [reconciliation runbook](../aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
@@ -68,7 +70,7 @@ Our database schema aligns with the application needs:
 - **Table**: `application`
 - **Application Pages**: `/applications`
 - **Primary Key**: `application_id` (integer)
-- **Key Fields**: student_id, fellowship_id, stage_of_application, is_semi_finalist, is_finalist, destination_country
+- **Key Fields**: student_id, fellowship_id, application_year (application cycle — nullable for legacy rows, never inferred), stage_of_application, is_semi_finalist, is_finalist, destination_country
 - **Relationships**: Links `student` to `fellowship`
 
 ### Advising Meetings
@@ -76,7 +78,8 @@ Our database schema aligns with the application needs:
 - **Table**: `advising_meeting`
 - **Application Pages**: `/advising`
 - **Primary Key**: `meeting_id` (integer)
-- **Key Fields**: student_id, advisor_id, meeting_date, meeting_mode, no_show, notes
+- **Key Fields**: student_id, advisor_id (who conducted), application_id (nullable — NULL = General Advising; composite FK keeps the application on the meeting's student), meeting_date, meeting_mode, no_show, notes, created_at (entry timestamp), created_by_advisor_id (who entered)
+- **Relationships**: Links `student` to `advisor` and, optionally, to one of that student's `application` rows
 
 ### Advisors
 
@@ -117,6 +120,7 @@ Before using the application with real data:
 - [ ] Confirmed advisor emails backfilled in `public.advisor.email`
 - [ ] Active-advisor RLS migration applied (`20260317000004_active_advisor_rls.sql`)
 - [ ] Advisor self-activation lockdown migration applied (`20260318000001_advisor_self_activation_lockdown.sql`) — removes any email self-link and adds the one-time-bind guard
+- [ ] Advising↔application link migration applied (`20260929000001_advising_application_link.sql`) — forward-only: adds the nullable application cycle (`application.application_year`), the nullable advising↔application link with direct + composite same-student FKs, creation metadata and trigger, and advising indexes
 - [ ] Advisors provisioned via the admin pre-binding path: each auth account's exact UUID bound to its `advisor.auth_user_id` while unbound, before first sign-in (no email self-link, no sign-in auto-linking)
 - [ ] TypeScript types regenerated if schema was modified: `pnpm run db:types`
 - [ ] Connection test passes: `pnpm run test:connection`

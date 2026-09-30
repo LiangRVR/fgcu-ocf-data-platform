@@ -56,3 +56,19 @@ function validateConsistency(
 }
 
 export { STAGES, type Stage, deriveFlags, validateConsistency };
+
+/**
+ * Format a fellowship/application-cycle label.
+ * Known years render as "Fellowship — Year"; unknown years render transparently
+ * as "Fellowship — year unknown" so historic nulls are never guessed.
+ */
+export function formatApplicationLabel(
+  fellowshipName: string | null | undefined,
+  applicationYear: number | string | null | undefined
+): string {
+  const year = applicationYear ? String(applicationYear) : null;
+  if (!fellowshipName && !year) return "Unknown application";
+  if (!fellowshipName) return `Unknown fellowship — ${year}`;
+  if (!year) return `${fellowshipName} — year unknown`;
+  return `${fellowshipName} — ${year}`;
+}

@@ -30,6 +30,7 @@
  * attendance write uses the "Honors College" source to stay distinguishable.
  */
 import { test, expect, type Page } from "@playwright/test";
+import { createClient } from "@supabase/supabase-js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -46,7 +47,12 @@ function requireEnv(name: string): string {
 const ACTIVE_EMAIL = requireEnv("E2E_ACTIVE_EMAIL");
 const ACTIVE_PASSWORD = requireEnv("E2E_ACTIVE_PASSWORD");
 const STUDENT_NAME = requireEnv("E2E_STUDENT_NAME");
+const STUDENT_TWO_NAME = requireEnv("E2E_STUDENT_TWO_NAME");
 const FELLOWSHIP_NAME = requireEnv("E2E_FELLOWSHIP_NAME");
+const FELLOWSHIP_TWO_NAME = requireEnv("E2E_FELLOWSHIP_TWO_NAME");
+const APPLICATION_YEAR = requireEnv("E2E_APPLICATION_YEAR");
+const CYCLE_YEAR_OLD = requireEnv("E2E_CYCLE_YEAR_OLD");
+const CYCLE_YEAR_NEW = requireEnv("E2E_CYCLE_YEAR_NEW");
 
 /**
  * Report totals computed by the seed from the fixtures it created (re-read
@@ -62,6 +68,85 @@ const REPORT_TOTALS = JSON.parse(requireEnv("E2E_REPORT_TOTALS")) as {
   awarded: number;
   applicationsByStage: Record<string, number>;
 };
+
+/**
+ * Service-role helpers for direct database mutations from the E2E process.
+ * These are used only to simulate race conditions that are impossible to
+ * trigger reliably through the UI (e.g., deleting an application while the
+ * advising dialog already has it selected).
+ */
+function serviceClient() {
+  const apiUrl = requireEnv("SUPABASE_URL");
+  const serviceRoleKey = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(apiUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
+
+async function findStudentIdByName(name: string): Promise<number> {
+  const service = serviceClient();
+  const { data, error } = await service
+    .from("student")
+    .select("student_id")
+    .eq("full_name", name)
+    .single();
+  if (error) {
+    throw new Error(`findStudentIdByName(${name}): ${error.message}`);
+  }
+  return data.student_id as number;
+}
+
+async function findFellowshipIdByName(name: string): Promise<number> {
+  const service = serviceClient();
+  const { data, error } = await service
+    .from("fellowship")
+    .select("fellowship_id")
+    .eq("fellowship_name", name)
+    .single();
+  if (error) {
+    throw new Error(`findFellowshipIdByName(${name}): ${error.message}`);
+  }
+  return data.fellowship_id as number;
+}
+
+async function createApplicationForStudent(props: {
+  studentName: string;
+  fellowshipName: string;
+  year: string;
+  stage: string;
+}): Promise<number> {
+  const service = serviceClient();
+  const [studentId, fellowshipId] = await Promise.all([
+    findStudentIdByName(props.studentName),
+    findFellowshipIdByName(props.fellowshipName),
+  ]);
+  const { data, error } = await service
+    .from("application")
+    .insert({
+      student_id: studentId,
+      fellowship_id: fellowshipId,
+      destination_country: "E2E Testland",
+      application_year: props.year,
+      stage_of_application: props.stage,
+      // Early stages carry neither flag under the local stage/flag invariant.
+      is_semi_finalist: false,
+      is_finalist: false,
+    })
+    .select("application_id")
+    .single();
+  if (error) {
+    throw new Error(`createApplicationForStudent: ${error.message}`);
+  }
+  return data.application_id as number;
+}
+
+async function deleteApplication(applicationId: number): Promise<void> {
+  const service = serviceClient();
+  const { error } = await service.from("application").delete().eq("application_id", applicationId);
+  if (error) {
+    throw new Error(`deleteApplication(${applicationId}): ${error.message}`);
+  }
+}
 
 /**
  * The exact names of the two students the seed creates (see
@@ -168,6 +253,20 @@ async function restoreSeededApplicationStage(page: Page): Promise<void> {
   // Reload → the restored stage is persisted server-side.
   await page.reload();
   await expect(seededApplicationRow).toContainText("Submitted");
+}
+
+/**
+ * Delete one advising meeting row (by its unique notes marker) through the
+ * desktop table's "Delete meeting" action and the confirmation dialog. The
+ * advising write tests clean up after themselves so the reports test's EXACT
+ * `Advising Meetings` total always derives from the seed export alone.
+ */
+async function deleteMeeting(page: Page, note: string): Promise<void> {
+  const row = page.locator("table tbody tr", { hasText: note });
+  await expect(row).toBeVisible();
+  await row.getByTitle("Delete meeting").click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Delete" }).click();
+  await expect(page.locator("table tbody tr", { hasText: note })).toHaveCount(0);
 }
 
 /**
@@ -284,6 +383,251 @@ test.describe("operational surfaces", () => {
     // Reload → the meeting is persisted server-side.
     await page.reload();
     await expect(page.locator("table tbody tr", { hasText: MEETING_NOTE })).toBeVisible();
+  });
+
+  test("an advisor can log a General Advising meeting (null application) that persists across a reload", async ({ page }) => {
+    await signInAsActive(page);
+
+    const generalNote = `E2E General Advising ${Date.now()}`;
+
+    await page.goto("/advising");
+    await page.getByRole("button", { name: "Log Meeting" }).click();
+
+    await page.locator("#student_id").click();
+    await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
+
+    // With no application selected the form defaults to General Advising (null
+    // application_id) — the trigger must show it, not a stale application.
+    await expect(page.locator("#application_id")).toContainText("General Advising");
+
+    await page.locator("#meeting_date").fill("2026-09-20");
+    await page.locator("#meeting_mode").click();
+    await page.getByRole("option", { name: "In-Person", exact: true }).click();
+    await page.locator("#notes").fill(generalNote);
+
+    await page.getByRole("dialog").getByRole("button", { name: "Log Meeting" }).click();
+
+    // The new row renders General Advising in its Context cell.
+    const row = page.locator("table tbody tr", { hasText: generalNote });
+    await expect(row).toBeVisible();
+    await expect(row).toContainText(STUDENT_NAME);
+    await expect(row).toContainText("General Advising");
+    await expect(row).not.toContainText("year unknown");
+
+    // Reload → the General Advising context is persisted server-side.
+    await page.reload();
+    const rowAfterReload = page.locator("table tbody tr", { hasText: generalNote });
+    await expect(rowAfterReload).toBeVisible();
+    await expect(rowAfterReload).toContainText("General Advising");
+
+    // Clean up so the reports totals stay at the seed export.
+    await deleteMeeting(page, generalNote);
+  });
+
+  test("an advisor can log an application-scoped meeting whose cycle label persists across a reload", async ({ page }) => {
+    await signInAsActive(page);
+
+    const appMeetingNote = `E2E App-Scoped Meeting ${Date.now()}`;
+    // The second student's CURRENT_CYCLE application on the second fellowship:
+    // a cycle-aware label, never a bare fellowship name.
+    const cycleLabel = `${FELLOWSHIP_TWO_NAME} — ${CYCLE_YEAR_NEW}`;
+
+    await page.goto("/advising");
+    await page.getByRole("button", { name: "Log Meeting" }).click();
+
+    await page.locator("#student_id").click();
+    await page.getByRole("option", { name: STUDENT_TWO_NAME, exact: true }).click();
+
+    // The same-fellowship pair is offered cycle-aware and distinguishable.
+    await page.locator("#application_id").click();
+    await expect(
+      page.getByRole("option", { name: `${FELLOWSHIP_TWO_NAME} — ${CYCLE_YEAR_OLD}`, exact: true }),
+    ).toBeVisible();
+    await page.getByRole("option", { name: cycleLabel, exact: true }).click();
+
+    await page.locator("#meeting_date").fill("2026-09-21");
+    await page.locator("#meeting_mode").click();
+    await page.getByRole("option", { name: "Virtual", exact: true }).click();
+    await page.locator("#notes").fill(appMeetingNote);
+
+    await page.getByRole("dialog").getByRole("button", { name: "Log Meeting" }).click();
+
+    // The row's Context cell shows the application's cycle label.
+    const row = page.locator("table tbody tr", { hasText: appMeetingNote });
+    await expect(row).toBeVisible();
+    await expect(row).toContainText(STUDENT_TWO_NAME);
+    await expect(row).toContainText(cycleLabel);
+
+    // Reload → the application scoping persists server-side.
+    await page.reload();
+    const rowAfterReload = page.locator("table tbody tr", { hasText: appMeetingNote });
+    await expect(rowAfterReload).toBeVisible();
+    await expect(rowAfterReload).toContainText(cycleLabel);
+
+    // Clean up so the reports totals stay at the seed export.
+    await deleteMeeting(page, appMeetingNote);
+  });
+
+  test("changing the student in the Log Meeting dialog refreshes the application options, clears a stale selection, and persists General Advising after submit/reload", async ({ page }) => {
+    await signInAsActive(page);
+
+    await page.goto("/advising");
+    await page.getByRole("button", { name: "Log Meeting" }).click();
+
+    const dialog = page.getByRole("dialog");
+    const firstStudentLabel = `${FELLOWSHIP_NAME} — ${APPLICATION_YEAR}`;
+    const staleNote = `E2E stale-student switch ${Date.now()}`;
+
+    // Select the seeded student and pick one of their applications.
+    await dialog.locator("#student_id").click();
+    await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
+    await dialog.locator("#application_id").click();
+    await page.getByRole("option", { name: firstStudentLabel, exact: true }).click();
+    await expect(dialog.locator("#application_id")).toContainText(firstStudentLabel);
+
+    // Switch to the second student → the stale application selection must clear
+    // back to General Advising (never carry another student's application over).
+    await dialog.locator("#student_id").click();
+    await page.getByRole("option", { name: STUDENT_TWO_NAME, exact: true }).click();
+    await expect(dialog.locator("#application_id")).toContainText("General Advising");
+    await expect(dialog.locator("#application_id")).not.toContainText(firstStudentLabel);
+
+    // The option list is refreshed to the second student's applications: the
+    // same-fellowship different-cycle pair renders as two distinct options.
+    await dialog.locator("#application_id").click();
+    await expect(
+      page.getByRole("option", { name: `${FELLOWSHIP_TWO_NAME} — ${CYCLE_YEAR_OLD}`, exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("option", { name: `${FELLOWSHIP_TWO_NAME} — ${CYCLE_YEAR_NEW}`, exact: true }),
+    ).toBeVisible();
+    // The first student's application is no longer selectable for this student.
+    await expect(page.getByRole("option", { name: firstStudentLabel, exact: true })).toHaveCount(0);
+
+    // Complete and submit the meeting with the reset General Advising context.
+    await page.keyboard.press("Escape");
+    await page.locator("#meeting_date").fill("2026-09-22");
+    await page.locator("#meeting_mode").click();
+    await page.getByRole("option", { name: "Virtual", exact: true }).click();
+    await page.locator("#notes").fill(staleNote);
+    await page.getByRole("dialog").getByRole("button", { name: "Log Meeting" }).click();
+
+    // The created row renders General Advising in its Context cell.
+    const row = page.locator("table tbody tr", { hasText: staleNote });
+    await expect(row).toContainText("General Advising");
+
+    // Reload → the General Advising context is persisted server-side.
+    await page.reload();
+    const rowAfterReload = page.locator("table tbody tr", { hasText: staleNote });
+    await expect(rowAfterReload).toContainText("General Advising");
+
+    await deleteMeeting(page, staleNote);
+  });
+
+  test("submitting a stale application selection resets to General Advising, refreshes options, and removes the stale option after reload", async ({ page }) => {
+    await signInAsActive(page);
+
+    // ── Setup: create an application that will become stale mid-dialog ──────
+    const staleApplicationLabel = `${FELLOWSHIP_TWO_NAME} — ${APPLICATION_YEAR}`;
+    const staleApplicationId = await createApplicationForStudent({
+      studentName: STUDENT_NAME,
+      fellowshipName: FELLOWSHIP_TWO_NAME,
+      year: APPLICATION_YEAR,
+      stage: "Submitted",
+    });
+
+    const recoveryNote = `E2E stale-application recovery ${Date.now()}`;
+
+    await page.goto("/advising");
+    await page.getByRole("button", { name: "Log Meeting" }).click();
+
+    const dialog = page.getByRole("dialog");
+
+    // Select the seeded student and the freshly-created application.
+    await dialog.locator("#student_id").click();
+    await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
+    await dialog.locator("#application_id").click();
+    await page.getByRole("option", { name: staleApplicationLabel, exact: true }).click();
+    await expect(dialog.locator("#application_id")).toContainText(staleApplicationLabel);
+
+    // ── Race: delete the application from under the dialog ──────────────────
+    await deleteApplication(staleApplicationId);
+
+    await page.locator("#meeting_date").fill("2026-09-23");
+    await page.locator("#meeting_mode").click();
+    await page.getByRole("option", { name: "In-Person", exact: true }).click();
+    await page.locator("#notes").fill(recoveryNote);
+
+    // Submitting with the now-invalid application must trigger server-side recovery.
+    await page.getByRole("dialog").getByRole("button", { name: "Log Meeting" }).click();
+
+    await expect(
+      page.getByText("Selected application is no longer valid for this student. Reset to General Advising."),
+    ).toBeVisible();
+    await expect(dialog.locator("#application_id")).toContainText("General Advising");
+
+    // The refresh should remove the stale option from the dropdown.
+    await dialog.locator("#application_id").click();
+    await expect(
+      page.getByRole("option", { name: staleApplicationLabel, exact: true }),
+    ).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    // Complete the meeting with the recovered General Advising context.
+    await page.getByRole("dialog").getByRole("button", { name: "Log Meeting" }).click();
+
+    const row = page.locator("table tbody tr", { hasText: recoveryNote });
+    await expect(row).toBeVisible();
+    await expect(row).toContainText(STUDENT_NAME);
+    await expect(row).toContainText("General Advising");
+
+    // Reload → the recovered General Advising context is persisted, and the
+    // stale application option is still absent from the refreshed option list.
+    await page.reload();
+    const rowAfterReload = page.locator("table tbody tr", { hasText: recoveryNote });
+    await expect(rowAfterReload).toContainText("General Advising");
+
+    await page.getByRole("button", { name: "Log Meeting" }).click();
+    await dialog.locator("#student_id").click();
+    await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
+    await dialog.locator("#application_id").click();
+    await expect(
+      page.getByRole("option", { name: staleApplicationLabel, exact: true }),
+    ).toHaveCount(0);
+    // Close the dropdown, then close the dialog so table actions are reachable.
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+
+    await deleteMeeting(page, recoveryNote);
+  });
+
+  test("an application belonging to another student cannot be selected in the advising dialog", async ({ page }) => {
+    await signInAsActive(page);
+
+    await page.goto("/advising");
+    await page.getByRole("button", { name: "Log Meeting" }).click();
+
+    const dialog = page.getByRole("dialog");
+    const firstStudentLabel = `${FELLOWSHIP_NAME} — ${APPLICATION_YEAR}`;
+    const secondStudentLabel = `${FELLOWSHIP_TWO_NAME} — ${CYCLE_YEAR_NEW}`;
+
+    // For the second student, only their own applications (+ General Advising)
+    // are offered — the first student's application must not appear at all.
+    await dialog.locator("#student_id").click();
+    await page.getByRole("option", { name: STUDENT_TWO_NAME, exact: true }).click();
+    await dialog.locator("#application_id").click();
+    await expect(page.getByRole("option", { name: "General Advising", exact: true })).toBeVisible();
+    await expect(page.getByRole("option", { name: secondStudentLabel, exact: true })).toBeVisible();
+    await expect(page.getByRole("option", { name: firstStudentLabel, exact: true })).toHaveCount(0);
+
+    // Close the application dropdown, then check the reverse direction: the
+    // first student's options never include the second student's applications.
+    await page.keyboard.press("Escape");
+    await dialog.locator("#student_id").click();
+    await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
+    await dialog.locator("#application_id").click();
+    await expect(page.getByRole("option", { name: firstStudentLabel, exact: true })).toBeVisible();
+    await expect(page.getByRole("option", { name: secondStudentLabel, exact: true })).toHaveCount(0);
   });
 
   test("fellowship-thursday page renders the seeded attendance", async ({ page }) => {

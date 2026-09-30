@@ -88,10 +88,10 @@ export async function getReportsData(): Promise<ReportsDataResult> {
     ] = await Promise.all([
       supabase
         .from("application")
-        .select("student_id, fellowship_id, stage_of_application, is_finalist, is_semi_finalist, student(full_name, major, class_standing), fellowship(fellowship_name)"),
+        .select("student_id, fellowship_id, application_year, stage_of_application, is_finalist, is_semi_finalist, student(full_name, major, class_standing), fellowship(fellowship_name)"),
       supabase
         .from("advising_meeting")
-        .select("student_id, advisor_id, no_show, meeting_date, advisor(advisor_name)"),
+        .select("student_id, advisor_id, no_show, meeting_date, advisor!advising_meeting_advisor_id_fkey(advisor_name)"),
       supabase
         .from("student")
         .select("student_id, full_name, major, class_standing"),
@@ -280,10 +280,10 @@ export default async function ReportsPage() {
         <Card className="border-gray-200 shadow-sm">
           <CardHeader className="pb-3">
             <CardTitle className="text-base font-semibold text-slate-900">
-              Finalists &amp; Awarded Students by Fellowship
+              Finalists &amp; Awarded Students by Fellowship &amp; Application Cycle
             </CardTitle>
             <AppCardDescription>
-              How far applicants advance for each fellowship
+              How far applicants advance for each fellowship and application cycle
             </AppCardDescription>
           </CardHeader>
           <CardContent>
@@ -293,7 +293,7 @@ export default async function ReportsPage() {
               <>
                 <div className="space-y-3 md:hidden">
                   {data.fellowshipsByFinalists.map(({ id, name, total, semiFinalists, finalists, awarded }) => (
-                    <div key={id} className="rounded-2xl border border-border/70 bg-surface-subtle/70 p-4">
+                    <div key={`${id}:${name}`} className="rounded-2xl border border-border/70 bg-surface-subtle/70 p-4">
                       <div className="flex items-start justify-between gap-3">
                         <Link
                           href={`/fellowships/${id}`}
@@ -329,7 +329,7 @@ export default async function ReportsPage() {
                   </thead>
                   <tbody>
                     {data.fellowshipsByFinalists.map(({ id, name, total, semiFinalists, finalists, awarded }) => (
-                      <tr key={id} className="border-b border-gray-50 last:border-0">
+                      <tr key={`${id}:${name}`} className="border-b border-gray-50 last:border-0">
                         <td className="py-2">
                           <Link
                             href={`/fellowships/${id}`}

@@ -12,7 +12,7 @@ async function getAdvisorMeetings(advisorId: number): Promise<AccountMeetingReco
   const { data, error } = await supabase
     .from("advising_meeting")
     .select(
-      "meeting_id, meeting_date, meeting_mode, no_show, notes, student_id, student(student_id, full_name, email, major, class_standing)"
+      "meeting_id, meeting_date, meeting_mode, no_show, notes, student_id, application_id, student(student_id, full_name, email, major, class_standing), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))"
     )
     .eq("advisor_id", advisorId)
     .order("meeting_date", { ascending: false });

@@ -2,13 +2,19 @@
  * tests/contract/schema.test.ts
  *
  * Schema contract: asserts that the full migration chain
- * (20260305000000 → 20260318000001) produced exactly the expected steady state
+ * (20260305000000 → 20260929000001) produced exactly the expected steady state
  * on a fresh, isolated Docker-local instance:
  *   - all seven operational tables exist, with their PKs, FKs, and indexes;
  *   - the documented CHECK constraints exist;
  *   - RLS is enabled on every table;
  *   - migration ...004 privilege steady state: `anon` has no schema/table/
- *     sequence access; `authenticated` has full CRUD and sequence access.
+ *     sequence access; `authenticated` has full CRUD and sequence access;
+ *   - migration 20260929000001 adds the advising↔application link columns
+ *     (nullable `application.application_year`, nullable
+ *     `advising_meeting.application_id`, NOT NULL `created_at` default
+ *     now(), nullable `created_by_advisor_id`), the direct + composite
+ *     application FKs and indexes, and the hardened non-RPC creation-metadata
+ *     trigger (SECURITY DEFINER, empty search_path, EXECUTE revoked).
  *
  * Inspects the real migrated catalogs via Postgres (pg), never the hosted DB.
  */
@@ -39,14 +45,19 @@ const EXPECTED_PKS: Record<string, string> = {
   scholarship_history: "history_id",
 };
 
-const EXPECTED_FKS: Record<string, { table: string; column: string; foreignTable: string }> = {
-  application_student_id_fkey: { table: "application", column: "student_id", foreignTable: "student" },
-  application_fellowship_id_fkey: { table: "application", column: "fellowship_id", foreignTable: "fellowship" },
-  advising_meeting_student_id_fkey: { table: "advising_meeting", column: "student_id", foreignTable: "student" },
-  advising_meeting_advisor_id_fkey: { table: "advising_meeting", column: "advisor_id", foreignTable: "advisor" },
-  fellowship_thursday_student_id_fkey: { table: "fellowship_thursday", column: "student_id", foreignTable: "student" },
-  scholarship_history_student_id_fkey: { table: "scholarship_history", column: "student_id", foreignTable: "student" },
-  scholarship_history_fellowship_id_fkey: { table: "scholarship_history", column: "fellowship_id", foreignTable: "fellowship" },
+const EXPECTED_FKS: Record<string, { table: string; columns: string[]; foreignTable: string }> = {
+  application_student_id_fkey: { table: "application", columns: ["student_id"], foreignTable: "student" },
+  application_fellowship_id_fkey: { table: "application", columns: ["fellowship_id"], foreignTable: "fellowship" },
+  advising_meeting_student_id_fkey: { table: "advising_meeting", columns: ["student_id"], foreignTable: "student" },
+  advising_meeting_advisor_id_fkey: { table: "advising_meeting", columns: ["advisor_id"], foreignTable: "advisor" },
+  // migration 20260929000001: direct + composite advising↔application FKs and
+  // the creator FK to advisor.
+  advising_meeting_application_id_fkey: { table: "advising_meeting", columns: ["application_id"], foreignTable: "application" },
+  advising_meeting_application_student_fkey: { table: "advising_meeting", columns: ["application_id", "student_id"], foreignTable: "application" },
+  advising_meeting_created_by_advisor_id_fkey: { table: "advising_meeting", columns: ["created_by_advisor_id"], foreignTable: "advisor" },
+  fellowship_thursday_student_id_fkey: { table: "fellowship_thursday", columns: ["student_id"], foreignTable: "student" },
+  scholarship_history_student_id_fkey: { table: "scholarship_history", columns: ["student_id"], foreignTable: "student" },
+  scholarship_history_fellowship_id_fkey: { table: "scholarship_history", columns: ["fellowship_id"], foreignTable: "fellowship" },
 };
 
 const EXPECTED_INDEXES = [
@@ -67,6 +78,11 @@ const EXPECTED_INDEXES = [
   "advisor_auth_user_id_key",
   // forward-only case-insensitive advisor-email uniqueness from ...001 (R11)
   "advisor_email_lower_key",
+  // migration 20260929000001: unique (application_id, student_id) target and
+  // the advising application indexes
+  "application_application_id_student_id_key",
+  "idx_advising_meeting_application",
+  "idx_advising_meeting_student_application",
 ];
 
 const EXPECTED_CHECKS = [
@@ -143,23 +159,27 @@ describe("primary keys", () => {
 describe("foreign keys", () => {
   it("defines the documented FK constraints", async () => {
     const rows = await query(
-      `SELECT tc.constraint_name, tc.table_name, kcu.column_name, ccu.table_name AS foreign_table_name
+      `SELECT tc.constraint_name,
+              tc.table_name,
+              array_agg(kcu.column_name::text ORDER BY kcu.ordinal_position) AS columns,
+              (SELECT DISTINCT ccu.table_name
+                 FROM information_schema.constraint_column_usage AS ccu
+                WHERE ccu.constraint_name = tc.constraint_name
+                  AND ccu.table_schema = tc.table_schema) AS foreign_table_name
          FROM information_schema.table_constraints AS tc
          JOIN information_schema.key_column_usage AS kcu
            ON tc.constraint_name = kcu.constraint_name
           AND tc.table_schema = kcu.table_schema
-         JOIN information_schema.constraint_column_usage AS ccu
-           ON ccu.constraint_name = tc.constraint_name
-          AND ccu.table_schema = tc.table_schema
         WHERE tc.constraint_type = 'FOREIGN KEY'
           AND tc.table_schema = 'public'
-        ORDER BY tc.constraint_name, kcu.ordinal_position`
+        GROUP BY tc.constraint_name, tc.table_name, tc.table_schema
+        ORDER BY tc.constraint_name`
     );
-    const fkByName: Record<string, { table: string; column: string; foreignTable: string }> = {};
+    const fkByName: Record<string, { table: string; columns: string[]; foreignTable: string }> = {};
     for (const row of rows) {
       fkByName[row.constraint_name as string] = {
         table: row.table_name as string,
-        column: row.column_name as string,
+        columns: row.columns as string[],
         foreignTable: row.foreign_table_name as string,
       };
     }
@@ -200,6 +220,124 @@ describe("sequences", () => {
     for (const sequence of EXPECTED_SEQUENCES) {
       expect(names, `sequence ${sequence}`).toContain(sequence);
     }
+  });
+});
+
+describe("advising↔application link columns and defaults (migration 20260929000001)", () => {
+  it("adds nullable application.application_year SMALLINT with no default", async () => {
+    const rows = await query(
+      `SELECT data_type, is_nullable, column_default
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'application'
+          AND column_name = 'application_year'`
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].data_type, "application_year data type").toBe("smallint");
+    expect(rows[0].is_nullable, "application_year nullable").toBe("YES");
+    expect(rows[0].column_default, "application_year has no default (NULL for legacy rows)").toBeNull();
+  });
+
+  it("adds nullable advising_meeting.application_id INTEGER with no default", async () => {
+    const rows = await query(
+      `SELECT data_type, is_nullable, column_default
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'advising_meeting'
+          AND column_name = 'application_id'`
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].data_type, "application_id data type").toBe("integer");
+    expect(rows[0].is_nullable, "application_id nullable (General Advising)").toBe("YES");
+    expect(rows[0].column_default, "application_id has no default").toBeNull();
+  });
+
+  it("adds NOT NULL advising_meeting.created_at TIMESTAMPTZ DEFAULT now()", async () => {
+    const rows = await query(
+      `SELECT data_type, is_nullable, column_default
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'advising_meeting'
+          AND column_name = 'created_at'`
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].data_type, "created_at data type").toBe("timestamp with time zone");
+    expect(rows[0].is_nullable, "created_at not nullable").toBe("NO");
+    expect(rows[0].column_default, "created_at default now()").toBe("now()");
+  });
+
+  it("adds nullable advising_meeting.created_by_advisor_id INTEGER with no default", async () => {
+    const rows = await query(
+      `SELECT data_type, is_nullable, column_default
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'advising_meeting'
+          AND column_name = 'created_by_advisor_id'`
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].data_type, "created_by_advisor_id data type").toBe("integer");
+    expect(rows[0].is_nullable, "created_by_advisor_id nullable (legacy/technical writes)").toBe("YES");
+    expect(rows[0].column_default, "created_by_advisor_id has no default").toBeNull();
+  });
+
+  it("adds the application UNIQUE (application_id, student_id) key as the composite FK target", async () => {
+    const rows = await query(
+      `SELECT conname, contype
+         FROM pg_constraint
+        WHERE connamespace = 'public'::regnamespace
+          AND conname = 'application_application_id_student_id_key'`
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].contype, "unique constraint type").toBe("u");
+  });
+});
+
+describe("advising_meeting creation-metadata trigger (migration 20260929000001)", () => {
+  it("creates the BEFORE INSERT OR UPDATE OF created_at, created_by_advisor_id trigger on public.advising_meeting", async () => {
+    const rows = await query(
+      `SELECT t.tgname, t.tgtype, t.tgenabled, a.attname AS column_name
+         FROM pg_trigger t
+         JOIN pg_class c ON c.oid = t.tgrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(t.tgattr)
+        WHERE n.nspname = 'public'
+          AND c.relname = 'advising_meeting'
+          AND NOT t.tgisinternal`
+    );
+    const triggers = rows.filter((row) => row.tgname === "trg_advising_meeting_created_metadata");
+    // Column-scoped triggers join one row per scoped attribute (the two
+    // metadata columns), so the filter returns both rows for the single trigger.
+    expect(triggers.length, "the creation-metadata trigger must exist").toBeGreaterThan(0);
+    // tgtype bitmask: 1 (ROW) + 2 (BEFORE) + 4 (INSERT) + 16 (UPDATE) = 23.
+    expect(triggers[0].tgtype, "trigger must be BEFORE ROW INSERT OR UPDATE").toBe(23);
+    expect(triggers[0].tgenabled, "trigger must be enabled").toBe("O");
+    // Column-scoped via UPDATE OF created_at, created_by_advisor_id.
+    expect(
+      triggers.map((row) => row.column_name).sort(),
+      "trigger must be scoped to the two metadata columns"
+    ).toEqual(["created_at", "created_by_advisor_id"]);
+  });
+
+  it("backing function is SECURITY DEFINER with empty search_path and no PUBLIC/authenticated/anon EXECUTE", async () => {
+    const rows = await query(
+      `SELECT p.prosecdef, p.proconfig,
+              has_function_privilege('authenticated', 'public.set_advising_meeting_created_metadata()', 'EXECUTE') AS auth_exec,
+              has_function_privilege('anon', 'public.set_advising_meeting_created_metadata()', 'EXECUTE') AS anon_exec,
+              has_function_privilege('service_role', 'public.set_advising_meeting_created_metadata()', 'EXECUTE') AS sr_exec
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.proname = 'set_advising_meeting_created_metadata'`
+    );
+    expect(rows).toHaveLength(1);
+    // prosecdef = true ⇒ SECURITY DEFINER (the narrow advisor lookup runs as
+    // the migration owner; empty search_path + qualified relations harden it).
+    expect(rows[0].prosecdef, "metadata function must be SECURITY DEFINER").toBe(true);
+    // PostgreSQL stores an empty search_path GUC as search_path="" (quoted).
+    expect(rows[0].proconfig, "metadata function must set an empty search_path").toEqual(["search_path=\"\""]);
+    expect(rows[0].auth_exec, "no authenticated EXECUTE on the metadata function").toBe(false);
+    expect(rows[0].anon_exec, "no anon EXECUTE on the metadata function").toBe(false);
+    expect(rows[0].sr_exec, "service_role EXECUTE pins a non-default non-empty ACL").toBe(true);
   });
 });
 

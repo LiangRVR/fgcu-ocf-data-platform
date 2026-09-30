@@ -86,7 +86,7 @@ describe("computeReportMetrics", () => {
       [student({ student_id: 1, full_name: "Solo" })],
       [ft({ student_id: 1, attended: true })],
     );
-    expect(r.fellowshipsByFinalists[0]).toMatchObject({ id: 10, name: "Fellowship 10" });
+    expect(r.fellowshipsByFinalists[0]).toMatchObject({ id: 10, name: "Fellowship 10 — year unknown" });
     expect(r.advisorActivity[0]).toMatchObject({ id: null, name: "Unassigned" });
     expect(r.totals).toEqual({ students: 1, applications: 1, meetings: 1, ftAttendees: 1, awarded: 1 });
   });
@@ -138,23 +138,23 @@ describe("computeReportMetrics", () => {
     it("tallies total, semiFinalists, finalists, and awarded", () => {
       const r = compute([
         app({
-          student_id: 1, fellowship_id: 10, stage_of_application: "Awarded",
+          student_id: 1, fellowship_id: 10, application_year: 2026, stage_of_application: "Awarded",
           is_semi_finalist: true, is_finalist: true,
         }),
         app({
-          student_id: 2, fellowship_id: 10, stage_of_application: "Finalist",
+          student_id: 2, fellowship_id: 10, application_year: 2026, stage_of_application: "Finalist",
           is_semi_finalist: true, is_finalist: false,
         }),
         app({
-          student_id: 3, fellowship_id: 10, stage_of_application: "Started",
+          student_id: 3, fellowship_id: 10, application_year: 2026, stage_of_application: "Started",
           is_semi_finalist: true, is_finalist: false,
         }),
-        app({ student_id: 4, fellowship_id: 10, stage_of_application: "Started", is_semi_finalist: false, is_finalist: false }),
+        app({ student_id: 4, fellowship_id: 10, application_year: 2026, stage_of_application: "Started", is_semi_finalist: false, is_finalist: false }),
       ]);
       expect(r.fellowshipsByFinalists).toEqual([
         {
           id: 10,
-          name: "Fellowship",
+          name: "Fellowship — 2026",
           total: 4,
           semiFinalists: 3,
           finalists: 2,
@@ -179,9 +179,9 @@ describe("computeReportMetrics", () => {
 
     it("falls back to `Fellowship {id}` when the relation is missing", () => {
       const r = compute([
-        app({ student_id: 1, fellowship_id: 42, stage_of_application: "Awarded", fellowship: null }),
+        app({ student_id: 1, fellowship_id: 42, application_year: 2026, stage_of_application: "Awarded", fellowship: null }),
       ]);
-      expect(r.fellowshipsByFinalists[0].name).toBe("Fellowship 42");
+      expect(r.fellowshipsByFinalists[0].name).toBe("Fellowship 42 — 2026");
     });
 
     it("sorts by finalists desc then awarded desc", () => {
@@ -209,6 +209,43 @@ describe("computeReportMetrics", () => {
       expect(r.fellowshipsByFinalists.map((f) => f.id)).toEqual(
         Array.from({ length: 15 }, (_, i) => i + 1),
       );
+    });
+
+    it("groups the same fellowship by application year into distinct buckets", () => {
+      const r = compute([
+        app({ student_id: 1, fellowship_id: 10, application_year: 2026, stage_of_application: "Finalist", is_finalist: true }),
+        app({ student_id: 2, fellowship_id: 10, application_year: 2027, stage_of_application: "Awarded", is_finalist: true }),
+      ]);
+      expect(r.fellowshipsByFinalists).toHaveLength(2);
+      expect(r.fellowshipsByFinalists.map((f) => f.name)).toEqual([
+        "Fellowship — 2027",
+        "Fellowship — 2026",
+      ]);
+      expect(r.fellowshipsByFinalists.find((f) => f.name === "Fellowship — 2027")).toMatchObject({
+        total: 1,
+        finalists: 1,
+        awarded: 1,
+      });
+      expect(r.fellowshipsByFinalists.find((f) => f.name === "Fellowship — 2026")).toMatchObject({
+        total: 1,
+        finalists: 1,
+        awarded: 0,
+      });
+    });
+
+    it("keeps a null application year in its own bucket labeled 'year unknown'", () => {
+      const r = compute([
+        app({ student_id: 1, fellowship_id: 10, application_year: 2026, stage_of_application: "Finalist", is_finalist: true }),
+        app({ student_id: 2, fellowship_id: 10, application_year: null, stage_of_application: "Finalist", is_finalist: true }),
+        app({ student_id: 3, fellowship_id: 10, stage_of_application: "Finalist", is_finalist: true }),
+      ]);
+      expect(r.fellowshipsByFinalists).toHaveLength(2);
+      const known = r.fellowshipsByFinalists.find((f) => f.name === "Fellowship — 2026");
+      const unknown = r.fellowshipsByFinalists.find((f) => f.name === "Fellowship — year unknown");
+      expect(known).toBeDefined();
+      expect(unknown).toBeDefined();
+      expect(known).toMatchObject({ total: 1, finalists: 1 });
+      expect(unknown).toMatchObject({ total: 2, finalists: 2 });
     });
   });
 

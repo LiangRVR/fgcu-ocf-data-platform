@@ -40,6 +40,7 @@ import {
 import type { Advisor } from "@/lib/auth/session";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
 import { formatDate } from "@/lib/utils/format";
+import { formatApplicationLabel } from "@/lib/applications/pipeline";
 import {
   passwordUpdateSchema,
   profileUpdateSchema,
@@ -52,12 +53,19 @@ export interface AccountMeetingRecord {
   no_show: boolean;
   notes: string | null;
   student_id: number;
+  application_id: number | null;
   student: {
     student_id: number;
     full_name: string;
     email: string;
     major: string | null;
     class_standing: string | null;
+  } | null;
+  application: {
+    application_id: number;
+    application_year: number | null;
+    fellowship_id: number;
+    fellowship: { fellowship_name: string } | null;
   } | null;
 }
 
@@ -650,6 +658,14 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
                           {meeting.no_show ? "No-show" : "Attended"}
                         </MetricBadge>
                       </div>
+                      <div className="mt-2 text-sm text-slate-600">
+                        {meeting.application_id == null
+                          ? "General Advising"
+                          : formatApplicationLabel(
+                              meeting.application?.fellowship?.fellowship_name,
+                              meeting.application?.application_year
+                            )}
+                      </div>
                       <div className="mt-3 flex flex-wrap gap-2">
                         <MetricBadge tone={meeting.meeting_mode === "Virtual" ? "blue" : "slate"}>
                           {meeting.meeting_mode}
@@ -667,6 +683,7 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
                         <th className="px-4 py-3 text-left font-medium text-slate-600">Student</th>
                         <th className="px-4 py-3 text-left font-medium text-slate-600">Date</th>
                         <th className="px-4 py-3 text-left font-medium text-slate-600">Mode</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Context</th>
                         <th className="px-4 py-3 text-left font-medium text-slate-600">Status</th>
                         <th className="px-4 py-3 text-left font-medium text-slate-600">Notes</th>
                       </tr>
@@ -685,6 +702,14 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
                           </td>
                           <td className="px-4 py-3 align-top text-slate-700">{formatDate(meeting.meeting_date)}</td>
                           <td className="px-4 py-3 align-top text-slate-700">{meeting.meeting_mode}</td>
+                          <td className="px-4 py-3 align-top text-slate-700">
+                            {meeting.application_id == null
+                              ? "General Advising"
+                              : formatApplicationLabel(
+                                  meeting.application?.fellowship?.fellowship_name,
+                                  meeting.application?.application_year
+                                )}
+                          </td>
                           <td className="px-4 py-3 align-top">
                             <MetricBadge tone={meeting.no_show ? "red" : "green"}>
                               {meeting.no_show ? "No-show" : "Attended"}
