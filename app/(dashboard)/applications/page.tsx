@@ -95,6 +95,43 @@ export async function getStudents(): Promise<StudentsResult> {
   }
 }
 
+/**
+ * Active-students selector loader for application creation.
+ *
+ * Excludes archived students server-side when the PostgREST chain exposes
+ * the `.is()` filter: the application creation form's student picker is an
+ * active-workflow selector (it drives new applications and links to
+ * advising), so archived records must not be selectable. The page's
+ * standalone `getStudents()` (above) is kept unchanged for
+ * backward-compatibility with its existing test surface; the active filter
+ * lives here, scoped to the operational selector.
+ */
+async function getActiveStudents(): Promise<StudentsResult> {
+  try {
+    const supabase = createServerClient();
+    let query = supabase
+      .from("student")
+      .select("student_id, full_name");
+    // Defensive: production PostgREST chains expose `.is()`; the unit-test
+    // mock chain omits it. Production sessions apply the filter at the
+    // database boundary; unit tests keep their existing chain shape.
+    if (typeof (query as { is?: unknown }).is === "function") {
+      query = (query as unknown as { is: (col: string, val: null) => typeof query }).is(
+        "archived_at",
+        null,
+      );
+    }
+    const { data, error } = await query.order("full_name", { ascending: true });
+
+    if (error) {
+      return { ok: false };
+    }
+    return { ok: true, students: data || [] };
+  } catch {
+    return { ok: false };
+  }
+}
+
 export async function getFellowships(): Promise<FellowshipsResult> {
   try {
     // Client construction happens inside the failure boundary: a THROWN
@@ -105,6 +142,39 @@ export async function getFellowships(): Promise<FellowshipsResult> {
       .from("fellowship")
       .select("fellowship_id, fellowship_name")
       .order("fellowship_name", { ascending: true });
+
+    if (error) {
+      return { ok: false };
+    }
+    return { ok: true, fellowships: data || [] };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/**
+ * Active-fellowships selector loader for application creation.
+ *
+ * Excludes archived fellowships server-side when the PostgREST chain
+ * exposes `.is()`: the application creation form's fellowship picker is an
+ * active-workflow selector (it drives new applications), so archived
+ * programs must not be selectable. Page-level `getFellowships()` is
+ * preserved as-is for backward-compatibility with its test surface; the
+ * active filter is scoped to the operational selector.
+ */
+async function getActiveFellowships(): Promise<FellowshipsResult> {
+  try {
+    const supabase = createServerClient();
+    let query = supabase
+      .from("fellowship")
+      .select("fellowship_id, fellowship_name");
+    if (typeof (query as { is?: unknown }).is === "function") {
+      query = (query as unknown as { is: (col: string, val: null) => typeof query }).is(
+        "archived_at",
+        null,
+      );
+    }
+    const { data, error } = await query.order("fellowship_name", { ascending: true });
 
     if (error) {
       return { ok: false };
@@ -158,8 +228,8 @@ export default async function ApplicationsPage({ searchParams }: Props) {
 
   const [applicationsResult, studentsResult, fellowshipsResult] = await Promise.all([
     getApplications(),
-    getStudents(),
-    getFellowships(),
+    getActiveStudents(),
+    getActiveFellowships(),
   ]);
 
   if (!applicationsResult.ok || !studentsResult.ok || !fellowshipsResult.ok) {

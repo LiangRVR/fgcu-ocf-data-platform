@@ -2,15 +2,17 @@
  * tests/contract/schema.test.ts
  *
  * Schema contract: asserts that the full migration chain
- * (20260305000000 → 20260930000004) produced exactly the expected steady state
+ * (20260305000000 → 20260930000006) produced exactly the expected steady state
  * on a fresh, isolated Docker-local instance:
  *   - all eight operational tables exist, with their PKs, FKs, and indexes;
  *   - the documented CHECK constraints exist;
  *   - RLS is enabled on every table;
- *   - migration ...004 privilege steady state: `anon` has no schema/table/
- *     sequence access; `authenticated` has CRUD and sequence access except
- *     advising_meeting and advising_meeting_amendment, which are
- *     SELECT/INSERT-only;
+ *   - privilege steady state (migrations ...004 + ...006): `anon` has no
+ *     schema/table/sequence access; `authenticated` has CRUD and sequence
+ *     access except that `advising_meeting` and `advising_meeting_amendment`
+ *     are SELECT/INSERT-only AND the core historical entities `advisor`,
+ *     `student`, `fellowship`, and `application` are SELECT/INSERT/UPDATE-only
+ *     (authenticated DELETE revoked by migration 20260930000006);
  *   - migration 20260929000001 adds the advising↔application link columns
  *     (nullable `application.application_year`, nullable
  *     `advising_meeting.application_id`, NOT NULL `created_at` default
@@ -425,8 +427,8 @@ describe("invoker-security one-time-bind trigger (rows 16-24, R1/R11)", () => {
   });
 });
 
-describe("migration ...004 privilege steady state", () => {
-  it("revokes all anon access and makes advising history authenticated SELECT/INSERT-only", async () => {
+describe("privilege steady state (migrations ...004 + ...006 core-history DELETE lockdown)", () => {
+  it("revokes anon access entirely and restricts authenticated DELETE to non-core operational rows", async () => {
     const rows = await query(
       `SELECT c.relname,
               has_table_privilege('anon', c.oid, 'SELECT')   AS anon_select,
@@ -453,14 +455,24 @@ describe("migration ...004 privilege steady state", () => {
       for (const col of ["auth_select", "auth_insert"] as const) {
         expect(row[col], `${row.relname}.${col}`).toBe(true);
       }
-      if (row.relname === "advising_meeting" || row.relname === "advising_meeting_amendment") {
-        expect(row.auth_update, `${row.relname}.auth_update`).toBe(false);
-        expect(row.auth_delete, `${row.relname}.auth_delete`).toBe(false);
-      } else {
-        for (const col of ["auth_update", "auth_delete"] as const) {
-          expect(row[col], `${row.relname}.${col}`).toBe(true);
-        }
-      }
+    }
+
+    // UPDATE is revoked from authenticated only on the append-only histories.
+    const updateRevoked = new Set(["advising_meeting", "advising_meeting_amendment"]);
+    // DELETE is revoked from authenticated on the append-only histories AND on
+    // the core historical entities (migration 20260930000006). The operational
+    // rows fellowship_thursday / scholarship_history keep authenticated DELETE.
+    const deleteRevoked = new Set([
+      "advisor",
+      "student",
+      "fellowship",
+      "application",
+      "advising_meeting",
+      "advising_meeting_amendment",
+    ]);
+    for (const row of rows) {
+      expect(row.auth_update, `${row.relname}.auth_update`).toBe(!updateRevoked.has(String(row.relname)));
+      expect(row.auth_delete, `${row.relname}.auth_delete`).toBe(!deleteRevoked.has(String(row.relname)));
     }
   });
 
@@ -491,6 +503,70 @@ describe("migration ...004 privilege steady state", () => {
       expect(row.anon_select, `${row.sequence_name}.anon_select`).toBe(false);
       expect(row.auth_usage, `${row.sequence_name}.auth_usage`).toBe(true);
       expect(row.auth_select, `${row.sequence_name}.auth_select`).toBe(true);
+    }
+  });
+});
+
+describe("core-history DELETE lockdown policy shape (migration 20260930000006)", () => {
+  it("leaves no authenticated DELETE policy on advisor, student, fellowship, or application", async () => {
+    const rows = await query(
+      `SELECT tablename, policyname, cmd, roles::text[] AS roles
+         FROM pg_policies
+        WHERE schemaname = 'public'
+          AND tablename = ANY($1::text[])
+        ORDER BY tablename, policyname`,
+      [["advisor", "student", "fellowship", "application"]]
+    );
+    const deletePolicies = rows.filter((row) => String(row.cmd).toUpperCase().includes("DELETE"));
+    expect(deletePolicies, "no DELETE policy may exist on the core tables").toHaveLength(0);
+
+    // The FOR ALL active-advisor policies were split into explicit SELECT /
+    // INSERT / UPDATE policies (the append-only advising_meeting style); the
+    // advisor DELETE policy is gone while its SELECT/INSERT/UPDATE remain.
+    const byTable = new Map<string, string[]>();
+    for (const row of rows) {
+      const table = String(row.tablename);
+      const list = byTable.get(table) ?? [];
+      list.push(`${String(row.cmd).toUpperCase()}:${String(row.policyname)}`);
+      byTable.set(table, list);
+    }
+    expect(byTable.get("student")?.sort()).toEqual([
+      "INSERT:active_advisor_insert_student",
+      "SELECT:active_advisor_select_student",
+      "UPDATE:active_advisor_update_student",
+    ]);
+    expect(byTable.get("fellowship")?.sort()).toEqual([
+      "INSERT:active_advisor_insert_fellowship",
+      "SELECT:active_advisor_select_fellowship",
+      "UPDATE:active_advisor_update_fellowship",
+    ]);
+    expect(byTable.get("application")?.sort()).toEqual([
+      "INSERT:active_advisor_insert_application",
+      "SELECT:active_advisor_select_application",
+      "UPDATE:active_advisor_update_application",
+    ]);
+    expect(byTable.get("advisor")?.sort()).toEqual([
+      "INSERT:advisor_insert_active_staff",
+      "SELECT:advisor_select_self_or_active_staff",
+      "UPDATE:advisor_update_active_staff_only",
+    ]);
+  });
+
+  it("keeps service_role DELETE privileges on the core tables (fixture-cleanup path)", async () => {
+    const rows = await query(
+      `SELECT c.relname,
+              has_table_privilege('service_role', c.oid, 'DELETE') AS sr_delete
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'r'
+          AND c.relname = ANY($1::text[])
+        ORDER BY c.relname`,
+      [["advisor", "student", "fellowship", "application"]]
+    );
+    expect(rows).toHaveLength(4);
+    for (const row of rows) {
+      expect(row.sr_delete, `${row.relname}.service_role DELETE`).toBe(true);
     }
   });
 });
@@ -579,5 +655,176 @@ describe("advising_meeting_amendment schema and policy shape (migration 20260930
     );
     expect(rows).toHaveLength(1);
     expect(String(rows[0].indexdef)).toMatch(/\(meeting_id, created_at, amendment_id\)/);
+  });
+});
+
+describe("entity lifecycle archiving steady state (migration 20260930000005)", () => {
+  it("adds nullable student.archived_at and fellowship.archived_at TIMESTAMPTZ with no default", async () => {
+    const rows = await query(
+      `SELECT table_name, column_name, data_type, is_nullable, column_default
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND column_name = 'archived_at'
+        ORDER BY table_name`
+    );
+    expect(rows.map((row) => row.table_name)).toEqual(["fellowship", "student"]);
+    for (const row of rows) {
+      expect(row.data_type, `${row.table_name}.archived_at data type`).toBe("timestamp with time zone");
+      expect(row.is_nullable, `${row.table_name}.archived_at nullable`).toBe("YES");
+      expect(row.column_default, `${row.table_name}.archived_at has no default`).toBeNull();
+    }
+  });
+
+  it("creates the archive-filter lifecycle indexes", async () => {
+    const rows = await query(
+      `SELECT indexname
+         FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname IN ('idx_student_archived_at', 'idx_fellowship_archived_at')`
+    );
+    const names = rows.map((row) => row.indexname as string);
+    expect(names, "student archive index").toContain("idx_student_archived_at");
+    expect(names, "fellowship archive index").toContain("idx_fellowship_archived_at");
+  });
+
+  it("creates is_ocf_admin as a SECURITY INVOKER trusted predicate with empty search_path and authenticated-only EXECUTE", async () => {
+    const rows = await query(
+      `SELECT p.prosecdef, p.proconfig, p.proacl::text[] AS acl,
+              has_function_privilege('authenticated', 'public.is_ocf_admin()', 'EXECUTE') AS auth_exec,
+              has_function_privilege('anon', 'public.is_ocf_admin()', 'EXECUTE') AS anon_exec
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.proname = 'is_ocf_admin'`
+    );
+    expect(rows).toHaveLength(1);
+    // prosecdef = false ⇒ SECURITY INVOKER: the JWT claim GUCs resolve the same
+    // for authenticated and definer contexts, so no definer privilege is used.
+    expect(rows[0].prosecdef, "is_ocf_admin must be SECURITY INVOKER").toBe(false);
+    expect(rows[0].proconfig, "is_ocf_admin must set an empty search_path").toEqual(["search_path=\"\""]);
+    expect(rows[0].auth_exec, "authenticated EXECUTE on is_ocf_admin").toBe(true);
+    expect(rows[0].anon_exec, "no anon EXECUTE on is_ocf_admin").toBe(false);
+
+    // Effective ACL: the migration REVOKEs ALL from PUBLIC and anon. A PUBLIC
+    // grant is an aclitem with an EMPTY grantee (`=X/...`), so no captured
+    // entry may start with `=`.
+    const acl = rows[0].acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "is_ocf_admin must carry an effective ACL").toBe(true);
+    const publicEntries = acl.filter((entry) => entry.startsWith("="));
+    expect(publicEntries, "no PUBLIC EXECUTE on is_ocf_admin").toHaveLength(0);
+  });
+
+  it("creates lifecycle_transition as SECURITY DEFINER with empty search_path; technical sessions are rejected by the actor check", async () => {
+    const rows = await query(
+      `SELECT p.prosecdef, p.proconfig, p.proacl::text[] AS acl,
+              has_function_privilege('authenticated', 'public.lifecycle_transition(text, text, integer)', 'EXECUTE') AS auth_exec,
+              has_function_privilege('anon', 'public.lifecycle_transition(text, text, integer)', 'EXECUTE') AS anon_exec,
+              has_function_privilege('service_role', 'public.lifecycle_transition(text, text, integer)', 'EXECUTE') AS sr_exec
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.proname = 'lifecycle_transition'`
+    );
+    expect(rows).toHaveLength(1);
+    // prosecdef = true ⇒ SECURITY DEFINER (migration-owned): the RPC is the only
+    // normal lifecycle path and runs with the migration owner's privileges.
+    expect(rows[0].prosecdef, "lifecycle_transition must be SECURITY DEFINER").toBe(true);
+    expect(rows[0].proconfig, "lifecycle_transition must set an empty search_path").toEqual(["search_path=\"\""]);
+    expect(rows[0].auth_exec, "authenticated EXECUTE on lifecycle_transition").toBe(true);
+    expect(rows[0].anon_exec, "no anon EXECUTE on lifecycle_transition").toBe(false);
+    // Supabase default privileges grant EXECUTE on new `public` functions to
+    // service_role as well; the migration does not revoke that. The operative
+    // technical-session control is the RPC's actor derivation: `auth.uid()`
+    // is NULL for a service_role/DBA session, so the RPC raises 42501 and the
+    // transition can never be completed or attributed (proven behaviorally in
+    // lifecycle-archiving.test.ts). Pin the default-grant reality so a future
+    // ACL change is noticed.
+    expect(rows[0].sr_exec, "service_role retains default-granted EXECUTE (denied later by the actor check)").toBe(true);
+    // No PUBLIC EXECUTE survives the migration's REVOKE ALL FROM PUBLIC.
+    const acl = rows[0].acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "lifecycle_transition must carry an effective ACL").toBe(true);
+    const publicEntries = acl.filter((entry) => entry.startsWith("="));
+    expect(publicEntries, "no PUBLIC EXECUTE on lifecycle_transition").toHaveLength(0);
+  });
+
+  it("creates the invoker-security lifecycle guard functions with service_role-pinned EXECUTE", async () => {
+    const rows = await query(
+      `SELECT p.proname,
+              p.prosecdef,
+              has_function_privilege('authenticated', 'public.' || p.proname || '()', 'EXECUTE') AS auth_exec,
+              has_function_privilege('anon', 'public.' || p.proname || '()', 'EXECUTE') AS anon_exec,
+              has_function_privilege('service_role', 'public.' || p.proname || '()', 'EXECUTE') AS sr_exec
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.proname IN (
+            'guard_student_archived_at_lifecycle',
+            'guard_fellowship_archived_at_lifecycle',
+            'guard_advisor_is_active_lifecycle'
+          )
+        ORDER BY p.proname`
+    );
+    expect(rows.map((row) => row.proname)).toEqual([
+      "guard_advisor_is_active_lifecycle",
+      "guard_fellowship_archived_at_lifecycle",
+      "guard_student_archived_at_lifecycle",
+    ]);
+    for (const row of rows) {
+      // SECURITY INVOKER: current_user/session_user reflect the real executing
+      // session, so the trust check cannot be granted away by definer privilege.
+      expect(row.prosecdef, `${row.proname} must be SECURITY INVOKER`).toBe(false);
+      expect(row.auth_exec, `no authenticated EXECUTE on ${row.proname}`).toBe(false);
+      expect(row.anon_exec, `no anon EXECUTE on ${row.proname}`).toBe(false);
+      expect(row.sr_exec, `service_role EXECUTE pins the ${row.proname} ACL`).toBe(true);
+    }
+  });
+
+  it("creates the column-scoped lifecycle triggers enabled on student, fellowship, and advisor", async () => {
+    const rows = await query(
+      `SELECT t.tgname, c.relname AS table, f.proname AS function, t.tgtype, t.tgenabled,
+              a.attname AS column_name
+         FROM pg_trigger t
+         JOIN pg_class c ON c.oid = t.tgrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         JOIN pg_proc f ON f.oid = t.tgfoid
+         LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(t.tgattr)
+        WHERE n.nspname = 'public'
+          AND t.tgname IN (
+            'trg_student_archived_at_lifecycle',
+            'trg_fellowship_archived_at_lifecycle',
+            'trg_advisor_is_active_lifecycle'
+          )
+          AND NOT t.tgisinternal
+        ORDER BY t.tgname, a.attname`
+    );
+    const expected = [
+      { tgname: "trg_advisor_is_active_lifecycle", table: "advisor", column: "is_active", function: "guard_advisor_is_active_lifecycle" },
+      { tgname: "trg_fellowship_archived_at_lifecycle", table: "fellowship", column: "archived_at", function: "guard_fellowship_archived_at_lifecycle" },
+      { tgname: "trg_student_archived_at_lifecycle", table: "student", column: "archived_at", function: "guard_student_archived_at_lifecycle" },
+    ];
+    expect(rows).toHaveLength(3);
+    for (const [index, want] of expected.entries()) {
+      expect(rows[index].tgname).toBe(want.tgname);
+      expect(rows[index].table, `${want.tgname} table`).toBe(want.table);
+      expect(rows[index].column_name, `${want.tgname} must be column-scoped`).toBe(want.column);
+      expect(String(rows[index].function), `${want.tgname} function`).toContain(want.function);
+      expect(rows[index].tgenabled, `${want.tgname} must be enabled`).toBe("O");
+      // tgtype bitmask: 1 (ROW) + 2 (BEFORE) + 4 (INSERT) + 16 (UPDATE) = 23.
+      expect(rows[index].tgtype, `${want.tgname} must be BEFORE ROW INSERT OR UPDATE`).toBe(23);
+    }
+  });
+
+  it("keeps every FK on the default NO ACTION semantics (no FK touched by migration ...005)", async () => {
+    const rows = await query(
+      `SELECT conname, confdeltype, confupdtype
+         FROM pg_constraint
+        WHERE connamespace = 'public'::regnamespace
+          AND contype = 'f'`
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.confdeltype, `${row.conname} confdeltype`).toBe("a");
+      expect(row.confupdtype, `${row.conname} confupdtype`).toBe("a");
+    }
   });
 });

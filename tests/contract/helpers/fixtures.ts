@@ -168,12 +168,28 @@ export async function seedCoreFixtures(service: SupabaseClient): Promise<SeededC
   };
 }
 
+/** Extra attributes for a synthetic Auth user (admin-only app_metadata claim). */
+export interface CreateAuthUserOptions {
+  /**
+   * Auth `app_metadata` claims baked into the user's JWT (for example
+   * `{ ocf_admin: true }`). Users cannot edit app_metadata through standard
+   * client APIs; the admin createUser path is how the trusted lifecycle
+   * administrator claim is provisioned for contract fixtures.
+   */
+  appMetadata?: Record<string, unknown>;
+}
+
 /** Create a synthetic Supabase Auth user on the local instance; returns its id. */
-export async function createAuthUser(service: SupabaseClient, email: string): Promise<string> {
+export async function createAuthUser(
+  service: SupabaseClient,
+  email: string,
+  options: CreateAuthUserOptions = {}
+): Promise<string> {
   const { data, error } = await service.auth.admin.createUser({
     email,
     password: CONTRACT_TEST_PASSWORD,
     email_confirm: true,
+    ...(options.appMetadata ? { app_metadata: options.appMetadata } : {}),
   });
   if (error) throw new Error(`create auth user: ${error.message}`);
   if (!data?.user) throw new Error("create auth user: no user returned");

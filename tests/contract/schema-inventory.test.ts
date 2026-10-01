@@ -19,7 +19,7 @@
  *     is stored, only a body hash;
  *   - COMPLETE – every documented catalog section is present as an array, and
  *     the key expected local-chain catalog facts hold:
- *       * ten local migration-ledger rows (the exact Git chain);
+ *       * twelve local migration-ledger rows (the exact Git chain);
  *       * RLS enabled on all eight operational tables;
  *       * application foreign keys keep the default NO ACTION semantics;
  *       * the advisor identity/RLS lockdown trigger and policies are present;
@@ -33,7 +33,21 @@
  *         advising/application FK and the creator-advisor FK.
  *       * migration 20260930000003 makes advising meetings append-only for
  *         authenticated users: active-advisor SELECT and INSERT policies only,
- *         with no authenticated UPDATE or DELETE grant.
+ *         with no authenticated UPDATE or DELETE grant;
+ *       * migration 20260930000005 adds the entity-lifecycle catalog: nullable
+ *         `student.archived_at` / `fellowship.archived_at` (timestamptz, no
+ *         default), the archive-filter indexes, the trusted INVOKER
+ *         `is_ocf_admin()` predicate, the SECURITY DEFINER
+ *         `lifecycle_transition(text, text, integer)` RPC, and the
+ *         invoker-security column-scoped lifecycle guard triggers/functions
+ *         (EXECUTE pinned to authenticated / service_role only);
+ *       * migration 20260930000006 locks down authenticated DELETE on the core
+ *         historical entities (`advisor`, `student`, `fellowship`,
+ *         `application`): the authenticated DELETE table grant is revoked and
+ *         the FOR ALL / DELETE RLS policies are replaced by explicit
+ *         SELECT/INSERT/UPDATE policies, while `fellowship_thursday` /
+ *         `scholarship_history` keep authenticated DELETE and
+ *         `advising_meeting` / `advising_meeting_amendment` stay append-only.
  *
  * Safety: this test writes no output files, reads no hosted values, and never
  * queries business rows — it only runs the read-only catalog SELECTs inside
@@ -63,7 +77,7 @@ const OPERATIONAL_TABLES = [
   "scholarship_history",
 ] as const;
 
-/** The exact Git migration chain recorded in the local ledger (ten rows). */
+/** The exact Git migration chain recorded in the local ledger (twelve rows). */
 const EXPECTED_LEDGER = [
   { version: "20260305000000", name: "initial_schema" },
   { version: "20260305000001", name: "allow_anon_read" },
@@ -75,6 +89,8 @@ const EXPECTED_LEDGER = [
   { version: "20260930000002", name: "advising_application_fk_indexes" },
   { version: "20260930000003", name: "advising_meeting_append_only" },
   { version: "20260930000004", name: "advising_meeting_amendments" },
+  { version: "20260930000005", name: "entity_lifecycle_archiving" },
+  { version: "20260930000006", name: "core_history_delete_lockdown" },
 ] as const;
 
 /** One shared capture: read-only catalog queries against the lane database. */
@@ -136,7 +152,7 @@ describe("schema inventory packet shape (local/schema-only/complete)", () => {
 });
 
 describe("migration ledger", () => {
-  it("records exactly the ten local-chain migrations", () => {
+  it("records exactly the twelve local-chain migrations", () => {
     const ledger = packet.catalog.migrationLedger;
     expect(ledger).toHaveLength(EXPECTED_LEDGER.length);
     const byVersion = new Map(ledger.map((record) => [record.fields.version, record.fields.name]));
@@ -249,6 +265,32 @@ describe("advising_meeting_amendment append-only authorization (migration 202609
     expect(String(fn!.fields.bodyHash)).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it("records EXECUTE revoked from PUBLIC, anon, and authenticated on the amendment metadata function", () => {
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "set_advising_meeting_amendment_created_metadata"
+    );
+    expect(fn, "amendment metadata function").toBeDefined();
+    // Effective ACL (proacl, default PUBLIC EXECUTE never hidden): the
+    // amendment migration REVOKEs ALL from PUBLIC/anon/authenticated and grants
+    // EXECUTE only to service_role — so the ACL must be non-empty (service_role
+    // pins it; never an empty fallback) and carry no PUBLIC (`=X`), anon, or
+    // authenticated EXECUTE entry.
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "amendment metadata function must carry an effective ACL").toBe(true);
+    // No exposed role may hold EXECUTE — with or without the grant option
+    // (`X*`, the aclitem `*` suffix) — on the hardened function. normalizeAcl
+    // strips only the grantor suffix, so PUBLIC (`=X`/`=X*`), anon, and
+    // authenticated entries survive verbatim and must all be absent.
+    const exposedExecutes = acl.filter((entry) =>
+      ["=X", "=X*", "anon=X", "anon=X*", "authenticated=X", "authenticated=X*"].includes(entry)
+    );
+    expect(
+      exposedExecutes,
+      "PUBLIC/anon/authenticated must hold no EXECUTE (with or without grant option) on the amendment metadata function"
+    ).toHaveLength(0);
+    expect(acl, "service_role EXECUTE pins the amendment metadata function ACL").toContain("service_role=X");
+  });
+
   it("captures the trim-aware nonempty reason/details CHECK constraints", () => {
     const constraints = packet.catalog.constraints;
     const byName = new Map(constraints.map((record) => [record.fields.name, record]));
@@ -263,6 +305,173 @@ describe("advising_meeting_amendment append-only authorization (migration 202609
       // Schema-only inventory: the raw definition is reduced to a hash.
       expect(String(record!.fields.definitionHash), `${name} definitionHash`).toMatch(/^[0-9a-f]{64}$/);
     }
+  });
+});
+
+describe("entity lifecycle archiving catalog (migration 20260930000005)", () => {
+  it("captures the lifecycle columns as nullable timestamptz with no default", () => {
+    const columns = packet.catalog.columns;
+    const byIdentity = new Map(columns.map((record) => [record.identity, record]));
+
+    for (const identity of ["public.student.archived_at", "public.fellowship.archived_at"]) {
+      const record = byIdentity.get(identity);
+      expect(record, `column ${identity}`).toBeDefined();
+      expect(record!.fields.dataType, `${identity} data type`).toBe("timestamp with time zone");
+      expect(record!.fields.nullable, `${identity} nullable`).toBe(true);
+      // No default expression: only the lifecycle RPC (or a trusted technical
+      // session) writes the field, so a DEFAULT would be misleading.
+      expect(record!.fields.defaultHash, `${identity} defaultHash`).toBeNull();
+    }
+  });
+
+  it("captures the lifecycle archive-filter indexes", () => {
+    const indexes = packet.catalog.indexes.map((record) => record.identity);
+    expect(indexes, "student archive index").toContain("public.student.idx_student_archived_at");
+    expect(indexes, "fellowship archive index").toContain("public.fellowship.idx_fellowship_archived_at");
+  });
+
+  it("captures is_ocf_admin as a trusted INVOKER predicate with authenticated EXECUTE and no PUBLIC/anon EXECUTE", () => {
+    const fn = packet.catalog.functions.find((record) => record.fields.name === "is_ocf_admin");
+    expect(fn, "is_ocf_admin function").toBeDefined();
+    expect(fn!.fields.securityMode, "is_ocf_admin security mode").toBe("INVOKER");
+    expect(fn!.fields.searchPath, "is_ocf_admin search path").toEqual([]);
+    expect(String(fn!.fields.bodyHash)).toMatch(/^[0-9a-f]{64}$/);
+
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "is_ocf_admin must carry an effective ACL").toBe(true);
+    expect(acl, "authenticated EXECUTE on is_ocf_admin").toContain("authenticated=X");
+    // No PUBLIC (`=X`/`=X*`) or anon EXECUTE — with or without grant option.
+    const exposed = acl.filter((entry) => ["=X", "=X*", "anon=X", "anon=X*"].includes(entry));
+    expect(exposed, "no PUBLIC/anon EXECUTE on is_ocf_admin").toHaveLength(0);
+  });
+
+  it("captures lifecycle_transition as SECURITY DEFINER with authenticated EXECUTE and no PUBLIC/anon EXECUTE", () => {
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "lifecycle_transition"
+    );
+    expect(fn, "lifecycle_transition function").toBeDefined();
+    expect(fn!.fields.securityMode, "lifecycle_transition security mode").toBe("DEFINER");
+    expect(fn!.fields.searchPath, "lifecycle_transition search path").toEqual([]);
+    expect(String(fn!.fields.signature), "lifecycle_transition signature").toContain("text");
+    expect(String(fn!.fields.bodyHash)).toMatch(/^[0-9a-f]{64}$/);
+
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "lifecycle_transition must carry an effective ACL").toBe(true);
+    expect(acl, "authenticated EXECUTE on lifecycle_transition").toContain("authenticated=X");
+    const exposed = acl.filter((entry) => ["=X", "=X*", "anon=X", "anon=X*"].includes(entry));
+    expect(exposed, "no PUBLIC/anon EXECUTE on lifecycle_transition").toHaveLength(0);
+  });
+
+  it("captures the invoker-security lifecycle guard functions with service_role-pinned ACLs", () => {
+    const byName = new Map(packet.catalog.functions.map((record) => [record.fields.name, record]));
+    for (const name of [
+      "guard_student_archived_at_lifecycle",
+      "guard_fellowship_archived_at_lifecycle",
+      "guard_advisor_is_active_lifecycle",
+    ]) {
+      const fn = byName.get(name);
+      expect(fn, `guard function ${name}`).toBeDefined();
+      expect(fn!.fields.securityMode, `${name} security mode`).toBe("INVOKER");
+      expect(fn!.fields.searchPath, `${name} search path`).toEqual([]);
+      expect(String(fn!.fields.bodyHash), `${name} bodyHash`).toMatch(/^[0-9a-f]{64}$/);
+
+      const acl = fn!.fields.acl as string[];
+      expect(Array.isArray(acl) && acl.length > 0, `${name} must carry an effective ACL`).toBe(true);
+      // PUBLIC/anon/authenticated EXECUTE revoked; service_role EXECUTE pins the
+      // ACL non-empty (never the default PUBLIC fallback).
+      const exposed = acl.filter((entry) =>
+        ["=X", "=X*", "anon=X", "anon=X*", "authenticated=X", "authenticated=X*"].includes(entry)
+      );
+      expect(exposed, `${name} PUBLIC/anon/authenticated EXECUTE`).toHaveLength(0);
+      expect(acl, `${name} service_role EXECUTE`).toContain("service_role=X");
+    }
+  });
+
+  it("captures the lifecycle column-scoped triggers on student, fellowship, and advisor", () => {
+    const byName = new Map(packet.catalog.triggers.map((record) => [record.fields.name, record]));
+    const expected: Array<{ name: string; table: string; function: string }> = [
+      {
+        name: "trg_student_archived_at_lifecycle",
+        table: "student",
+        function: "guard_student_archived_at_lifecycle",
+      },
+      {
+        name: "trg_fellowship_archived_at_lifecycle",
+        table: "fellowship",
+        function: "guard_fellowship_archived_at_lifecycle",
+      },
+      {
+        name: "trg_advisor_is_active_lifecycle",
+        table: "advisor",
+        function: "guard_advisor_is_active_lifecycle",
+      },
+    ];
+    for (const { name, table, function: fnName } of expected) {
+      const record = byName.get(name);
+      expect(record, `trigger ${name}`).toBeDefined();
+      expect(record!.fields.table, `${name} table`).toBe(table);
+      expect(String(record!.fields.function), `${name} function`).toContain(fnName);
+      expect(record!.fields.state, `${name} state`).toBe("O");
+      expect(String(record!.fields.timing), `${name} timing`).toBe("ROW");
+      expect(record!.fields.events, `${name} events`).toContain("INSERT");
+      expect(record!.fields.events, `${name} events`).toContain("UPDATE");
+      expect(String(record!.fields.definitionHash), `${name} definitionHash`).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+});
+
+describe("core-history DELETE lockdown catalog (migration 20260930000006)", () => {
+  it("captures no authenticated DELETE table grant on advisor, student, fellowship, or application", () => {
+    const grants = packet.catalog.grants.filter(
+      (record) =>
+        record.fields.objectType === "TABLE" &&
+        ["advisor", "student", "fellowship", "application"].includes(String(record.fields.objectName)) &&
+        record.fields.grantee === "authenticated"
+    );
+    expect(grants.length, "core tables must carry authenticated table grants").toBeGreaterThan(0);
+    for (const grant of grants) {
+      expect(grant.fields.privilege, `${grant.fields.objectName} authenticated grant`).not.toBe("DELETE");
+    }
+  });
+
+  it("captures explicit SELECT/INSERT/UPDATE active-advisor policies and no DELETE policy on the core tables", () => {
+    const policies = packet.catalog.policies.filter(
+      (record) =>
+        ["advisor", "student", "fellowship", "application"].includes(String(record.fields.table)) &&
+        Array.isArray(record.fields.roles) &&
+        record.fields.roles.includes("authenticated")
+    );
+    expect(
+      policies.some((record) => String(record.fields.command).toUpperCase() === "DELETE"),
+      "no DELETE policy may exist on the core tables"
+    ).toBe(false);
+
+    const byTable = new Map<string, string[]>();
+    for (const record of policies) {
+      const list = byTable.get(String(record.fields.table)) ?? [];
+      list.push(String(record.fields.command).toUpperCase());
+      byTable.set(String(record.fields.table), list);
+    }
+    for (const table of ["student", "fellowship", "application"]) {
+      expect(byTable.get(table)?.sort(), `${table} policy commands`).toEqual(["INSERT", "SELECT", "UPDATE"]);
+    }
+    // advisor keeps its self-or-active-staff SELECT, active-staff INSERT, and
+    // active-staff UPDATE policies; advisor_delete_active_staff is gone.
+    expect(byTable.get("advisor")?.sort(), "advisor policy commands").toEqual(["INSERT", "SELECT", "UPDATE"]);
+  });
+
+  it("keeps authenticated DELETE on the operational rows fellowship_thursday and scholarship_history", () => {
+    const deleteGrants = packet.catalog.grants.filter(
+      (record) =>
+        record.fields.objectType === "TABLE" &&
+        ["fellowship_thursday", "scholarship_history"].includes(String(record.fields.objectName)) &&
+        record.fields.grantee === "authenticated" &&
+        record.fields.privilege === "DELETE"
+    );
+    expect(deleteGrants.map((record) => record.fields.objectName).sort()).toEqual([
+      "fellowship_thursday",
+      "scholarship_history",
+    ]);
   });
 });
 

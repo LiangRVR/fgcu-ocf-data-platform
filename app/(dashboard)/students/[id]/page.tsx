@@ -22,6 +22,7 @@ import {
   CalendarPlus,
   BookOpen,
   Activity,
+  Archive,
 } from "lucide-react";
 import Link from "next/link";
 import { createServerClient } from "@/lib/supabase/server";
@@ -31,6 +32,8 @@ import { DetailSection } from "@/components/ui/detail-section";
 import { EmptyState } from "@/components/ui/empty-state";
 import { EntityHeader } from "@/components/ui/entity-header";
 import { MetricBadge } from "@/components/ui/metric-badge";
+import { LifecycleBadge } from "@/components/lifecycle";
+import { LifecycleAction } from "@/components/lifecycle";
 import { formatDate } from "@/lib/utils/format";
 import { formatApplicationLabel } from "@/lib/applications/pipeline";
 import { Fragment } from "react";
@@ -204,6 +207,16 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
     notFound();
   }
 
+  // Lifecycle gate: when the student is archived, child workflow actions
+  // (Add Application, Log Meeting, Log Attendance, Add History) that create
+  // new active-workflow records are hidden. Historical records still
+  // render — applications, advising meetings, attendance, and scholarship
+  // history reference the archived student by FK (NO ACTION) and continue
+  // to display the archived name. Restore is offered as a single primary
+  // action on the archived detail page (any signed-in advisor can restore
+  // a student through the lifecycle_transition RPC).
+  const isArchived = student.archived_at != null;
+
   // Derived summary stats
   const finalistCount = applications.filter((a) => a.is_finalist).length;
   const noShowCount = advisingMeetings.filter((m) => m.no_show).length;
@@ -253,6 +266,11 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
         description={`Student ID ${student.student_id}${student.major ? ` • ${student.major}` : ""}`}
         badges={
           <>
+            <LifecycleBadge
+              kind="student"
+              archivedAt={student.archived_at}
+              isActive={!isArchived}
+            />
             {student.is_ch_student ? <MetricBadge tone="green">CH Student</MetricBadge> : null}
             {student.honors_college ? <MetricBadge tone="blue">Honors College</MetricBadge> : null}
             {student.first_gen ? <MetricBadge tone="purple">First Generation</MetricBadge> : null}
@@ -267,18 +285,38 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
         }
         actions={
           <>
-            <Link href={`/applications?add=1&student_id=${student.student_id}`}>
-              <Button size="sm">
-                <FilePlus className="mr-2 h-4 w-4" />
-                Add Application
-              </Button>
-            </Link>
-            <Link href={`/advising?add=1&student_id=${student.student_id}`}>
-              <Button size="sm" variant="outline">
-                <CalendarPlus className="mr-2 h-4 w-4" />
-                Log Meeting
-              </Button>
-            </Link>
+            {isArchived ? (
+              <>
+                <LifecycleAction
+                  entity="student"
+                  entityId={student.student_id}
+                  entityLabel={student.full_name}
+                  action="restore"
+                  variant="default"
+                />
+                <Link href="/students?view=archived">
+                  <Button variant="outline" size="sm">
+                    <Archive className="mr-2 h-4 w-4" />
+                    Archived students
+                  </Button>
+                </Link>
+              </>
+            ) : (
+              <>
+                <Link href={`/applications?add=1&student_id=${student.student_id}`}>
+                  <Button size="sm">
+                    <FilePlus className="mr-2 h-4 w-4" />
+                    Add Application
+                  </Button>
+                </Link>
+                <Link href={`/advising?add=1&student_id=${student.student_id}`}>
+                  <Button size="sm" variant="outline">
+                    <CalendarPlus className="mr-2 h-4 w-4" />
+                    Log Meeting
+                  </Button>
+                </Link>
+              </>
+            )}
             <Link href="/students">
               <Button variant="outline" size="sm">
                 <ArrowLeft className="mr-2 h-4 w-4" />
@@ -321,12 +359,19 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                 </span>
               )}
             </CardTitle>
-            <Link href={`/applications?add=1&student_id=${student.student_id}`}>
-              <Button size="sm" variant="outline" className="h-8 text-xs">
-                <FilePlus className="mr-1.5 h-3.5 w-3.5" />
-                Add Application
-              </Button>
-            </Link>
+            {isArchived ? (
+              <MetricBadge tone="amber" className="gap-1">
+                <Archive className="h-3 w-3" aria-hidden="true" />
+                Archived — view only
+              </MetricBadge>
+            ) : (
+              <Link href={`/applications?add=1&student_id=${student.student_id}`}>
+                <Button size="sm" variant="outline" className="h-8 text-xs">
+                  <FilePlus className="mr-1.5 h-3.5 w-3.5" />
+                  Add Application
+                </Button>
+              </Link>
+            )}
           </CardHeader>
           <CardContent>
             {applications.length === 0 ? (
@@ -335,14 +380,18 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                   <Award className="h-8 w-8 text-gray-400" />
                 </div>
                 <p className="mb-3 text-sm text-slate-500">
-                  No applications found for this student.
+                  {isArchived
+                    ? "No applications on record. The student is archived; new applications are disabled while archived."
+                    : "No applications found for this student."}
                 </p>
-                <Link href={`/applications?add=1&student_id=${student.student_id}`}>
-                  <Button size="sm" className="bg-[#006747] hover:bg-[#00563b]">
-                    <FilePlus className="mr-2 h-4 w-4" />
-                    Add First Application
-                  </Button>
-                </Link>
+                {isArchived ? null : (
+                  <Link href={`/applications?add=1&student_id=${student.student_id}`}>
+                    <Button size="sm" className="bg-[#006747] hover:bg-[#00563b]">
+                      <FilePlus className="mr-2 h-4 w-4" />
+                      Add First Application
+                    </Button>
+                  </Link>
+                )}
               </div>
             ) : (
               <>
@@ -447,12 +496,19 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                 </span>
               )}
             </CardTitle>
-            <Link href={`/advising?add=1&student_id=${student.student_id}`}>
-              <Button size="sm" variant="outline" className="h-8 text-xs">
-                <CalendarPlus className="mr-1.5 h-3.5 w-3.5" />
-                Log Meeting
-              </Button>
-            </Link>
+            {isArchived ? (
+              <MetricBadge tone="amber" className="gap-1">
+                <Archive className="h-3 w-3" aria-hidden="true" />
+                Archived — view only
+              </MetricBadge>
+            ) : (
+              <Link href={`/advising?add=1&student_id=${student.student_id}`}>
+                <Button size="sm" variant="outline" className="h-8 text-xs">
+                  <CalendarPlus className="mr-1.5 h-3.5 w-3.5" />
+                  Log Meeting
+                </Button>
+              </Link>
+            )}
           </CardHeader>
           <CardContent>
             {advisingMeetings.length === 0 ? (
@@ -460,13 +516,19 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                 <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gray-100">
                   <MessageSquare className="h-8 w-8 text-gray-400" />
                 </div>
-                <p className="mb-3 text-sm text-slate-500">No advising meetings on record.</p>
-                <Link href={`/advising?add=1&student_id=${student.student_id}`}>
-                  <Button size="sm" className="bg-[#006747] hover:bg-[#00563b]">
-                    <CalendarPlus className="mr-2 h-4 w-4" />
-                    Log First Meeting
-                  </Button>
-                </Link>
+                <p className="mb-3 text-sm text-slate-500">
+                  {isArchived
+                    ? "No advising meetings on record. The student is archived; new advising meetings are disabled while archived."
+                    : "No advising meetings on record."}
+                </p>
+                {isArchived ? null : (
+                  <Link href={`/advising?add=1&student_id=${student.student_id}`}>
+                    <Button size="sm" className="bg-[#006747] hover:bg-[#00563b]">
+                      <CalendarPlus className="mr-2 h-4 w-4" />
+                      Log First Meeting
+                    </Button>
+                  </Link>
+                )}
               </div>
             ) : (
               <>
@@ -614,12 +676,19 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                 </span>
               )}
             </CardTitle>
-            <Link href={`/fellowship-thursday?add=1&student_id=${student.student_id}`}>
-              <Button size="sm" variant="outline" className="h-8 text-xs">
-                <CalendarPlus className="mr-1.5 h-3.5 w-3.5" />
-                Log Attendance
-              </Button>
-            </Link>
+            {isArchived ? (
+              <MetricBadge tone="amber" className="gap-1">
+                <Archive className="h-3 w-3" aria-hidden="true" />
+                Archived — view only
+              </MetricBadge>
+            ) : (
+              <Link href={`/fellowship-thursday?add=1&student_id=${student.student_id}`}>
+                <Button size="sm" variant="outline" className="h-8 text-xs">
+                  <CalendarPlus className="mr-1.5 h-3.5 w-3.5" />
+                  Log Attendance
+                </Button>
+              </Link>
+            )}
           </CardHeader>
           <CardContent>
             {fellowshipThursday.length === 0 ? (
@@ -627,13 +696,19 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                 <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gray-100">
                   <CalendarDays className="h-8 w-8 text-gray-400" />
                 </div>
-                <p className="mb-3 text-sm text-slate-500">No Fellowship Thursday records.</p>
-                <Link href={`/fellowship-thursday?add=1&student_id=${student.student_id}`}>
-                  <Button size="sm" className="bg-[#006747] hover:bg-[#00563b]">
-                    <CalendarPlus className="mr-2 h-4 w-4" />
-                    Log First Attendance
-                  </Button>
-                </Link>
+                <p className="mb-3 text-sm text-slate-500">
+                  {isArchived
+                    ? "No Fellowship Thursday records. The student is archived; new attendance records are disabled while archived."
+                    : "No Fellowship Thursday records."}
+                </p>
+                {isArchived ? null : (
+                  <Link href={`/fellowship-thursday?add=1&student_id=${student.student_id}`}>
+                    <Button size="sm" className="bg-[#006747] hover:bg-[#00563b]">
+                      <CalendarPlus className="mr-2 h-4 w-4" />
+                      Log First Attendance
+                    </Button>
+                  </Link>
+                )}
               </div>
             ) : (
               <>
@@ -702,12 +777,19 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                 </span>
               )}
             </CardTitle>
-            <Link href={`/scholarship-history?add=1&student_id=${student.student_id}`}>
-              <Button size="sm" variant="outline" className="h-8 text-xs">
-                <BookOpen className="mr-1.5 h-3.5 w-3.5" />
-                Add History
-              </Button>
-            </Link>
+            {isArchived ? (
+              <MetricBadge tone="amber" className="gap-1">
+                <Archive className="h-3 w-3" aria-hidden="true" />
+                Archived — view only
+              </MetricBadge>
+            ) : (
+              <Link href={`/scholarship-history?add=1&student_id=${student.student_id}`}>
+                <Button size="sm" variant="outline" className="h-8 text-xs">
+                  <BookOpen className="mr-1.5 h-3.5 w-3.5" />
+                  Add History
+                </Button>
+              </Link>
+            )}
           </CardHeader>
           <CardContent>
             {scholarshipHistory.length === 0 ? (

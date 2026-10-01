@@ -4,6 +4,7 @@ import { DetailSection } from "@/components/ui/detail-section";
 import { EmptyState } from "@/components/ui/empty-state";
 import { EntityHeader } from "@/components/ui/entity-header";
 import { MetricBadge } from "@/components/ui/metric-badge";
+import { LifecycleBadge, LifecycleAction } from "@/components/lifecycle";
 import {
   ArrowLeft,
   CalendarDays,
@@ -14,6 +15,7 @@ import Link from "next/link";
 import { createServerClient } from "@/lib/supabase/server";
 import type { Database } from "@/types/database";
 import { formatApplicationLabel } from "@/lib/applications/pipeline";
+import { getSessionUser, isOcfAdmin } from "@/lib/auth/session";
 
 type Advisor = Database["public"]["Tables"]["advisor"]["Row"];
 type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
@@ -96,6 +98,13 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
   const uniqueStudentIds = new Set(meetings.map((m) => m.student_id));
   const uniqueStudentCount = uniqueStudentIds.size;
 
+  // Advisor lifecycle gating: only trusted OCF administrators (the
+  // immutable Auth app_metadata.ocf_admin claim) may deactivate or
+  // reactivate another advisor. Self-deactivation is rejected at the
+  // database boundary by the lifecycle RPC's self-deactivation guard.
+  const sessionUser = await getSessionUser();
+  const canManageAdvisorLifecycle = isOcfAdmin(sessionUser);
+
   return (
     <>
       <EntityHeader
@@ -104,12 +113,21 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
         description={`Advisor ID ${advisor.advisor_id}${advisor.email ? ` • ${advisor.email}` : ""}`}
         badges={
           <>
-            <MetricBadge tone={advisor.is_active ? "green" : "red"}>{advisor.is_active ? "Active" : "Inactive"}</MetricBadge>
+            <LifecycleBadge kind="advisor" isActive={advisor.is_active} />
             <MetricBadge tone="slate">{advisor.role}</MetricBadge>
           </>
         }
         actions={
           <>
+            {canManageAdvisorLifecycle ? (
+              <LifecycleAction
+                entity="advisor"
+                entityId={advisor.advisor_id}
+                entityLabel={advisor.advisor_name}
+                action={advisor.is_active ? "deactivate" : "reactivate"}
+                variant={advisor.is_active ? "outline" : "default"}
+              />
+            ) : null}
             <Link href={`/advising?add=1&advisor_id=${advisor.advisor_id}`}>
               <Button size="sm">
                 <CalendarPlus className="mr-2 h-4 w-4" />

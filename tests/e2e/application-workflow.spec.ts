@@ -6,8 +6,14 @@
  * selectors (#full_name / #email / #us_citizen / "Create Student") and advances
  * a seeded application through a pipeline stage via the edit dialog's
  * #app-stage select, verifying the advance persists across a reload.
+ *
+ * Fixture cleanup note: applications are historical records and the UI exposes
+ * NO Delete control (the entity-lifecycle-archiving change removed it), so the
+ * one test that creates an application cleans it up through the service role —
+ * never through a destructive UI path.
  */
 import { test, expect, type Page } from "@playwright/test";
+import { createClient } from "@supabase/supabase-js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -34,6 +40,18 @@ let counter = 0;
 function uniqueName(prefix: string): string {
   counter += 1;
   return `${prefix} ${Date.now()}-${counter}`;
+}
+
+/**
+ * Service-role client for test-support fixture cleanup only (never the browser
+ * under test). Used to remove rows the UI is deliberately forbidden to delete.
+ */
+function createServiceClient() {
+  const apiUrl = requireEnv("SUPABASE_URL");
+  const serviceRoleKey = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(apiUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
 }
 
 async function signInAsActive(page: Page): Promise<void> {
@@ -162,6 +180,9 @@ test.describe("application workflow", () => {
 
     const createdYear = "2024";
     const createdLabel = `${FELLOWSHIP_TWO_NAME} — ${createdYear}`;
+    // A unique destination marker lets the service role find exactly the row
+    // this test created (the seed never uses it) for safe fixture cleanup.
+    const destinationCountry = `E2E cycle ${Date.now()}`;
 
     await page.goto("/applications");
     await page.getByRole("button", { name: "New Application" }).click();
@@ -171,7 +192,7 @@ test.describe("application workflow", () => {
     await page.locator("#app-fellowship").click();
     await page.getByRole("option", { name: FELLOWSHIP_TWO_NAME, exact: true }).click();
     await page.locator("#app-year").fill(createdYear);
-    await page.locator("#app-country").fill(`E2E cycle ${Date.now()}`);
+    await page.locator("#app-country").fill(destinationCountry);
 
     await page.getByRole("dialog").getByRole("button", { name: "Create Application" }).click();
 
@@ -186,9 +207,27 @@ test.describe("application workflow", () => {
     await expect(rowAfterReload).toBeVisible();
 
     // Clean up the created application so the reports spec's exact totals keep
-    // deriving from the seed export alone.
-    await rowAfterReload.getByTitle("Delete application").click();
-    await page.getByRole("alertdialog").getByRole("button", { name: "Delete" }).click();
+    // deriving from the seed export alone. Applications are historical records:
+    // the UI deliberately exposes NO Delete control (entity-lifecycle-archiving
+    // removes it), so cleanup goes through the service role — the same
+    // test-support path the operations spec uses.
+    const service = createServiceClient();
+    const { data: createdApp, error: findError } = await service
+      .from("application")
+      .select("application_id")
+      .eq("destination_country", destinationCountry)
+      .maybeSingle();
+    if (findError) throw new Error(`find created application for cleanup: ${findError.message}`);
+    expect(createdApp, "the created application must exist for cleanup").not.toBeNull();
+
+    const { error: deleteError } = await service
+      .from("application")
+      .delete()
+      .eq("application_id", createdApp!.application_id);
+    if (deleteError) throw new Error(`cleanup created application: ${deleteError.message}`);
+
+    // The UI row is gone after a reload (server loader no longer returns it).
+    await page.reload();
     await expect(page.locator("table tbody tr", { hasText: createdLabel })).toHaveCount(0);
   });
 });

@@ -27,6 +27,7 @@ vi.mock("next/navigation", () => ({
 import {
   getCurrentAdvisor,
   getSessionUser,
+  isOcfAdmin,
   requireAdvisor,
 } from "@/lib/auth/session";
 
@@ -237,6 +238,39 @@ describe("getCurrentAdvisor (resolves by pre-bound auth_user_id only)", () => {
 
     await expect(getCurrentAdvisor(user)).resolves.toEqual(advisor);
     expect(query.maybeSingle).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── isOcfAdmin ──────────────────────────────────────────────────────────────
+//
+// The ONLY administrator authority for lifecycle transitions (entity
+// lifecycle archiving): true iff the session user carries the immutable Auth
+// JWT `app_metadata.ocf_admin = true` claim. The mutable
+// `public.advisor.role` column is never consulted.
+
+describe("isOcfAdmin", () => {
+  it("returns false when there is no session user", () => {
+    expect(isOcfAdmin(null)).toBe(false);
+    expect(isOcfAdmin(undefined)).toBe(false);
+  });
+
+  it("returns false when app_metadata is empty", () => {
+    expect(isOcfAdmin(makeUser({ app_metadata: {} }))).toBe(false);
+  });
+
+  it("returns false when the ocf_admin claim is missing", () => {
+    expect(isOcfAdmin(makeUser({ app_metadata: { role: "admin" } }))).toBe(false);
+  });
+
+  it("returns false when the ocf_admin claim is false or not the boolean true", () => {
+    expect(isOcfAdmin(makeUser({ app_metadata: { ocf_admin: false } }))).toBe(false);
+    // A string claim is not the trusted boolean true (the DB boundary compares
+    // the JWT text 'true', but the session helper must stay strict too).
+    expect(isOcfAdmin(makeUser({ app_metadata: { ocf_admin: "true" } }))).toBe(false);
+  });
+
+  it("returns true only when the immutable ocf_admin app_metadata claim is the boolean true", () => {
+    expect(isOcfAdmin(makeUser({ app_metadata: { ocf_admin: true } }))).toBe(true);
   });
 });
 

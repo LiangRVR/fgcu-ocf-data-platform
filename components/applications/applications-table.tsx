@@ -24,16 +24,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -42,7 +32,6 @@ import {
 import {
   Search,
   Pencil,
-  Trash2,
   FilePlus,
   FileText,
   MoreHorizontal,
@@ -137,7 +126,6 @@ export function ApplicationsTable({
 
   const [addOpen, setAddOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
-  const [deleteId, setDeleteId] = useState<number | null>(null);
   const [editingApp, setEditingApp] = useState<Application | null>(null);
 
   const [form, setForm] = useState(EMPTY_FORM);
@@ -338,30 +326,6 @@ export function ApplicationsTable({
     }
   };
 
-  const handleDeleteConfirm = async () => {
-    if (!deleteId) return;
-    setIsLoading(true);
-    try {
-      const { error } = await supabaseBrowserClient
-        .from("application")
-        .delete()
-        .eq("application_id", deleteId);
-
-      if (error) throw error;
-
-      setApplications((prev) =>
-        prev.filter((a) => a.application_id !== deleteId)
-      );
-      toast.success("Application deleted.");
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to delete application.");
-    } finally {
-      setIsLoading(false);
-      setDeleteId(null);
-    }
-  };
-
   const resetAndCloseAdd = () => {
     setForm(EMPTY_FORM);
     setFormErrors({});
@@ -486,26 +450,19 @@ export function ApplicationsTable({
                           {app.is_finalist && <MetricBadge tone="green">Finalist</MetricBadge>}
                         </div>
                       </div>
-                      <DropdownMenu modal={false}>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0 text-slate-500">
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => openEdit(app)}>
-                            <Pencil className="mr-2 h-4 w-4" />
-                            Edit
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            className="text-red-600 focus:text-red-600"
-                            onClick={() => setDeleteId(app.application_id)}
-                          >
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+<DropdownMenu modal={false}>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0 text-slate-500">
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => openEdit(app)}>
+                              <Pencil className="mr-2 h-4 w-4" />
+                              Edit
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                     </div>
                   </div>
                 ))}
@@ -594,15 +551,6 @@ export function ApplicationsTable({
                             onClick={() => openEdit(app)}
                           >
                             <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-slate-600 hover:text-red-600"
-                            title="Delete application"
-                            onClick={() => setDeleteId(app.application_id)}
-                          >
-                            <Trash2 className="h-4 w-4" />
                           </Button>
                         </div>
                       </td>
@@ -694,31 +642,12 @@ export function ApplicationsTable({
         </DialogContent>
       </Dialog>
 
-      {/* ── Delete Confirmation ────────────────────────────────── */}
-      <AlertDialog
-        open={deleteId !== null}
-        onOpenChange={(o) => !o && setDeleteId(null)}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Application</AlertDialogTitle>
-            <AlertDialogDescription>
-              This action cannot be undone. The application record will be
-              permanently removed.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isLoading}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-red-600 hover:bg-red-700"
-              onClick={handleDeleteConfirm}
-              disabled={isLoading}
-            >
-              {isLoading ? "Deleting…" : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* ── No destructive delete dialog ──────────────────────────
+          Applications are historical records. The destructive delete
+          control has been removed by design — this change introduces an
+          archive/outcome lifecycle is intentionally NOT in scope (see the
+          entity-lifecycle-archiving change intent). Edits remain the only
+          mutation path. */}
     </>
   );
 }

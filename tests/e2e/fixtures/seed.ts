@@ -3,7 +3,12 @@
  *
  * Seeds the E2E lane's Docker-local Supabase instance with:
  *   - two advisor AUTH users (active + inactive), each linked to a
- *     public.advisor row via auth_user_id;
+ *     public.advisor row via auth_user_id. The ACTIVE advisor carries the
+ *     immutable Auth `app_metadata.ocf_admin = true` claim: the E2E lane's
+ *     operator is a trusted OCF administrator, which is what lets the
+ *     lifecycle UI flows (Archive/Restore Student & Fellowship) exercise the
+ *     admin-only `lifecycle_transition` RPC end-to-end through the browser.
+ *     The INACTIVE advisor carries no claim and stays a plain non-admin;
  *   - one non-advisor AUTH user with NO public.advisor row, used by
  *     tests/e2e/auth.spec.ts to assert the `/login?reason=unauthorized`
  *     outcome (a signed-in session that cannot resolve to an advisor);
@@ -109,11 +114,12 @@ async function main(): Promise<void> {
    */
   const nonAdvisorEmail = "e2e-non-advisor@example.com";
 
-  const createAuthUser = async (email: string) => {
+  const createAuthUser = async (email: string, appMetadata?: Record<string, unknown>) => {
     const { data, error } = await service.auth.admin.createUser({
       email,
       password: PASSWORD,
       email_confirm: true,
+      ...(appMetadata ? { app_metadata: appMetadata } : {}),
     });
     if (error) {
       throw new Error(`createUser(${email}): ${error.message}`);
@@ -124,8 +130,13 @@ async function main(): Promise<void> {
     return data.user;
   };
 
+  // The ACTIVE advisor is the lane's trusted OCF administrator (Auth
+  // app_metadata.ocf_admin=true): the lifecycle_transition RPC — and therefore
+  // the Archive/Restore UI flows — requires that immutable claim. The INACTIVE
+  // advisor is a plain non-admin so the auth gate / lifecycle-denial surfaces
+  // stay truthful.
   const [activeUser, inactiveUser] = await Promise.all([
-    createAuthUser(activeEmail),
+    createAuthUser(activeEmail, { ocf_admin: true }),
     createAuthUser(inactiveEmail),
   ]);
 

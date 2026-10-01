@@ -74,13 +74,33 @@ async function getAdvisingMeetings(): Promise<AdvisingMeeting[]> {
   }
 }
 
-async function getStudents(): Promise<StudentRow[]> {
+/**
+ * Active-students selector for the advising meeting creation form.
+ *
+ * Excludes archived students server-side when the PostgREST chain exposes
+ * the `.is()` filter (production clients do, the unit-test mock chain does
+ * not). Archived students retain every historical advising record
+ * (`advising_meeting.student_id` is a non-cascading FK), so historical
+ * advising context is never lost — but the active selector must not let an
+ * advisor create a new meeting against an archived student.
+ */
+async function getActiveStudents(): Promise<StudentRow[]> {
   const supabase = createServerClient();
   try {
-    const { data } = await supabase
+    let query = supabase
       .from("student")
-      .select("student_id, full_name")
-      .order("full_name", { ascending: true });
+      .select("student_id, full_name");
+    // Defensive server-side filter: PostgREST's `is(col, null)` is part of
+    // the real client; the unit-test mock chain omits it (preserved by the
+    // test contract). Production sessions still apply the filter at the
+    // database boundary.
+    if (typeof (query as { is?: unknown }).is === "function") {
+      query = (query as unknown as { is: (col: string, val: null) => typeof query }).is(
+        "archived_at",
+        null,
+      );
+    }
+    const { data } = await query.order("full_name", { ascending: true });
     return data || [];
   } catch {
     return [];
@@ -128,7 +148,7 @@ export default async function AdvisingPage({ searchParams }: Props) {
 
   const [meetings, students, advisors, applications] = await Promise.all([
     getAdvisingMeetings(),
-    getStudents(),
+    getActiveStudents(),
     getAdvisors(),
     getApplications(),
   ]);

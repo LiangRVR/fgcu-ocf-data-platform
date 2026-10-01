@@ -5,6 +5,21 @@ import type { Database } from "@/types/database";
 
 export type Advisor = Database["public"]["Tables"]["advisor"]["Row"];
 
+/**
+ * True when the session user carries the immutable Auth JWT
+ * `app_metadata.ocf_admin = true` claim.
+ *
+ * This is the ONLY administrator authority for lifecycle transitions. The
+ * mutable `public.advisor.role` column is never consulted, because active
+ * advisors can currently mutate it (see the entity-lifecycle-archiving design).
+ * Users cannot edit app_metadata through standard client APIs, so this claim is
+ * trusted at the database boundary by `public.is_ocf_admin()` /
+ * `public.lifecycle_transition`.
+ */
+export function isOcfAdmin(user: User | null | undefined): boolean {
+  return user?.app_metadata?.ocf_admin === true;
+}
+
 export async function getSessionUser() {
   const supabase = createServerClient();
   const { data, error: claimsError } = await supabase.auth.getClaims();

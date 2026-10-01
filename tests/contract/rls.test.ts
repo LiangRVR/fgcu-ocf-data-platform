@@ -29,9 +29,11 @@
  *     and never created), so an authenticated account whose email matches an
  *     unlinked `advisor` row can never claim, bind, or take over that identity
  *     (pre-existing-matching-account takeover, row 8);
- *   - pre-bound active advisors retain shared staff CRUD on every mutable
- *     operational table (`student`, `fellowship`, `application`,
- *     `fellowship_thursday`, `scholarship_history`), while
+ *   - pre-bound active advisors retain shared staff CRUD on the operational
+ *     rows `fellowship_thursday` and `scholarship_history`, and shared
+ *     INSERT/read/UPDATE (never DELETE) on the core historical entities
+ *     `student`, `fellowship`, `application`, and `advisor` (migration
+ *     ...006 revokes/denies authenticated DELETE of core history), while
  *     `advising_meeting` is append-only: active advisors may SELECT and INSERT
  *     but direct UPDATE and DELETE are denied;
  *   - pre-bound inactive advisors and authenticated users with no advisor row
@@ -142,13 +144,24 @@ const OPERATIONAL_TABLES = [
 ] as const;
 type OperationalTable = (typeof OPERATIONAL_TABLES)[number];
 
-/** Tables that remain mutable by active staff; advising_meeting is append-only. */
-const ACTIVE_ADVISOR_MUTABLE_TABLES = [
+/**
+ * Operational rows that remain fully mutable (insert/read/update/delete) by
+ * active staff; advising_meeting is append-only.
+ */
+const ACTIVE_ADVISOR_FULL_CRUD_TABLES = [
+  "fellowship_thursday",
+  "scholarship_history",
+] as const satisfies readonly OperationalTable[];
+
+/**
+ * Core historical entities: active staff may insert/read/update, but DELETE
+ * is revoked and denied at the database boundary (migration
+ * 20260930000006_core_history_delete_lockdown).
+ */
+const CORE_HISTORY_DELETE_DENIED_TABLES = [
   "student",
   "fellowship",
   "application",
-  "fellowship_thursday",
-  "scholarship_history",
 ] as const satisfies readonly OperationalTable[];
 
 /** Insert payload for one active-staff CRUD cycle on an operational table. */
@@ -195,9 +208,11 @@ let fixtures: SeededCore;
 let selfUserId: string;
 let inactiveUserId: string;
 let noAdvisorUserId: string;
+let amendmentNoAdvisorUserId: string;
 let selfClient: SupabaseClient;
 let inactiveClient: SupabaseClient;
 let noAdvisorClient: SupabaseClient;
+let amendmentNoAdvisorClient: SupabaseClient;
 
 // Dedicated rows for the escalation-denial matrix (rows 1–5). Each has its own
 // auth user so a red-run mutation of one row never cascades into another test.
@@ -468,6 +483,12 @@ beforeAll(async () => {
   const noAdvisorEmail = syntheticEmail("no-advisor");
   noAdvisorUserId = await createAuthUser(service, noAdvisorEmail);
 
+  // Dedicated no-advisor account for the amendment-specific SELECT/INSERT
+  // denial coverage: its own auth user (no advisor row) so the amendment
+  // assertions never share state with the general no-advisor matrix.
+  const amendmentNoAdvisorEmail = syntheticEmail("amendment-no-advisor");
+  amendmentNoAdvisorUserId = await createAuthUser(service, amendmentNoAdvisorEmail);
+
   // ADMIN PRE-BINDING (the only legitimate way auth_user_id is written, R11):
   // the active and inactive advisor rows are pre-bound to their auth users
   // BEFORE first sign-in. After this, selfClient is a pre-bound ACTIVE staff
@@ -590,6 +611,7 @@ beforeAll(async () => {
   selfClient = freshClient();
   inactiveClient = freshClient();
   noAdvisorClient = freshClient();
+  amendmentNoAdvisorClient = freshClient();
   escalationInactiveClient = freshClient();
   escalationActiveClient = freshClient();
   escalationInactiveCombinedClient = freshClient();
@@ -597,6 +619,7 @@ beforeAll(async () => {
   const selfSigned = await signInWithPassword(selfClient, fixtures.advisorSelfEmail);
   const inactiveSigned = await signInWithPassword(inactiveClient, fixtures.advisorInactiveEmail);
   const noAdvisorSigned = await signInWithPassword(noAdvisorClient, noAdvisorEmail);
+  const amendmentNoAdvisorSigned = await signInWithPassword(amendmentNoAdvisorClient, amendmentNoAdvisorEmail);
   const escInactiveSigned = await signInWithPassword(escalationInactiveClient, escalationInactiveEmail);
   const escActiveSigned = await signInWithPassword(escalationActiveClient, escalationActiveEmail);
   const escInactiveCombinedSigned = await signInWithPassword(
@@ -607,6 +630,7 @@ beforeAll(async () => {
   expect(selfSigned).toBe(selfUserId);
   expect(inactiveSigned).toBe(inactiveUserId);
   expect(noAdvisorSigned).toBe(noAdvisorUserId);
+  expect(amendmentNoAdvisorSigned).toBe(amendmentNoAdvisorUserId);
   expect(escInactiveSigned).toBe(escalationInactiveUserId);
   expect(escActiveSigned).toBe(escalationActiveUserId);
   expect(escInactiveCombinedSigned).toBe(escalationInactiveCombinedUserId);
@@ -1034,25 +1058,30 @@ describe("invoker-security one-time-bind trigger on advisor.auth_user_id (rows 1
   });
 
   // Row 22 — authenticated/active staff may INSERT an UNBOUND advisor row
-  // (`auth_user_id` NULL): the preserved active-staff INSERT path. Row re-read
-  // proves the created row exists with auth_user_id NULL.
-  it("lets an authenticated active-staff advisor INSERT an unbound advisor row (row 22)", async () => {
+  // (`auth_user_id` NULL). Since migration 20260930000005, the row must be
+  // created in the ACTIVE lifecycle state (`is_active = true`, the column
+  // default): the invoker-security `trg_advisor_is_active_lifecycle` guard
+  // treats an INSERT with `is_active = false` as a forged lifecycle state that
+  // only a trusted service_role/DBA session may create. Row re-read proves the
+  // created row exists, is unbound, and is active.
+  it("lets an authenticated active-staff advisor INSERT an unbound active advisor row (row 22)", async () => {
     const { data: inserted, error } = await selfClient
       .from("advisor")
       .insert({
         advisor_name: syntheticName("staff-unbound-insert"),
         email: syntheticEmail("staff-unbound-insert"),
-        is_active: false,
+        is_active: true,
       })
       .select("advisor_id")
       .single();
     expect(error, "active-staff unbound INSERT must succeed").toBeNull();
     expect(inserted).not.toBeNull();
 
-    // Row proof: the created row exists and is UNBOUND.
+    // Row proof: the created row exists, is UNBOUND, and is active.
     const row = await readRow("advisor", "advisor_id", inserted!.advisor_id);
     expect(row).not.toBeNull();
     expect(row?.auth_user_id).toBeNull();
+    expect(row?.is_active).toBe(true);
   });
 
   // Row 23 — authenticated/active staff INSERT of an advisor row carrying a
@@ -1152,8 +1181,8 @@ describe("pre-bound active advisor has staff access", () => {
   });
 
   // Regression matrix row 11 — CRUD is proven on every operational table that
-  // remains mutable (insert → read → update → delete), not a sample.
-  it.each(ACTIVE_ADVISOR_MUTABLE_TABLES)(
+  // remains fully mutable (insert → read → update → delete), not a sample.
+  it.each(ACTIVE_ADVISOR_FULL_CRUD_TABLES)(
     "active staff can insert, read, update, and delete %s rows",
     async (table) => {
       const idColumn = ID_COLUMN[table];
@@ -1198,6 +1227,45 @@ describe("pre-bound active advisor has staff access", () => {
     }
   );
 
+  // Migration 20260930000006: active staff may insert/read/update core
+  // historical entities, but browser DELETE is revoked and denied at both the
+  // grant and RLS-policy levels. Each freshly inserted row is UNREFERENCED (no
+  // children), so only the ...006 lockdown — never NO ACTION FK semantics — can
+  // be blocking the delete; the service-role re-read proves the row survives.
+  it.each(CORE_HISTORY_DELETE_DENIED_TABLES)(
+    "active staff can insert, read, and update %s rows but cannot DELETE them (row preserved)",
+    async (table) => {
+      const idColumn = ID_COLUMN[table];
+
+      const { data: inserted, error: insertError } = await selfClient
+        .from(table)
+        .insert(operationalInsertPayload(table))
+        .select(idColumn)
+        .single();
+      expect(insertError, `${table} insert`).toBeNull();
+      expect(inserted).not.toBeNull();
+      const rowId = (inserted as unknown as Record<string, number>)[idColumn];
+
+      const { data: read, error: readError } = await selfClient
+        .from(table)
+        .select("*")
+        .eq(idColumn, rowId)
+        .maybeSingle();
+      expect(readError, `${table} read`).toBeNull();
+      expect(read).not.toBeNull();
+
+      const { data: updated, error: updateError } = await selfClient
+        .from(table)
+        .update(operationalUpdatePayload(table))
+        .eq(idColumn, rowId)
+        .select(idColumn);
+      expect(updateError, `${table} update`).toBeNull();
+      expect(updated ?? [], `${table} update affected rows`).toHaveLength(1);
+
+      await assertDeleteBlocked(selfClient, table, idColumn, rowId);
+    }
+  );
+
   // Regression matrix row 10 — active-staff advisor-row management preserved.
   it("can update another advisor's non-authorization fields", async () => {
     const { data, error } = await selfClient
@@ -1209,15 +1277,19 @@ describe("pre-bound active advisor has staff access", () => {
     expect(data ?? []).toHaveLength(1);
   });
 
-  // Active-staff advisor-row management: insert, read, and delete an advisor
-  // row (row 11 covers advisor management alongside the operational tables).
-  it("can insert, read, and delete advisor rows as staff (advisor management)", async () => {
+  // Active-staff advisor-row management: insert, read, and update an advisor
+  // row; browser DELETE of the advisor row is revoked/denied by migration
+  // 20260930000006. The INSERT creates an ACTIVE advisor (`is_active = true`,
+  // the column default): since migration 20260930000005 the lifecycle guard
+  // treats an authenticated INSERT with `is_active = false` as a forged
+  // lifecycle state.
+  it("can insert, read, and update advisor rows as staff but cannot DELETE them (advisor management)", async () => {
     const { data: inserted, error: insertError } = await selfClient
       .from("advisor")
       .insert({
         advisor_name: syntheticName("staff-managed-advisor"),
         email: syntheticEmail("staff-managed-advisor"),
-        is_active: false,
+        is_active: true,
       })
       .select("advisor_id")
       .single();
@@ -1232,17 +1304,18 @@ describe("pre-bound active advisor has staff access", () => {
     expect(readError).toBeNull();
     expect(read).not.toBeNull();
 
-    const { error: deleteError } = await selfClient
+    const { data: updated, error: updateError } = await selfClient
       .from("advisor")
-      .delete()
-      .eq("advisor_id", inserted!.advisor_id);
-    expect(deleteError).toBeNull();
+      .update({ advisor_name: syntheticName("staff-managed-advisor-renamed") })
+      .eq("advisor_id", inserted!.advisor_id)
+      .select("advisor_id");
+    expect(updateError).toBeNull();
+    expect(updated ?? []).toHaveLength(1);
 
-    const { data: remaining } = await service
-      .from("advisor")
-      .select("advisor_id")
-      .eq("advisor_id", inserted!.advisor_id);
-    expect(remaining ?? []).toHaveLength(0);
+    // DELETE of the freshly inserted UNREFERENCED advisor row (no meetings, no
+    // amendments, unbound) is denied by the ...006 lockdown — not by FK
+    // semantics — and the row is preserved byte-for-byte.
+    await assertDeleteBlocked(selfClient, "advisor", "advisor_id", inserted!.advisor_id);
   });
 });
 
@@ -1428,6 +1501,66 @@ describe("advising_meeting_amendment append-only corrections", () => {
     expect(reReadError).toBeNull();
     expect(row?.reason, "literal-v reason stored verbatim").toBe("v");
     expect(row?.details, "literal-v details stored verbatim").toBe("vvv");
+  });
+});
+
+describe("amendment-specific authenticated user with no advisor row is blocked", () => {
+  it("cannot read amendment rows (real-row proof)", async () => {
+    // Seed a REAL amendment row as an active advisor, then prove the
+    // no-advisor account reads ZERO amendment rows while the seeded row still
+    // exists under the service role (R4: 0 rows alone never counts as blocked).
+    const { data: seeded, error: seedError } = await selfClient
+      .from("advising_meeting_amendment")
+      .insert({
+        meeting_id: fixtures.meetingId,
+        reason: syntheticName("no-advisor-amendment-read-target"),
+        details: "Real amendment row used as the SELECT-denial proof target.",
+      })
+      .select("amendment_id")
+      .single();
+    expect(seedError).toBeNull();
+    expect(seeded).not.toBeNull();
+
+    const { data, error } = await amendmentNoAdvisorClient
+      .from("advising_meeting_amendment")
+      .select("*");
+    if (error) {
+      expect(error.code, "amendment read error code").toBe("42501");
+    } else {
+      expect(data ?? [], "amendment read rows").toHaveLength(0);
+    }
+
+    // The hidden target is REAL: the seeded amendment row still exists.
+    const { data: real, error: reReadError } = await service
+      .from("advising_meeting_amendment")
+      .select("amendment_id")
+      .eq("amendment_id", seeded!.amendment_id)
+      .maybeSingle();
+    expect(reReadError).toBeNull();
+    expect(real).not.toBeNull();
+  });
+
+  it("cannot insert an amendment (no row created)", async () => {
+    const reason = syntheticName("no-advisor-amendment-insert");
+    const { data, error } = await amendmentNoAdvisorClient
+      .from("advising_meeting_amendment")
+      .insert({
+        meeting_id: fixtures.meetingId,
+        reason,
+        details: "This amendment must not be recorded.",
+      });
+    expect(data ?? [], "amendment insert affected rows").toHaveLength(0);
+    expect(error, "amendment insert is denied").not.toBeNull();
+    expect(error?.code, "amendment insert denial code").toBe("42501");
+
+    // Absence proof: no amendment row exists for the attempted reason, even
+    // under the service role.
+    const { data: created, error: reReadError } = await service
+      .from("advising_meeting_amendment")
+      .select("amendment_id")
+      .eq("reason", reason);
+    expect(reReadError).toBeNull();
+    expect(created ?? [], "no amendment row may exist for the denied insert").toHaveLength(0);
   });
 });
 

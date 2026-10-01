@@ -204,38 +204,48 @@ function statCardValue(page: Page, title: string) {
 }
 
 /**
- * Delete one student row (by its unique name) through the desktop table's
- * trash action and the confirmation dialog. Used to remove student rows that
- * other E2E specs created and to clean up the reports test's own student.
+ * Delete one student row via the service role (test-support fixture cleanup).
+ * The lifecycle change removed the destructive Delete control from the student
+ * UI by design (students are archived/restored through the lifecycle RPC, never
+ * deleted), so cleanup that previously went through the table trash action now
+ * goes through the service role — exactly like the other fixture-cleanup paths
+ * in this suite.
  */
-async function deleteStudentByName(page: Page, name: string): Promise<void> {
-  const row = page.locator("table tbody tr", { hasText: name }).first();
-  await expect(row).toBeVisible();
-  await row.locator("button:has(svg.lucide-trash-2)").click();
-  await page.getByRole("alertdialog").getByRole("button", { name: "Delete" }).click();
-  await expect(page.locator("table tbody tr", { hasText: name })).toHaveCount(0);
+async function deleteStudentRowByName(name: string): Promise<void> {
+  const service = serviceClient();
+  const { data, error } = await service
+    .from("student")
+    .delete()
+    .eq("full_name", name)
+    .select("student_id");
+  if (error) throw new Error(`deleteStudentRowByName(${name}): ${error.message}`);
+  expect(data ?? [], `deleted student rows for ${name}`).toHaveLength(1);
 }
 
 /**
  * Remove every student row that is not one of the two seeded students. The only
  * spec that creates students through the UI is application-workflow.spec.ts;
- * deleting those rows (when present) makes Total Students derive exactly from
- * the seed export whether or not that spec ran.
+ * deleting those rows (when present, active OR archived) makes Total Students
+ * derive exactly from the seed export whether or not that spec ran. Service-role
+ * cleanup bypasses RLS and is not subject to the archive filter that governs the
+ * active roster, so foreign rows never skew the exact reports totals.
  */
-async function deleteForeignStudents(page: Page): Promise<void> {
-  await page.goto("/students");
-  // Wait for the roster table to render before enumerating its rows.
-  await expect(page.locator("table tbody tr").first()).toBeVisible();
-
-  const rows = page.locator("table tbody tr");
-  const count = await rows.count();
-  const foreignNames: string[] = [];
-  for (let i = 0; i < count; i += 1) {
-    const name = (await rows.nth(i).locator("td").first().innerText())?.trim() ?? "";
-    if (!SEEDED_STUDENT_NAMES.has(name)) foreignNames.push(name);
-  }
-  for (const name of foreignNames) {
-    await deleteStudentByName(page, name);
+async function deleteForeignStudents(): Promise<void> {
+  const service = serviceClient();
+  const { data, error } = await service.from("student").select("student_id, full_name");
+  if (error) throw new Error(`list students for cleanup: ${error.message}`);
+  const foreign = (data ?? []).filter(
+    (row) => !SEEDED_STUDENT_NAMES.has((row as { full_name: string }).full_name),
+  );
+  for (const row of foreign) {
+    const studentId = (row as { student_id: number }).student_id;
+    const { error: deleteError } = await service
+      .from("student")
+      .delete()
+      .eq("student_id", studentId);
+    if (deleteError) {
+      throw new Error(`cleanup foreign student ${studentId}: ${deleteError.message}`);
+    }
   }
 }
 
@@ -310,8 +320,10 @@ test.describe("operational surfaces", () => {
     // ── Self-containment: neutralize mutations other tests/specs can leave ──
     // Remove student rows created by other E2E specs (application-workflow
     // creates one through the UI) so Total Students derives exactly from the
-    // seed export; only the two seeded students remain.
-    await deleteForeignStudents(page);
+    // seed export; only the two seeded students remain. Fixture cleanup runs
+    // through the service role because the lifecycle change removed the
+    // destructive student-delete UI by design.
+    await deleteForeignStudents();
 
     // Restore the seeded application to its seed stage ("Submitted") so the
     // application-stage funnel converges to the export's counts whether or not
@@ -341,8 +353,9 @@ test.describe("operational surfaces", () => {
     await assertReportsTotals(page, REPORT_TOTALS.students + 1);
 
     // ── Clean up this test's own write so the database is left seeded ──
-    await page.goto("/students");
-    await deleteStudentByName(page, studentName);
+    // The student UI exposes Archive, not Delete, so the test's own row is
+    // removed through the service role (test-support fixture cleanup).
+    await deleteStudentRowByName(studentName);
   });
 
   test("advising page renders the seeded meeting", async ({ page }) => {

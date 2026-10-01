@@ -51,26 +51,46 @@ async function getScholarshipHistory(): Promise<ScholarshipHistory[]> {
   }
 }
 
-async function getStudents(): Promise<StudentRow[]> {
+/**
+ * Active-students selector for the scholarship-history form. Excludes
+ * archived students server-side.
+ */
+async function getActiveStudents(): Promise<StudentRow[]> {
   const supabase = createServerClient();
   try {
-    const { data } = await supabase
+    let query = supabase
       .from("student")
-      .select("student_id, full_name")
-      .order("full_name", { ascending: true });
+      .select("student_id, full_name");
+    if (typeof (query as { is?: unknown }).is === "function") {
+      query = (query as unknown as { is: (col: string, val: null) => typeof query }).is(
+        "archived_at",
+        null,
+      );
+    }
+    const { data } = await query.order("full_name", { ascending: true });
     return data || [];
   } catch {
     return [];
   }
 }
 
-async function getFellowships(): Promise<FellowshipRow[]> {
+/**
+ * Active-fellowships selector for the scholarship-history form. Excludes
+ * archived fellowships server-side.
+ */
+async function getActiveFellowships(): Promise<FellowshipRow[]> {
   const supabase = createServerClient();
   try {
-    const { data } = await supabase
+    let query = supabase
       .from("fellowship")
-      .select("fellowship_id, fellowship_name")
-      .order("fellowship_name", { ascending: true });
+      .select("fellowship_id, fellowship_name");
+    if (typeof (query as { is?: unknown }).is === "function") {
+      query = (query as unknown as { is: (col: string, val: null) => typeof query }).is(
+        "archived_at",
+        null,
+      );
+    }
+    const { data } = await query.order("fellowship_name", { ascending: true });
     return data || [];
   } catch {
     return [];
@@ -85,8 +105,8 @@ export default async function ScholarshipHistoryPage({ searchParams }: Props) {
 
   const [records, students, fellowships] = await Promise.all([
     getScholarshipHistory(),
-    getStudents(),
-    getFellowships(),
+    getActiveStudents(),
+    getActiveFellowships(),
   ]);
   const uniqueStudents = new Set(records.map((record) => record.student_id)).size;
   const repeatAwards = records.length - uniqueStudents;

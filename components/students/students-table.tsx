@@ -25,16 +25,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -51,7 +41,6 @@ import {
   Search,
   Eye,
   Pencil,
-  Trash2,
   ChevronUp,
   ChevronDown,
   ChevronsUpDown,
@@ -60,6 +49,7 @@ import {
   MoreHorizontal,
   SlidersHorizontal,
 } from "lucide-react";
+import { LifecycleAction } from "@/components/lifecycle";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
 import type { Database } from "@/types/database";
@@ -73,6 +63,13 @@ interface StudentsTableProps {
   initialStudents: Student[];
   initialStatusFilter?: string;
   initialStandingFilter?: string;
+  /**
+   * When true, the table is rendering the explicit Archived Students filter
+   * context: every row gets a Restore Student action (instead of the default
+   * Archive Student action), and the destructive Delete control is omitted in
+   * both modes. The default (false) renders Archive Student on active rows.
+   */
+  archiveView?: boolean;
 }
 
 const EMPTY_STUDENT_FORM = {
@@ -113,6 +110,7 @@ export function StudentsTable({
   initialStudents,
   initialStatusFilter,
   initialStandingFilter,
+  archiveView = false,
 }: StudentsTableProps) {
   const router = useRouter();
 
@@ -127,7 +125,6 @@ export function StudentsTable({
   const [sortDirection, setSortDirection] = useState<SortDirection>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [deleteStudentId, setDeleteStudentId] = useState<number | null>(null);
   const [addStudentOpen, setAddStudentOpen] = useState(false);
   const [editStudentOpen, setEditStudentOpen] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
@@ -255,29 +252,6 @@ export function StudentsTable({
 
   const handleRowClick = (studentId: number) => {
     router.push(`/students/${studentId}`);
-  };
-
-  const handleDeleteConfirm = async () => {
-    if (!deleteStudentId) return;
-
-    setIsLoading(true);
-    try {
-      const { error } = await supabaseBrowserClient
-        .from("student")
-        .delete()
-        .eq("student_id", deleteStudentId);
-
-      if (error) throw error;
-
-      setStudents((prev) => prev.filter((s) => s.student_id !== deleteStudentId));
-      toast.success("Student deleted successfully");
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to delete student");
-    } finally {
-      setIsLoading(false);
-      setDeleteStudentId(null);
-    }
   };
 
   const validateStudentForm = (
@@ -676,15 +650,17 @@ export function StudentsTable({
                               <Pencil className="mr-2 h-4 w-4" />
                               Edit
                             </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() => setDeleteStudentId(student.student_id)}
-                              className="text-red-600 focus:text-red-600"
-                            >
-                              <Trash2 className="mr-2 h-4 w-4" />
-                              Delete
-                            </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
+                        <LifecycleAction
+                          entity="student"
+                          entityId={student.student_id}
+                          entityLabel={student.full_name}
+                          action={archiveView ? "restore" : "archive"}
+                          variant="ghost"
+                          iconOnly
+                          className="h-9 w-9 shrink-0 text-amber-700 hover:bg-amber-50 hover:text-amber-800"
+                        />
                       </div>
                     </div>
                   ))}
@@ -830,20 +806,22 @@ export function StudentsTable({
 
                               <Tooltip>
                                 <TooltipTrigger asChild>
-                                  <Button
+                                  <LifecycleAction
+                                    entity="student"
+                                    entityId={student.student_id}
+                                    entityLabel={student.full_name}
+                                    action={archiveView ? "restore" : "archive"}
                                     variant="ghost"
-                                    size="icon"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setDeleteStudentId(student.student_id);
-                                    }}
-                                    className="h-8 w-8 text-slate-500 hover:bg-red-50 hover:text-red-600"
-                                  >
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
+                                    iconOnly
+                                    className="h-8 w-8 text-amber-700 hover:bg-amber-50 hover:text-amber-800"
+                                  />
                                 </TooltipTrigger>
                                 <TooltipContent>
-                                  <p>Delete student</p>
+                                  <p>
+                                    {archiveView
+                                      ? "Restore student"
+                                      : "Archive student"}
+                                  </p>
                                 </TooltipContent>
                               </Tooltip>
                             </div>
@@ -1382,30 +1360,11 @@ export function StudentsTable({
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirmation Dialog */}
-      <AlertDialog
-        open={deleteStudentId !== null}
-        onOpenChange={(open) => !open && setDeleteStudentId(null)}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete student?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will remove the student record and related references (if
-              applicable). This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDeleteConfirm}
-              className="bg-red-600 hover:bg-red-700"
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* No destructive delete dialog: lifecycle is handled by LifecycleAction
+          (Archive / Restore) which renders its own confirmation dialog. The
+          historical destructive delete control has been removed; archived
+          students remain reachable in the explicit archive filter context
+          (`?view=archived`) and can be restored by an administrator. */}
     </TooltipProvider>
   );
 }

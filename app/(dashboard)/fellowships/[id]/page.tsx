@@ -4,6 +4,7 @@ import { DetailSection } from "@/components/ui/detail-section";
 import { EmptyState } from "@/components/ui/empty-state";
 import { EntityHeader } from "@/components/ui/entity-header";
 import { MetricBadge } from "@/components/ui/metric-badge";
+import { LifecycleBadge, LifecycleAction } from "@/components/lifecycle";
 import {
   ArrowLeft,
   Award,
@@ -11,6 +12,7 @@ import {
   Trophy,
   FilePlus,
   BookOpen,
+  Archive,
 } from "lucide-react";
 import Link from "next/link";
 import { createServerClient } from "@/lib/supabase/server";
@@ -111,6 +113,13 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
     notFound();
   }
 
+  // Lifecycle gate: an archived fellowship blocks new active-workflow
+  // children (new applications, new scholarship history entries). Existing
+  // applications and scholarship history are preserved with their archived
+  // program name intact. Restore is offered as the primary action when the
+  // fellowship is archived.
+  const isArchived = fellowship.archived_at != null;
+
   const finalistCount = applications.filter((a) => a.is_finalist).length;
   const semiFinalistCount = applications.filter((a) => a.is_semi_finalist).length;
   const awardedCount = applications.filter((a) => a.stage_of_application === "Awarded").length;
@@ -121,14 +130,39 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
         kicker="Program Detail"
         title={fellowship.fellowship_name}
         description={`Fellowship ID ${fellowship.fellowship_id}`}
+        badges={
+          <LifecycleBadge
+            kind="fellowship"
+            archivedAt={fellowship.archived_at}
+            isActive={!isArchived}
+          />
+        }
         actions={
           <>
-            <Link href={`/applications?add=1&fellowship_id=${fellowship.fellowship_id}`}>
-              <Button size="sm">
-                <FilePlus className="mr-2 h-4 w-4" />
-                Add Application
-              </Button>
-            </Link>
+            {isArchived ? (
+              <>
+                <LifecycleAction
+                  entity="fellowship"
+                  entityId={fellowship.fellowship_id}
+                  entityLabel={fellowship.fellowship_name}
+                  action="restore"
+                  variant="default"
+                />
+                <Link href="/fellowships?view=archived">
+                  <Button variant="outline" size="sm">
+                    <Archive className="mr-2 h-4 w-4" />
+                    Archived fellowships
+                  </Button>
+                </Link>
+              </>
+            ) : (
+              <Link href={`/applications?add=1&fellowship_id=${fellowship.fellowship_id}`}>
+                <Button size="sm">
+                  <FilePlus className="mr-2 h-4 w-4" />
+                  Add Application
+                </Button>
+              </Link>
+            )}
             <Link href="/fellowships">
               <Button variant="outline" size="sm">
                 <ArrowLeft className="mr-2 h-4 w-4" />
@@ -160,27 +194,40 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
           description="Current application activity attached to this fellowship."
           icon={<Award className="h-5 w-5" />}
           actions={
-            <Link href={`/applications?add=1&fellowship_id=${fellowship.fellowship_id}`}>
-              <Button size="sm" variant="outline" className="h-8 text-xs">
-              <FilePlus className="mr-2 h-4 w-4" />
-              Add Application
-            </Button>
-          </Link>
+            isArchived ? (
+              <MetricBadge tone="amber" className="gap-1">
+                <Archive className="h-3 w-3" aria-hidden="true" />
+                Archived — view only
+              </MetricBadge>
+            ) : (
+              <Link href={`/applications?add=1&fellowship_id=${fellowship.fellowship_id}`}>
+                <Button size="sm" variant="outline" className="h-8 text-xs">
+                  <FilePlus className="mr-2 h-4 w-4" />
+                  Add Application
+                </Button>
+              </Link>
+            )
           }
         >
             {applications.length === 0 ? (
               <EmptyState
                 icon={Award}
                 title="No applications yet"
-                description="No applications are attached to this fellowship yet."
+                description={
+                  isArchived
+                    ? "No applications on record. The fellowship is archived; new applications are disabled while archived."
+                    : "No applications are attached to this fellowship yet."
+                }
                 compact
                 action={
-                  <Link href={`/applications?add=1&fellowship_id=${fellowship.fellowship_id}`}>
-                    <Button size="sm">
-                      <FilePlus className="mr-2 h-4 w-4" />
-                      Add First Application
-                    </Button>
-                  </Link>
+                  isArchived ? undefined : (
+                    <Link href={`/applications?add=1&fellowship_id=${fellowship.fellowship_id}`}>
+                      <Button size="sm">
+                        <FilePlus className="mr-2 h-4 w-4" />
+                        Add First Application
+                      </Button>
+                    </Link>
+                  )
                 }
               />
             ) : (
@@ -279,12 +326,19 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
           description="Students with recorded prior awards tied to this fellowship."
           icon={<Trophy className="h-5 w-5" />}
           actions={
-            <Link href={`/scholarship-history?add=1&fellowship_id=${fellowship.fellowship_id}`}>
-              <Button size="sm" variant="outline" className="h-8 text-xs">
-                <BookOpen className="mr-1.5 h-3.5 w-3.5" />
-                Add History
-              </Button>
-            </Link>
+            isArchived ? (
+              <MetricBadge tone="amber" className="gap-1">
+                <Archive className="h-3 w-3" aria-hidden="true" />
+                Archived — view only
+              </MetricBadge>
+            ) : (
+              <Link href={`/scholarship-history?add=1&fellowship_id=${fellowship.fellowship_id}`}>
+                <Button size="sm" variant="outline" className="h-8 text-xs">
+                  <BookOpen className="mr-1.5 h-3.5 w-3.5" />
+                  Add History
+                </Button>
+              </Link>
+            )
           }
         >
             {scholarshipHistory.length === 0 ? (

@@ -5,11 +5,11 @@
 >
 > Active auth model: Supabase Auth identity + `public.advisor` authorization
 >
-> ⚠️ **Provenance notice (2026-09-25, updated 2026-09-30):** the hosted
+> ⚠️ **Provenance notice (2026-09-25, updated 2026-10-01):** the hosted
 > production database is the physical-schema authority. Its migration ledger
 > records only `20260924065221_advisor_self_activation_lockdown`, while this
-> repository tracks ten migrations (`20260305000000` …
-> `20260930000004_advising_meeting_amendments`), and the deployed schema
+> repository tracks twelve migrations (`20260305000000` …
+> `20260930000006_core_history_delete_lockdown`), and the deployed schema
 > materially differs from the repository chain. Do **not** run
 > `supabase db push`, replay migrations, or repair migration history against
 > production. See [Migration deployment freeze](#migration-deployment-freeze).
@@ -46,7 +46,7 @@ All PKs are **integer sequences** (never UUIDs). All table names are **singular*
 | `advisor_name` | varchar | NO | — | UNIQUE |
 | `email` | text | YES | — | unique when populated |
 | `auth_user_id` | uuid | YES | — | unique when populated |
-| `is_active` | boolean | NO | `true` | |
+| `is_active` | boolean | NO | `true` | Sole advisor lifecycle field |
 | `role` | text | NO | `'advisor'` | |
 | `created_at` | timestamptz | NO | `now()` | |
 | `last_login_at` | timestamptz | YES | — | |
@@ -54,6 +54,14 @@ All PKs are **integer sequences** (never UUIDs). All table names are **singular*
 No foreign keys. Referenced by `advising_meeting.advisor_id`.
 
 Used by the app for sign-in authorization, account profile display, password-recovery context, and the `/dashboard/account` page.
+
+`is_active` is the **sole** advisor lifecycle representation (there is no advisor `archived_at`). Deactivate/reactivate happen **only** through the admin lifecycle RPC `public.lifecycle_transition` (migration `20260930000005`); direct authenticated writes of `is_active` are rejected by a database guard. See [Entity Lifecycle & Archive Model](#entity-lifecycle--archive-model-migration-20260930000005).
+
+Authenticated clients **cannot `DELETE`** advisor rows (migration
+`20260930000006_core_history_delete_lockdown`): the `authenticated` DELETE
+table privilege is revoked and the `advisor_delete_active_staff` RLS policy is
+dropped. Deactivation via `lifecycle_transition` is the only removal path;
+trusted `service_role` / DBA sessions retain their default grants.
 
 ---
 
@@ -65,8 +73,25 @@ Used by the app for sign-in authorization, account profile display, password-rec
 | --- | --- | --- | --- | --- |
 | `fellowship_id` | integer | NO | nextval | **PK** |
 | `fellowship_name` | varchar | NO | — | UNIQUE |
+| `archived_at` | timestamptz | YES | — | Lifecycle: NULL = active, DB-authored timestamp = archived |
 
 Referenced by `application.fellowship_id` and `scholarship_history.fellowship_id`.
+
+Indexed: `archived_at`.
+
+`archived_at` is the single lifecycle representation for a fellowship: `NULL`
+means **active** and a database-authored timestamp means **archived**. It is
+written only by the admin lifecycle RPC `public.lifecycle_transition`
+(migration `20260930000005`); direct authenticated writes are rejected by a
+database guard. Archive never deletes, nulls, or cascades the applications and
+award-history rows that reference the fellowship (FKs stay `NO ACTION`). See
+[Entity Lifecycle & Archive Model](#entity-lifecycle--archive-model-migration-20260930000005).
+
+Authenticated clients **cannot `DELETE`** fellowship rows (migration
+`20260930000006_core_history_delete_lockdown`): the `authenticated` DELETE
+table privilege is revoked and the FOR ALL active-advisor policy is replaced
+with explicit SELECT / INSERT / UPDATE policies that carry no DELETE. Archive
+via `lifecycle_transition` is the only removal path.
 
 ---
 
@@ -77,6 +102,7 @@ Referenced by `application.fellowship_id` and `scholarship_history.fellowship_id
 | Column | Type | Null | Default | Constraint |
 | --- | --- | --- | --- | --- |
 | `student_id` | integer | NO | nextval | **PK** |
+| `archived_at` | timestamptz | YES | — | Lifecycle: NULL = active, DB-authored timestamp = archived |
 | `full_name` | varchar | NO | — | |
 | `email` | varchar | NO | — | indexed (not unique — see schema-decisions.md) |
 | `is_ch_student` | boolean | NO | `false` | Coconut Club / CH Honors |
@@ -93,7 +119,22 @@ Referenced by `application.fellowship_id` and `scholarship_history.fellowship_id
 | `first_gen` | boolean | NO | `false` | First-generation college student |
 | `honors_college` | boolean | NO | `false` | |
 
-Indexed: `email`, `is_ch_student`, `class_standing`. Referenced by all five child tables below.
+Indexed: `email`, `is_ch_student`, `class_standing`, `archived_at`. Referenced by all five child tables below.
+
+`archived_at` is the single lifecycle representation for a student: `NULL`
+means **active** and a database-authored timestamp means **archived**. Existing
+rows are untouched and remain `NULL` (active); nothing is ever backfilled. It
+is written only by the admin lifecycle RPC `public.lifecycle_transition`
+(migration `20260930000005`); direct authenticated writes are rejected by a
+database guard. Archive never deletes, nulls, or cascades applications,
+meetings, attendance, or award history (FKs stay `NO ACTION`). See
+[Entity Lifecycle & Archive Model](#entity-lifecycle--archive-model-migration-20260930000005).
+
+Authenticated clients **cannot `DELETE`** student rows (migration
+`20260930000006_core_history_delete_lockdown`): the `authenticated` DELETE
+table privilege is revoked and the FOR ALL active-advisor policy is replaced
+with explicit SELECT / INSERT / UPDATE policies that carry no DELETE. Archive
+via `lifecycle_transition` is the only removal path.
 
 ---
 
@@ -124,6 +165,13 @@ Indexed: `email`, `is_ch_student`, `class_standing`. Referenced by all five chil
   Both must be set together when updating the stage. See schema-decisions.md §2.
 
 Indexed: `student_id`, `fellowship_id`, `stage_of_application`, `(application_id, student_id)` (unique).
+
+Authenticated clients **cannot `DELETE`** application rows (migration
+`20260930000006_core_history_delete_lockdown`): the `authenticated` DELETE
+table privilege is revoked and the FOR ALL active-advisor policy is replaced
+with explicit SELECT / INSERT / UPDATE policies that carry no DELETE.
+Applications are historical records — archival of their parent student or
+fellowship preserves them, and they are never deleted in place.
 
 ---
 
@@ -232,6 +280,11 @@ chronologically ordered), `created_by_advisor_id`.
 
 Indexed: `student_id`.
 
+`fellowship_thursday` rows are **operational attendance records**, not
+historical entities. Migration `20260930000006_core_history_delete_lockdown`
+intentionally leaves this table untouched, so authenticated `DELETE` remains
+available.
+
 ---
 
 ## `scholarship_history`
@@ -246,6 +299,115 @@ in-progress pipeline. Only stores fellowships the student has already received.
 | `fellowship_id` | integer | NO | — | **FK → `fellowship.fellowship_id`** |
 
 Indexed: `student_id`, `fellowship_id`.
+
+`scholarship_history` rows are **operational award records**, not historical
+entities. Migration `20260930000006_core_history_delete_lockdown`
+intentionally leaves this table untouched, so authenticated `DELETE` remains
+available.
+
+---
+
+## Entity Lifecycle & Archive Model (migration `20260930000005`)
+
+Non-destructive, reversible lifecycle behavior for advisors, students, and
+fellowships. Normal operations **archive/deactivate** instead of deleting, and
+every historical relationship is preserved.
+
+**Single lifecycle representation per entity.**
+
+- `student.archived_at` / `fellowship.archived_at` (timestamptz, nullable):
+  `NULL` = **active**; a database-authored timestamp = **archived**. There is no
+  redundant status column. Pre-existing rows were never backfilled — they remain
+  `NULL` (active), and no historical lifecycle data is guessed.
+- `advisor.is_active` (boolean) is retained as the **sole** advisor lifecycle
+  representation; there is no advisor `archived_at`.
+
+**Admin authority is the Auth JWT, not the advisor row.**
+
+- Lifecycle authorization reads **only** the immutable Auth `app_metadata`
+  claim `ocf_admin = true` (`public.is_ocf_admin()`). Users cannot edit
+  `app_metadata` through standard client APIs. The mutable `public.advisor.role`
+  column is **never** authorization, because active advisors can mutate it.
+
+**The lifecycle RPC is the only normal transition path.**
+
+- `public.lifecycle_transition(entity, action, entity_id)` (SECURITY DEFINER,
+  migration-owned, empty `search_path`) is the only normal writer of lifecycle
+  state. It:
+  - derives the actor **exclusively** from `auth.uid()` — never from a
+    parameter — and rejects technical (`service_role`/DBA) sessions that carry
+    no JWT subject, so every transition is attributable to a specific
+    authenticated administrator;
+  - requires `public.is_ocf_admin()` = true;
+  - accepts only the whitelisted transitions `student`/`fellowship`
+    `archive` | `restore` (stamps/clears `archived_at := now()`) and `advisor`
+    `deactivate` | `reactivate` (sets `is_active`); anything else fails closed;
+  - is **idempotent** — a transition that would leave the row in its current
+    state is a no-op (`applied = false`) that returns the unchanged resulting
+    state, and each target row is locked (`FOR UPDATE`) so concurrent
+    transitions cannot race;
+  - **self-deactivation guard**: rejects deactivating the advisor row bound to
+    the caller's own `auth_user_id` while it is active. That transition would
+    immediately strand the acting administrator (their session is denied by
+    `is_active_advisor()` / `requireAdvisor` and there is no self-reactivation
+    path), so a second administrator must deactivate an administrator's
+    account. Reactivating your own row and idempotent no-ops remain allowed.
+
+**Direct writes are guarded.**
+
+- Column-scoped invoker-security triggers
+  (`trg_student_archived_at_lifecycle`,
+  `trg_fellowship_archived_at_lifecycle`,
+  `trg_advisor_is_active_lifecycle`) reject direct authenticated `INSERT`/
+  `UPDATE` of the lifecycle fields (`student.archived_at`,
+  `fellowship.archived_at`, `advisor.is_active`) — including peer deactivation
+  through the broad active-staff advisor UPDATE policy. Only the SECURITY
+  DEFINER RPC (owned by the migration owner) or a trusted `service_role`/DBA
+  session may write them. RLS remains the first gate; the triggers close the
+  remaining lifecycle-field paths fail-closed. No-op restatements of the
+  current value and ordinary non-lifecycle updates to other columns are
+  unaffected.
+
+**Active-workflow vs historical-view invariant.**
+
+- Active operational lists and creation selectors **exclude** archived students
+  and fellowships (`archived_at IS NULL`) and inactive advisors.
+- Historical detail, application, student, report, and join views **retain**
+  archived/inactive context: archived rows stay reachable and render an
+  Archived/Inactive state. Archive state never hides established history, and
+  an explicit archive filter allows restore without making archived records
+  unreachable.
+
+**Non-cascading FKs preserved.**
+
+- No FK definition was changed. Every foreign key keeps the default
+  **NO ACTION** semantics, and no archive/deactivate/restore action deletes,
+  nulls, or cascades historical relationships (applications, advising meetings,
+  amendments, Thursday attendance, scholarship/award history). Archive of a
+  parent is not blocked by its children — it only marks state; the children and
+  their links remain intact.
+
+**Forward-only operational limitation.**
+
+- The migration is additive and forward-only: no existing migration, table,
+  column, row, FK, or RLS policy is edited, deleted, or reset, and there is no
+  down migration. It is idempotent on re-apply. A defect is corrected with a
+  follow-up migration/RPC revision that never deletes historical entities and
+  never changes FKs to cascade.
+
+**DELETE lockdown (follow-up `20260930000006`).**
+
+- The follow-up migration `20260930000006_core_history_delete_lockdown` closes
+  the remaining authenticated DELETE path for the four core historical
+  entities at both the grant and RLS layers: it revokes the `DELETE` table
+  privilege from `authenticated` on `advisor`, `student`, `fellowship`, and
+  `application`; replaces the FOR ALL active-advisor policies on `student`,
+  `fellowship`, and `application` with explicit SELECT / INSERT / UPDATE
+  policies that carry no DELETE; and drops `advisor_delete_active_staff`.
+  `service_role` / DBA grants are untouched, so trusted fixture
+  seeding/cleanup and contract-test paths keep working. Authenticated `DELETE`
+  intentionally remains only on the non-historical operational rows
+  `fellowship_thursday` and `scholarship_history`.
 
 ---
 
@@ -284,14 +446,19 @@ fellowship (1) ────────────────┐            �
 | `20260930000002_advising_application_fk_indexes.sql` | Adds `advising_meeting(application_id, student_id)` to cover reverse composite-FK checks and `advising_meeting(created_by_advisor_id)` for creator-FK checks |
 | `20260930000003_advising_meeting_append_only.sql` | Makes `advising_meeting` append-only under database RLS: active advisors can SELECT and INSERT; UPDATE and DELETE are denied without an admin bypass |
 | `20260930000004_advising_meeting_amendments.sql` | Adds append-only, active-advisor-only amendment records linked to historic advising meetings; creator and timestamp are database-authored; trim-aware nonempty `reason`/`details` CHECK constraints; retrieval index on `(meeting_id, created_at, amendment_id)` |
+| `20260930000005_entity_lifecycle_archiving.sql` | Non-destructive lifecycle model: nullable `student.archived_at` / `fellowship.archived_at` (+ indexes), trusted `is_ocf_admin()` Auth-`app_metadata` predicate, admin-only idempotent `lifecycle_transition` RPC (archive/restore student & fellowship, deactivate/reactivate advisor), and column-scoped direct-write guards on `archived_at`/`is_active`; all FKs stay `NO ACTION` |
+| `20260930000006_core_history_delete_lockdown.sql` | Revokes the `authenticated` DELETE table privilege on `advisor`/`student`/`fellowship`/`application`; replaces the FOR ALL active-advisor policies on `student`/`fellowship`/`application` with explicit SELECT/INSERT/UPDATE policies (no DELETE) and drops `advisor_delete_active_staff`; leaves append-only meetings/amendments and the non-historical operational rows `fellowship_thursday`/`scholarship_history` (authenticated DELETE retained) untouched; `service_role`/DBA grants unchanged |
 
 Migrations 2 and 3 are temporary bootstrap steps. The chain must be applied in
-order and ends with `20260930000004_advising_meeting_amendments.sql`.
+order and ends with `20260930000006_core_history_delete_lockdown.sql`.
 `20260318000001_advisor_self_activation_lockdown.sql` is required and must
 follow `20260317000004_active_advisor_rls.sql`; the forward-only
 `20260929000001_advising_application_link.sql` extends the model afterwards,
-and `20260930000002_advising_application_fk_indexes.sql` adds its supporting
-indexes; neither alters the auth steady state.
+`20260930000002_advising_application_fk_indexes.sql` adds its supporting
+indexes, `20260930000005_entity_lifecycle_archiving.sql` adds the
+non-destructive lifecycle model, and
+`20260930000006_core_history_delete_lockdown.sql` revokes authenticated
+DELETE on the core historical entities; none alters the auth steady state.
 
 **Migration/history limits for `20260929000001`:** the migration is additive
 and forward-only — no existing migration, table, column, row, or RLS policy is
@@ -305,14 +472,22 @@ original entry time. `meeting_date` is unchanged. Historic creator identity is
 never backfilled.
 
 Steady state after the full chain: authenticated active advisors only, with
-admin-only `advisor.auth_user_id` binding. The chain is **not proven
-equivalent** to the deployed production schema.
+admin-only `advisor.auth_user_id` binding. Lifecycle state is written only
+through the admin-only `lifecycle_transition` RPC, authorized by the immutable
+Auth `app_metadata.ocf_admin = true` claim — never by the mutable
+`advisor.role` column or direct client writes. Authenticated clients cannot
+`DELETE` `advisor`, `student`, `fellowship`, or `application` (grant and RLS
+layers); destructive removal of those historical entities is
+archive/deactivate via the RPC only, while `DELETE` on the non-historical
+operational rows `fellowship_thursday` / `scholarship_history` is
+intentionally retained. The chain is **not proven equivalent** to the deployed
+production schema.
 
 ### Migration deployment freeze
 
 As of 2026-09-25 the production migration ledger contains only
 `20260924065221_advisor_self_activation_lockdown` while the repository tracks
-ten migrations (`20260305000000` … `20260930000004_advising_meeting_amendments`),
+twelve migrations (`20260305000000` … `20260930000006_core_history_delete_lockdown`),
 and the live production schema materially differs from the repository chain.
 Production is the physical-schema authority. Until a reviewed reconciliation is
 approved:

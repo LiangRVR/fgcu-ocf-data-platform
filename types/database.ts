@@ -214,14 +214,17 @@ export type Database = {
       }
       fellowship: {
         Row: {
+          archived_at: string | null
           fellowship_id: number
           fellowship_name: string
         }
         Insert: {
+          archived_at?: string | null
           fellowship_id?: number
           fellowship_name: string
         }
         Update: {
+          archived_at?: string | null
           fellowship_id?: number
           fellowship_name?: string
         }
@@ -292,6 +295,7 @@ export type Database = {
       student: {
         Row: {
           age: number | null
+          archived_at: string | null
           class_standing: string | null
           email: string
           first_gen: boolean
@@ -310,6 +314,7 @@ export type Database = {
         }
         Insert: {
           age?: number | null
+          archived_at?: string | null
           class_standing?: string | null
           email: string
           first_gen?: boolean
@@ -328,6 +333,7 @@ export type Database = {
         }
         Update: {
           age?: number | null
+          archived_at?: string | null
           class_standing?: string | null
           email?: string
           first_gen?: boolean
@@ -354,6 +360,25 @@ export type Database = {
       is_active_advisor: {
         Args: Record<PropertyKey, never>
         Returns: boolean
+      }
+      is_ocf_admin: {
+        Args: Record<PropertyKey, never>
+        Returns: boolean
+      }
+      lifecycle_transition: {
+        Args: {
+          p_entity: string
+          p_action: string
+          p_entity_id: number
+        }
+        Returns: {
+          entity: string
+          entity_id: number
+          action: string
+          applied: boolean
+          archived_at: string | null
+          is_active: boolean | null
+        }[]
       }
     }
     Enums: {

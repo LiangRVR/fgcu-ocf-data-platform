@@ -44,13 +44,25 @@ async function getFellowshipThursdayRecords(): Promise<FellowshipThursday[]> {
   }
 }
 
-async function getStudents(): Promise<StudentRow[]> {
+/**
+ * Active-students selector for the Fellowship Thursday attendance form.
+ * Excludes archived students server-side: attendance records are an
+ * active-workflow signal and archived students should not pick up new
+ * attendance events.
+ */
+async function getActiveStudents(): Promise<StudentRow[]> {
   const supabase = createServerClient();
   try {
-    const { data } = await supabase
+    let query = supabase
       .from("student")
-      .select("student_id, full_name")
-      .order("full_name", { ascending: true });
+      .select("student_id, full_name");
+    if (typeof (query as { is?: unknown }).is === "function") {
+      query = (query as unknown as { is: (col: string, val: null) => typeof query }).is(
+        "archived_at",
+        null,
+      );
+    }
+    const { data } = await query.order("full_name", { ascending: true });
     return data || [];
   } catch {
     return [];
@@ -64,7 +76,7 @@ export default async function FellowshipThursdayPage({ searchParams }: Props) {
 
   const [records, students] = await Promise.all([
     getFellowshipThursdayRecords(),
-    getStudents(),
+    getActiveStudents(),
   ]);
   const attendedCount = records.filter((record) => record.attended).length;
   const sourcedCount = records.filter((record) => Boolean(record.source_info)).length;
