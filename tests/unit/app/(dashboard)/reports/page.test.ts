@@ -4,8 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── Module mocks ────────────────────────────────────────────────────────────
 
-const { createServerClient } = vi.hoisted(() => ({
+const { createServerClient, selectedQueries } = vi.hoisted(() => ({
   createServerClient: vi.fn(),
+  selectedQueries: [] as Array<{ table: string; columns: string }>,
 }));
 
 vi.mock("@/lib/supabase/server", () => ({
@@ -44,13 +45,17 @@ function createMockClient(
 ) {
   return {
     from: vi.fn((table: string) => ({
-      select: vi.fn().mockResolvedValue(responses[table] ?? { data: [], error: null }),
+      select: vi.fn((columns: string) => {
+        selectedQueries.push({ table, columns });
+        return Promise.resolve(responses[table] ?? { data: [], error: null });
+      }),
     })),
   } as never;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  selectedQueries.length = 0;
 });
 
 // ── getReportsData ──────────────────────────────────────────────────────────
@@ -102,6 +107,11 @@ describe("getReportsData", () => {
 
     const result = await getReportsData();
 
+    const meetingQuery = selectedQueries.find(({ table }) => table === "advising_meeting");
+    expect(meetingQuery?.columns).toContain("application_id");
+    expect(meetingQuery?.columns).toContain("application!advising_meeting_application_id_fkey");
+    expect(meetingQuery?.columns).toContain("fellowship(fellowship_name)");
+
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -115,6 +125,9 @@ describe("getReportsData", () => {
     expect(result.metrics.applicationsByStage).toEqual([]);
     expect(result.metrics.byClassStanding).toEqual([]);
     expect(result.metrics.advisorActivity).toEqual([]);
+    expect(result.metrics.advisingSessionsByStudent).toEqual([]);
+    expect(result.metrics.advisingSessionsByStudentApplication).toEqual([]);
+    expect(result.metrics.advisingSessionsByFellowship).toEqual([]);
     expect(result.metrics.noShowTrend).toEqual([]);
   });
 });
@@ -196,5 +209,8 @@ describe("ReportsPage", () => {
     expect(html).not.toContain("Reports are currently unavailable");
     expect(html).not.toContain("Refresh reports");
     expect(html).toContain("No data yet.");
+    expect(html).toContain("Advising Sessions by Student");
+    expect(html).toContain("Advising Sessions by Student and Application/Fellowship");
+    expect(html).toContain("Advising Sessions by Fellowship");
   });
 });

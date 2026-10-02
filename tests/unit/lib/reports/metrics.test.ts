@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   computeReportMetrics,
+  GENERAL_ADVISING_LABEL,
   type ReportApplicationRow,
   type ReportFellowshipThursdayRow,
+  type ReportLinkedApplication,
   type ReportMeetingRow,
   type ReportStudentRow,
 } from "@/lib/reports/metrics";
@@ -26,6 +28,23 @@ function meeting(overrides: Partial<ReportMeetingRow> & { student_id: number }):
     no_show: false,
     meeting_date: "2026-01-15",
     advisor: null,
+    application_id: null,
+    application: null,
+    ...overrides,
+  };
+}
+
+/**
+ * Joined `application` relation for an application-linked advising meeting.
+ * Defaults mirror the loader payload; override `fellowship` for archived names.
+ */
+function linkedApp(
+  overrides: Partial<ReportLinkedApplication> & { fellowship_id: number },
+): ReportLinkedApplication {
+  return {
+    application_id: 100,
+    application_year: 2026,
+    fellowship: { fellowship_name: "Fellowship" },
     ...overrides,
   };
 }
@@ -61,6 +80,9 @@ describe("computeReportMetrics", () => {
       fellowshipsByFinalists: [],
       byClassStanding: [],
       advisorActivity: [],
+      advisingSessionsByStudent: [],
+      advisingSessionsByStudentApplication: [],
+      advisingSessionsByFellowship: [],
       noShowTrend: [],
       advisingNoApplication: [],
       ftThenApplied: [],
@@ -82,7 +104,17 @@ describe("computeReportMetrics", () => {
           fellowship: null,
         },
       ],
-      [{ student_id: 1, advisor_id: null, no_show: true, meeting_date: "2026-01-10", advisor: null }],
+      [
+        {
+          student_id: 1,
+          advisor_id: null,
+          no_show: true,
+          meeting_date: "2026-01-10",
+          advisor: null,
+          application_id: null,
+          application: null,
+        },
+      ],
       [student({ student_id: 1, full_name: "Solo" })],
       [ft({ student_id: 1, attended: true })],
     );
@@ -297,7 +329,7 @@ describe("computeReportMetrics", () => {
           meeting({ student_id: 3, advisor_id: 5, no_show: true, advisor: { advisor_name: "Ada" } }),
         ],
       );
-      expect(r.advisorActivity).toEqual([{ id: 5, name: "Ada", total: 3, noShows: 2 }]);
+      expect(r.advisorActivity).toEqual([{ id: 5, name: "Ada", total: 3, noShows: 2, students: 3 }]);
     });
 
     it("falls back to Unassigned for null advisor relation and keeps the advisor_id", () => {
@@ -308,7 +340,7 @@ describe("computeReportMetrics", () => {
           meeting({ student_id: 2, advisor_id: 7, no_show: false, advisor: null }),
         ],
       );
-      expect(r.advisorActivity).toEqual([{ id: 7, name: "Unassigned", total: 2, noShows: 1 }]);
+      expect(r.advisorActivity).toEqual([{ id: 7, name: "Unassigned", total: 2, noShows: 1, students: 2 }]);
     });
 
     it("groups null advisor_id meetings under a single Unassigned bucket with id null", () => {
@@ -319,7 +351,7 @@ describe("computeReportMetrics", () => {
           meeting({ student_id: 2, advisor_id: null, no_show: false, advisor: null }),
         ],
       );
-      expect(r.advisorActivity).toEqual([{ id: null, name: "Unassigned", total: 2, noShows: 1 }]);
+      expect(r.advisorActivity).toEqual([{ id: null, name: "Unassigned", total: 2, noShows: 1, students: 2 }]);
     });
 
     it("sorts advisors by meeting count descending", () => {
@@ -338,6 +370,257 @@ describe("computeReportMetrics", () => {
         { name: "Three", total: 3 },
         { name: "One", total: 2 },
         { name: "Two", total: 1 },
+      ]);
+    });
+
+    it("counts unique students advised while retaining meeting and no-show totals", () => {
+      const r = compute(
+        [],
+        [
+          meeting({ student_id: 1, advisor_id: 5, no_show: false, advisor: { advisor_name: "Ada" } }),
+          meeting({ student_id: 1, advisor_id: 5, no_show: false, advisor: { advisor_name: "Ada" } }),
+          meeting({ student_id: 2, advisor_id: 5, no_show: true, advisor: { advisor_name: "Ada" } }),
+          meeting({ student_id: 3, advisor_id: 6, no_show: true, advisor: { advisor_name: "Grace" } }),
+          meeting({ student_id: 3, advisor_id: 6, no_show: false, advisor: { advisor_name: "Grace" } }),
+        ],
+      );
+      expect(r.advisorActivity).toEqual([
+        { id: 5, name: "Ada", total: 3, noShows: 1, students: 2 },
+        { id: 6, name: "Grace", total: 2, noShows: 1, students: 1 },
+      ]);
+    });
+  });
+
+  // ── Advising Sessions by Student (lifetime) ──────────────────────────────
+
+  describe("advisingSessionsByStudent", () => {
+    it("totals a student's lifetime sessions across General Advising and linked meetings", () => {
+      const r = compute(
+        [],
+        [
+          meeting({ student_id: 1, application_id: null, application: null }),
+          meeting({ student_id: 1, application_id: null, application: null }),
+          meeting({ student_id: 1, application_id: 10, application: linkedApp({ fellowship_id: 100 }) }),
+          meeting({ student_id: 2, application_id: null, application: null }),
+        ],
+        [
+          student({ student_id: 1, full_name: "Ada" }),
+          student({ student_id: 2, full_name: "Grace" }),
+        ],
+      );
+      expect(r.advisingSessionsByStudent).toEqual([
+        { student_id: 1, full_name: "Ada", sessions: 3 },
+        { student_id: 2, full_name: "Grace", sessions: 1 },
+      ]);
+    });
+
+    it("falls back to `Student {id}` when a meeting's student is not in the students table", () => {
+      const r = compute(
+        [],
+        [
+          meeting({ student_id: 99, application_id: null, application: null }),
+          meeting({ student_id: 99, application_id: null, application: null }),
+        ],
+        [],
+      );
+      expect(r.advisingSessionsByStudent).toEqual([{ student_id: 99, full_name: "Student 99", sessions: 2 }]);
+    });
+
+    it("sorts by session count descending, then student id ascending", () => {
+      const r = compute(
+        [],
+        [
+          meeting({ student_id: 3, application_id: null, application: null }),
+          meeting({ student_id: 1, application_id: null, application: null }),
+          meeting({ student_id: 1, application_id: null, application: null }),
+          meeting({ student_id: 2, application_id: null, application: null }),
+        ],
+        [
+          student({ student_id: 1, full_name: "One" }),
+          student({ student_id: 2, full_name: "Two" }),
+          student({ student_id: 3, full_name: "Three" }),
+        ],
+      );
+      expect(r.advisingSessionsByStudent.map((s) => s.student_id)).toEqual([1, 2, 3]);
+    });
+  });
+
+  // ── Advising Sessions by Student & Application/Fellowship ────────────────
+
+  describe("advisingSessionsByStudentApplication", () => {
+    it("labels a NULL application_id explicitly as General Advising", () => {
+      const r = compute(
+        [],
+        [
+          meeting({ student_id: 1, application_id: null, application: null }),
+          meeting({ student_id: 1, application_id: null, application: null }),
+          meeting({
+            student_id: 1,
+            application_id: 10,
+            application: linkedApp({ fellowship_id: 100, application_year: 2026 }),
+          }),
+        ],
+        [student({ student_id: 1, full_name: "Ada" })],
+      );
+      expect(r.advisingSessionsByStudentApplication).toEqual([
+        {
+          student_id: 1,
+          full_name: "Ada",
+          application_id: null,
+          label: GENERAL_ADVISING_LABEL,
+          sessions: 2,
+        },
+        {
+          student_id: 1,
+          full_name: "Ada",
+          application_id: 10,
+          label: "Fellowship — 2026",
+          sessions: 1,
+        },
+      ]);
+    });
+
+    it("uses the joined application/fellowship label, including transparent year-unknown", () => {
+      const r = compute(
+        [],
+        [
+          meeting({
+            student_id: 1,
+            application_id: 10,
+            application: linkedApp({ fellowship_id: 100, application_year: 2027 }),
+          }),
+          meeting({
+            student_id: 1,
+            application_id: 11,
+            application: linkedApp({ fellowship_id: 101, application_year: null }),
+          }),
+        ],
+        [student({ student_id: 1, full_name: "Ada" })],
+      );
+      expect(r.advisingSessionsByStudentApplication.map((row) => row.label)).toEqual([
+        "Fellowship — 2027",
+        "Fellowship — year unknown",
+      ]);
+    });
+
+    it("keeps a missing application relation distinct from General Advising", () => {
+      const r = compute(
+        [],
+        [
+          meeting({ student_id: 1, application_id: 55, application: null }),
+          meeting({ student_id: 2, application_id: null, application: null }),
+        ],
+        [
+          student({ student_id: 1, full_name: "Ada" }),
+          student({ student_id: 2, full_name: "Grace" }),
+        ],
+      );
+      expect(r.advisingSessionsByStudentApplication).toEqual([
+        { student_id: 1, full_name: "Ada", application_id: 55, label: "Application 55", sessions: 1 },
+        {
+          student_id: 2,
+          full_name: "Grace",
+          application_id: null,
+          label: GENERAL_ADVISING_LABEL,
+          sessions: 1,
+        },
+      ]);
+    });
+  });
+
+  // ── Advising Sessions by Fellowship (application-linked only) ────────────
+
+  describe("advisingSessionsByFellowship", () => {
+    it("counts only application-linked meetings and excludes General Advising", () => {
+      const r = compute(
+        [],
+        [
+          meeting({
+            student_id: 1,
+            application_id: 10,
+            application: linkedApp({ fellowship_id: 100, application_year: 2026 }),
+          }),
+          meeting({
+            student_id: 2,
+            application_id: 10,
+            application: linkedApp({ fellowship_id: 100, application_year: 2026 }),
+          }),
+          // General Advising — never attributed to a fellowship.
+          meeting({ student_id: 3, application_id: null, application: null }),
+        ],
+      );
+      expect(r.advisingSessionsByFellowship).toEqual([
+        { fellowship_id: 100, label: "Fellowship", sessions: 2 },
+      ]);
+    });
+
+    it("combines every application cycle for one fellowship into a single total", () => {
+      const r = compute(
+        [],
+        [
+          meeting({
+            student_id: 1,
+            application_id: 10,
+            application: linkedApp({ application_id: 10, fellowship_id: 100, application_year: 2026 }),
+          }),
+          meeting({
+            student_id: 2,
+            application_id: 11,
+            application: linkedApp({ application_id: 11, fellowship_id: 100, application_year: 2027 }),
+          }),
+          meeting({
+            student_id: 3,
+            application_id: 12,
+            application: linkedApp({ application_id: 12, fellowship_id: 100, application_year: null }),
+          }),
+          meeting({
+            student_id: 4,
+            application_id: 13,
+            application: linkedApp({ application_id: 13, fellowship_id: 200, application_year: 2026 }),
+          }),
+        ],
+      );
+      expect(r.advisingSessionsByFellowship).toEqual([
+        { fellowship_id: 100, label: "Fellowship", sessions: 3 },
+        { fellowship_id: 200, label: "Fellowship", sessions: 1 },
+      ]);
+    });
+
+    it("never assigns a NULL application_id to a fellowship, even with a stray relation", () => {
+      const r = compute(
+        [],
+        [
+          meeting({
+            student_id: 1,
+            application_id: null,
+            application: linkedApp({ fellowship_id: 100, application_year: 2026 }),
+          }),
+        ],
+      );
+      expect(r.advisingSessionsByFellowship).toEqual([]);
+    });
+
+    it("excludes linked meetings whose joined application relation is missing", () => {
+      const r = compute(
+        [],
+        [meeting({ student_id: 1, application_id: 55, application: null })],
+      );
+      expect(r.advisingSessionsByFellowship).toEqual([]);
+    });
+
+    it("falls back to the existing safe label when the fellowship relation is missing", () => {
+      const r = compute(
+        [],
+        [
+          meeting({
+            student_id: 1,
+            application_id: 10,
+            application: linkedApp({ application_id: 10, fellowship_id: 100, application_year: 2026, fellowship: null }),
+          }),
+        ],
+      );
+      expect(r.advisingSessionsByFellowship).toEqual([
+        { fellowship_id: 100, label: "Fellowship 100", sessions: 1 },
       ]);
     });
   });
@@ -447,6 +730,92 @@ describe("computeReportMetrics", () => {
       expect(r.ftThenApplied).toEqual([]);
       expect(r.ftNotYetApplied).toEqual([{ student_id: 1, full_name: "Known Student", major: null, class_standing: null }]);
       expect(r.totals.ftAttendees).toBe(2); // count includes unknown student 99
+    });
+  });
+
+  // ── Archived historical rows ─────────────────────────────────────────────
+
+  describe("archived historical rows", () => {
+    it("keeps archived students and fellowships represented in every metric", () => {
+      // The reports loader never filters archived entities, so archived
+      // students and fellowships arrive in the payload exactly like active
+      // ones. The aggregator must count them as any other historical row and
+      // must not apply archive filtering.
+      const r = compute(
+        [
+          app({
+            student_id: 9,
+            fellowship_id: 90,
+            application_year: 2024,
+            stage_of_application: "Awarded",
+            is_finalist: true,
+            is_semi_finalist: true,
+            fellowship: { fellowship_name: "Archived Fellowship" },
+          }),
+        ],
+        [
+          meeting({
+            student_id: 9,
+            advisor_id: 3,
+            no_show: true,
+            meeting_date: "2024-03-10",
+            application_id: 10,
+            application: linkedApp({
+              fellowship_id: 90,
+              application_year: 2024,
+              fellowship: { fellowship_name: "Archived Fellowship" },
+            }),
+          }),
+          meeting({
+            student_id: 9,
+            advisor_id: 3,
+            no_show: false,
+            meeting_date: "2024-03-20",
+            application_id: null,
+            application: null,
+          }),
+        ],
+        [student({ student_id: 9, full_name: "Archived Alum" })],
+      );
+      expect(r.advisingSessionsByStudent).toEqual([
+        { student_id: 9, full_name: "Archived Alum", sessions: 2 },
+      ]);
+      expect(r.advisingSessionsByStudentApplication).toEqual([
+        // Equal session counts keep first-seen (insertion) order: the linked
+        // meeting appears before the General Advising meeting in the fixture.
+        {
+          student_id: 9,
+          full_name: "Archived Alum",
+          application_id: 10,
+          label: "Archived Fellowship — 2024",
+          sessions: 1,
+        },
+        {
+          student_id: 9,
+          full_name: "Archived Alum",
+          application_id: null,
+          label: GENERAL_ADVISING_LABEL,
+          sessions: 1,
+        },
+      ]);
+      expect(r.advisingSessionsByFellowship).toEqual([
+        { fellowship_id: 90, label: "Archived Fellowship", sessions: 1 },
+      ]);
+      expect(r.advisorActivity).toEqual([
+        { id: 3, name: "Unassigned", total: 2, noShows: 1, students: 1 },
+      ]);
+      expect(r.fellowshipsByFinalists).toEqual([
+        {
+          id: 90,
+          name: "Archived Fellowship — 2024",
+          total: 1,
+          semiFinalists: 1,
+          finalists: 1,
+          awarded: 1,
+        },
+      ]);
+      expect(r.applicationsByStage).toEqual([{ stage: "Awarded", count: 1 }]);
+      expect(r.totals).toEqual({ students: 1, applications: 1, meetings: 2, ftAttendees: 0, awarded: 1 });
     });
   });
 

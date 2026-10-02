@@ -13,6 +13,7 @@ import { StatCard } from "@/components/ui/stat-card";
 import { createServerClient } from "@/lib/supabase/server";
 import {
   computeReportMetrics,
+  GENERAL_ADVISING_LABEL,
   type ReportApplicationRow,
   type ReportFellowshipThursdayRow,
   type ReportMeetingRow,
@@ -91,7 +92,7 @@ export async function getReportsData(): Promise<ReportsDataResult> {
         .select("student_id, fellowship_id, application_year, stage_of_application, is_finalist, is_semi_finalist, student(full_name, major, class_standing), fellowship(fellowship_name)"),
       supabase
         .from("advising_meeting")
-        .select("student_id, advisor_id, no_show, meeting_date, advisor!advising_meeting_advisor_id_fkey(advisor_name)"),
+        .select("student_id, application_id, advisor_id, no_show, meeting_date, advisor!advising_meeting_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))"),
       supabase
         .from("student")
         .select("student_id, full_name, major, class_standing"),
@@ -395,7 +396,7 @@ export default async function ReportsPage() {
             ) : (
               <>
                 <div className="space-y-3 md:hidden">
-                  {data.advisorActivity.map(({ id, name, total, noShows }) => {
+                  {data.advisorActivity.map(({ id, name, total, noShows, students }) => {
                     const attended = total - noShows;
                     const rate = total > 0 ? Math.round((noShows / total) * 100) : 0;
 
@@ -416,6 +417,7 @@ export default async function ReportsPage() {
                         </div>
                         <div className="mt-3 flex flex-wrap gap-2">
                           <MetricBadge tone="green">{attended} attended</MetricBadge>
+                          <MetricBadge tone="blue">{students} unique students</MetricBadge>
                           <MetricBadge tone={noShows > 0 ? "red" : "slate"}>{noShows} no-shows</MetricBadge>
                           <MetricBadge tone={rate >= 30 ? "red" : "slate"}>{total > 0 ? `${rate}% rate` : "No rate yet"}</MetricBadge>
                         </div>
@@ -430,13 +432,14 @@ export default async function ReportsPage() {
                     <tr className="border-b border-gray-100">
                       <th className="pb-2 text-left font-medium text-slate-500">Advisor</th>
                       <th className="pb-2 text-center font-medium text-slate-500">Meetings</th>
+                      <th className="hidden pb-2 text-center font-medium text-slate-500 sm:table-cell">Unique Students</th>
                       <th className="hidden pb-2 text-center font-medium text-slate-500 sm:table-cell">Attended</th>
                       <th className="pb-2 text-center font-medium text-slate-500">No-Shows</th>
                       <th className="hidden pb-2 text-right font-medium text-slate-500 sm:table-cell">No-Show Rate</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {data.advisorActivity.map(({ id, name, total, noShows }) => {
+                    {data.advisorActivity.map(({ id, name, total, noShows, students }) => {
                       const attended = total - noShows;
                       const rate     = total > 0 ? Math.round((noShows / total) * 100) : 0;
                       return (
@@ -454,6 +457,7 @@ export default async function ReportsPage() {
                             )}
                           </td>
                           <td className="py-2 text-center font-medium text-slate-700">{total}</td>
+                          <td className="hidden py-2 text-center text-slate-500 sm:table-cell">{students}</td>
                           <td className="hidden py-2 text-center text-slate-500 sm:table-cell">{attended}</td>
                           <td className="py-2 text-center">
                             {noShows > 0 ? (
@@ -476,6 +480,62 @@ export default async function ReportsPage() {
                 </table>
                 </div>
               </>
+            )}
+          </CardContent>
+        </Card>
+
+        <div className="grid gap-6 lg:grid-cols-2">
+          <Card className="border-gray-200 shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-semibold text-slate-900">Advising Sessions by Student</CardTitle>
+              <AppCardDescription>Recorded advising sessions for each student</AppCardDescription>
+            </CardHeader>
+            <CardContent>
+              {data.advisingSessionsByStudent.length === 0 ? <p className="text-sm text-slate-400">No advising data yet.</p> : (
+                <ul className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                  {data.advisingSessionsByStudent.map(({ student_id, full_name, sessions }) => (
+                    <li key={student_id} className="flex items-center justify-between gap-3 text-sm">
+                      <Link href={`/students/${student_id}`} className="min-w-0 truncate text-slate-700 hover:text-[#006747] hover:underline">{full_name}</Link>
+                      <MetricBadge tone="slate" className="shrink-0">{sessions} sessions</MetricBadge>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-gray-200 shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-semibold text-slate-900">Advising Sessions by Student and Application/Fellowship</CardTitle>
+              <AppCardDescription>Student sessions grouped by application link; unlinked meetings are General Advising</AppCardDescription>
+            </CardHeader>
+            <CardContent>
+              {data.advisingSessionsByStudentApplication.length === 0 ? <p className="text-sm text-slate-400">No advising data yet.</p> : (
+                <ul className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                  {data.advisingSessionsByStudentApplication.map(({ student_id, full_name, application_id, label, sessions }) => (
+                    <li key={`${student_id}:${application_id ?? "general"}`} className="flex items-start justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2 text-sm">
+                      <div className="min-w-0"><Link href={`/students/${student_id}`} className="block truncate font-medium text-slate-700 hover:text-[#006747] hover:underline">{full_name}</Link><span className="text-xs text-slate-500">{application_id == null ? GENERAL_ADVISING_LABEL : label}</span></div>
+                      <MetricBadge tone="slate" className="shrink-0">{sessions} sessions</MetricBadge>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        <Card className="border-gray-200 shadow-sm">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base font-semibold text-slate-900">Advising Sessions by Fellowship</CardTitle>
+            <AppCardDescription>Sessions linked to an application for each fellowship; General Advising is excluded</AppCardDescription>
+          </CardHeader>
+          <CardContent>
+            {data.advisingSessionsByFellowship.length === 0 ? <p className="text-sm text-slate-400">No fellowship-linked advising data yet.</p> : (
+              <ul className="grid gap-2 sm:grid-cols-2">
+                {data.advisingSessionsByFellowship.map(({ fellowship_id, label, sessions }) => (
+                  <li key={fellowship_id} className="flex items-center justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2 text-sm"><span className="min-w-0 truncate text-slate-700">{label}</span><MetricBadge tone="slate" className="shrink-0">{sessions} sessions</MetricBadge></li>
+                ))}
+              </ul>
             )}
           </CardContent>
         </Card>
