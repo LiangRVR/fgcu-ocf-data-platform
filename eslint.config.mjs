@@ -15,6 +15,8 @@ const eslintConfig = defineConfig([
     ".agents/**",
     ".claude/**",
     ".codegraph/**",
+    // Generated coverage output (istanbul) — never authored source.
+    "coverage/**",
   ]),
 ]);
 

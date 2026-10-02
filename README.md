@@ -5,23 +5,64 @@ Manages students, fellowship opportunities, applications, and advising sessions.
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start (local development)
 
-### 1. Install Dependencies
+The supported local workflow runs against a **Docker-local Supabase instance** —
+no hosted project is required. The repository migration chain is forward-only
+and is applied in full to a fresh, disposable local instance.
+
+### 1. Install dependencies
 
 ```bash
 pnpm install
 ```
 
-### 2. Set Up Environment
+### 2. Set up environment
 
 ```bash
 cp .env.example .env.local
 ```
 
-Edit `.env.local` and add your Supabase credentials (see [Quick Start Guide](docs/quickstart.md)).
+`.env.local` requires five keys:
 
-### 3. Run Development Server
+| Key | Purpose | Visibility |
+| --- | --- | --- |
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL | Browser-safe |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon public key | Browser-safe |
+| `APP_URL` | Server-side absolute app URL (auth redirects / recovery links) | Server-only |
+| `SUPABASE_URL` | Server-only Supabase URL for trusted advisor provisioning | Server-only |
+| `SUPABASE_SERVICE_ROLE_KEY` | Server-only service-role secret for trusted advisor provisioning | Server-only — **secret** |
+
+> ⚠️ `SUPABASE_SERVICE_ROLE_KEY` must **never** be prefixed with
+> `NEXT_PUBLIC_`, committed, or exposed to the browser/client-side code. Keep
+> it only in `.env.local` or your secret store. For local development, map the
+> outputs of `pnpm exec supabase status -o env` into `.env.local` by hand —
+> copy values, never print or commit them:
+>
+> | `supabase status -o env` output | App variable |
+> | --- | --- |
+> | `API_URL` | `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_URL` |
+> | `ANON_KEY` | `NEXT_PUBLIC_SUPABASE_ANON_KEY` |
+> | `SERVICE_ROLE_KEY` | `SUPABASE_SERVICE_ROLE_KEY` |
+
+### 3. Start the local Supabase stack and apply the schema
+
+```bash
+pnpm exec supabase start          # start the local stack (first run pulls Docker images)
+pnpm exec supabase db reset --no-seed   # apply the full migration chain to a fresh local database
+pnpm exec supabase status -o env  # capture local runtime URLs/keys
+```
+
+Stop it later with `pnpm exec supabase stop --no-backup`. See the
+[Quick Start Guide](docs/quickstart.md) for details.
+
+### 4. Generate TypeScript types
+
+```bash
+pnpm run db:types   # runs `supabase gen types --local > types/database.ts`
+```
+
+### 5. Run the development server
 
 ```bash
 pnpm dev
@@ -33,14 +74,13 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ## 📚 Documentation
 
-- **[Quick Start Guide](docs/quickstart.md)** - Get up and running with Supabase
-- **[FGCU Design Style Guide](docs/DESIGN_GUIDE.md)** - Official design system and style guidelines
-- **[UI/UX System Reference](docs/UI_UX_REFACTOR.md)** - Active UI rules, responsive patterns, and loading-state guidance
-- **[Schema Verification](docs/schema-verification.md)** - Database setup checklist
-- **[Schema Reference](docs/schema-reference.md)** - Full schema with all constraints and business rules
-- **[Schema Design Decisions](docs/schema-decisions.md)** - Rationale for key data-model choices
-- **[Supabase Setup](supabase/README.md)** - Detailed database configuration
-- **[Database Schema](supabase/SCHEMA.md)** - One-page reference: tables, PKs, FKs, business rules
+- **[Quick Start Guide](docs/quickstart.md)** — local Docker Supabase workflow, environment setup, type generation, verification, and what is / is not done
+- **[Schema Reference](docs/schema-reference.md)** — canonical schema with all constraints and business rules
+- **[Supabase Setup](supabase/README.md)** — detailed database configuration and migration guidance
+- **[Database Schema](supabase/SCHEMA.md)** — one-page reference: tables, keys, business rules, and the ordered migration table
+- **[Schema Design Decisions](docs/schema-decisions.md)** — rationale for key data-model choices
+- **[Schema Verification](docs/schema-verification.md)** — database setup checklist
+- **[Testing & Verification](aidlc-docs/project/testing.md)** — command semantics and prerequisites for the test suites
 
 ---
 
@@ -65,140 +105,47 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 ## 📁 Project Structure
 
 ```text
-├── app/                    # Next.js App Router
-│   ├── (auth)/            # Authentication pages
-│   │   ├── login/         # Login page wired to Supabase Auth
-│   │   ├── forgot-password/ # Password recovery request page
-│   │   └── reset-password/ # Password reset completion page
-│   ├── (dashboard)/       # Protected dashboard pages
-│   │   ├── dashboard/     # Live overview: KPIs, distributions, recent activity
-│   │   │   └── account/   # Advisor account page with profile, security, meetings, students
-│   │   ├── students/      # Student list (CRUD, search, sort, filter, CSV export)
-│   │   │   └── [id]/      # Student detail page (profile + related records)
-│   │   ├── fellowships/   # Fellowship list with per-fellowship metrics
-│   │   ├── applications/  # Application tracking with stage pipeline
-│   │   ├── advising/      # Advising session records
-│   │   ├── advisors/      # Advisor list
-│   │   │   └── [id]/      # Advisor detail page (profile + meeting history + metrics)
-│   │   ├── fellowship-thursday/ # Weekly meeting attendance
-│   │   ├── scholarship-history/ # Past scholarship awards
-│   │   └── reports/       # Cross-table analytics: applications by stage, finalists, class standing, advising activity, Thursday attendance
-│   ├── api/               # API routes
-│   │   ├── account/       # Advisor account update endpoints
-│   │   ├── auth/          # Sign-out + password recovery endpoints
-│   │   └── health/        # Health check endpoint
-│   └── globals.css        # FGCU design system styles
-├── components/
-│   ├── advising/          # AdvisingTable (CRUD client component)
-│   ├── applications/      # ApplicationsTable (CRUD client component)
-│   ├── fellowship-thursday/ # FellowshipThursdayTable (CRUD client component)
-│   ├── fellowships/       # FellowshipEditButton (inline edit button)
-│   ├── scholarship-history/ # ScholarshipHistoryTable (CRUD client component)
-│   ├── students/          # StudentsTable (CRUD + sort + filter client component)
-│   ├── layout/            # Shell, sidebar, top bar, page header
-│   └── ui/                # shadcn/ui components (buttons, cards, badges, etc.)
-├── lib/
-│   ├── auth/              # Server-side session helpers + advisor authorization
-│   ├── config/            # Navigation config (9 sidebar items)
-│   ├── supabase/          # Supabase SSR clients + proxy session refresh helpers
-│   ├── utils/             # cn, format (formatDate, getInitials, formatCurrency)
-│   └── validators/        # Zod schemas (auth + account flows)
-├── types/                 # TypeScript types (Database auto-generated, App-level)
+├── app/                    # Next.js App Router (auth pages, dashboard, API routes)
+├── components/             # Feature tables, dashboard shell, shadcn/ui primitives
+├── lib/                    # Server-side auth/session helpers, config, Supabase clients
+├── types/                  # TypeScript types (auto-generated database + app-level)
 ├── supabase/
-│   ├── migrations/        # Initial schema plus advisor auth and active-advisor RLS migrations
-│   ├── SCHEMA.md          # Quick-reference schema table
-│   └── README.md          # Supabase setup guide
-├── docs/                  # Project documentation
-│   ├── DESIGN_GUIDE.md    # FGCU design system
-│   ├── UI_UX_REFACTOR.md  # UI transformation notes
-│   ├── STUDENTS_DASHBOARD_UPGRADE.md # Students page upgrade details
-│   ├── schema-reference.md # Canonical schema with all constraints
-│   ├── quickstart.md      # Environment + Supabase setup
-│   └── schema-verification.md # Database setup checklist
-└── scripts/               # test-connection.ts
+│   ├── migrations/         # Forward-only migration chain (20 migrations)
+│   ├── SCHEMA.md           # One-page schema reference
+│   └── README.md           # Supabase setup guide
+├── docs/                   # Project documentation
+└── scripts/                # Connection test, contract/E2E runners, test support
 ```
 
-See the [full project structure details](docs/quickstart.md#project-structure) for more information.
+For current navigation destinations (sidebar pages and the admin-only Advisor
+Management page) and the reports surface, see the
+[Quick Start Guide](docs/quickstart.md).
 
 ---
 
-## 🗄️ Database Setup
+## 🔐 Roles & History
 
-The application uses Supabase for the backend. To set up the database:
+- **Roles** — exactly two operational roles: `Admin` and `Advisor`. Effective
+  administration is the immutable Auth claim plus an active, pre-bound advisor
+  identity; the mutable `advisor.role` display column is never authorization.
+  Advisor accounts are provisioned through a server-only admin pre-binding path
+  (never email self-link). See [supabase/README.md](supabase/README.md).
+- **Archive instead of delete** — students/fellowships archive
+  (`student.archived_at` / `fellowship.archived_at`) and advisors
+  deactivate/reactivate via the admin-only `lifecycle_transition` RPC;
+  historical relationships are preserved, and core tables have an
+  authenticated DELETE lockdown.
+- **Append-only advising history** — advising meetings are append-only;
+  corrections are recorded as `advising_meeting_amendment` rows, never as edits
+  or deletes.
 
-> ⚠️ **Production provenance freeze (2026-09-25):** these steps describe a
-> fresh-project setup. Do **not** run the migration files against the hosted
-> production database while provenance is unresolved. Production is the
-> physical-schema authority, its migration ledger records only
-> `20260924065221_advisor_self_activation_lockdown`, and the deployed schema
-> materially differs from the repository chain. Generic `db push`, replay, and
-> history repair against production are prohibited. See
-> [`supabase/SCHEMA.md`](supabase/SCHEMA.md#migration-deployment-freeze) and the
-> approval-gated
-> [reconciliation runbook](aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
+> **Architectural rule:** Advising meetings are historical append-only records.
+> Existing meetings must not be directly edited or deleted through normal
+> application workflows. Corrections are represented as separate amendment
+> records.
 
-1. **Create a Supabase project** at [supabase.com](https://supabase.com)
-2. **Apply migration 1** — schema: run `supabase/migrations/20260305000000_initial_schema.sql`
-3. **Apply migration 2** — bootstrap anon read: run `supabase/migrations/20260305000001_allow_anon_read.sql`
-4. **Apply migration 3** — bootstrap anon write: run `supabase/migrations/20260305000002_allow_anon_write.sql`
-5. **Apply migration 4** — advisor auth support: run `supabase/migrations/20260317000003_advisor_auth.sql`
-6. **Backfill confirmed advisor emails** in `public.advisor.email` before enforcing a non-null requirement on non-empty databases
-7. **Apply migration 5** — active-advisor RLS: run `supabase/migrations/20260317000004_active_advisor_rls.sql`
-8. **Apply migration 6 (required final step)** — advisor self-activation lockdown: run `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` after `20260317000004_active_advisor_rls.sql`; it removes the email self-link escalation path and installs the one-time `auth_user_id` guard — the migration chain is not complete without it
-9. **Provision each advisor only after the full migration chain (steps 2–8) is applied**, via the server-only provisioning module (`lib/provisioning/*`): it invites/creates the auth account and conditionally binds the returned Auth UUID to the unbound `public.advisor` row (`auth_user_id IS NULL`) before first sign-in; one-time bind, no email self-link
-10. **Verify the first active advisor can sign in** — the pre-bound `auth_user_id` resolves their advisor row, and `is_active` is `true`
-11. **Generate types**: Run `pnpm run db:types`
-12. **Test connection**: Run `pnpm run test:connection`
-
-Migrations 2 and 3 are bootstrap steps for early setup. After the full chain ending with `20260318000001_advisor_self_activation_lockdown.sql`, temporary anon access is replaced by authenticated active-advisor access as the intended steady state, with admin-only `advisor.auth_user_id` binding.
-
-For detailed instructions, see the [Supabase Setup Guide](supabase/README.md).
-
----
-
-## 🎯 Features
-
-### Implemented
-
-- ✅ **Live Dashboard** - 13 parallel Supabase queries: totals, finalists, semi-finalists, advising this month, no-shows, student flag distributions (CH / Honors / First-Gen), applications by stage, students by class standing, finalists by fellowship, recent meetings and applications
-- ✅ **Students** - Full CRUD (add / edit / delete with confirmation dialog), client-side search + status + major filters, multi-column sort, click-through to student detail page, KPI cards, skeleton loading states
-- ✅ **Student Detail Page** - Full profile view with applications, advising meetings, Fellowship Thursday attendance, and scholarship history all loaded in parallel
-- ✅ **Applications** - Live queries with student + fellowship joins, full CRUD table, stage badges, finalist / semi-finalist flags
-- ✅ **Advising** - Live queries with student + advisor joins, full CRUD table, no-show badge, meeting mode
-- ✅ **Fellowship Thursday** - Live attendance records with student join, full CRUD table
-- ✅ **Scholarship History** - Live records with student + fellowship joins, full CRUD table
-- ✅ **Fellowships** - Live list with per-fellowship metrics (total applications, finalists, awarded) derived from the `application` table
-- ✅ **Professional Dashboard UI** - Neutral shell, restrained FGCU accents, responsive layout, and route-specific loading states across major dashboard pages
-- ✅ **Semantic Status Badges** - Color-coded indicators throughout all tables
-- ✅ **FGCU Design System** - Consistent colors, typography, spacing, and shell rules (see `docs/DESIGN_GUIDE.md`)
-- ✅ **Supabase SSR Auth Wiring** - Browser/server clients, proxy session refresh, protected dashboard layout, and real sign-in/sign-out flow
-- ✅ **Advisor Account Center** - `/dashboard/account` with profile editing, password updates, advisor-scoped meeting history, and meeting-derived student roster
-- ✅ **Password Recovery Flow** - Forgot-password request page plus reset-password completion page
-- ✅ **Advisor Profile Sync** - Account email updates keep Supabase Auth and `public.advisor.email` aligned
-- ✅ **Database Schema** - 7 core tables plus advisor-auth and active-advisor RLS migrations
-- ✅ **TypeScript Type Safety** - Full type coverage, auto-generated Supabase types
-- ✅ **Form Validation** - Zod schemas + React Hook Form on the login form; manual validation (field-level errors + consistency checks) on all CRUD dialogs throughout the dashboard
-- ✅ **Toasts** - Sonner toast notifications on all mutations
-- ✅ **Reports** - Six cross-table report sections: Applications by Stage (bar distribution), Finalists & Awarded by Fellowship, Students by Class Standing, Advising Activity by Advisor, Fellowship Thursday Attendance, and Recent Meeting & Application Activity
-- ✅ **Advisor Detail Page** - `/advisors/[id]` with advisor profile, metrics (total meetings, students advised, no-shows), and full meeting history
-
-### In Progress
-
-- 🔄 **Advisor Provisioning** - Existing advisor rows still need confirmed FGCU email backfill before the auth migration can be finalized on populated databases
-- 🔄 **Production Auth Verification** - Email-change confirmations and password-recovery delivery still need end-to-end verification against the real Supabase project
-
-### Resolved Decisions
-
-- ✅ **Analytics Surface Direction** - Dashboard and reports now rely on native cards, distribution bars, and narrative panels; no additional charting dependency is required in the current product direction
-
-### Planned
-
-- 📋 Server-side pagination (currently client-side)
-- 📋 CSV / PDF export (Students export button present; logic not yet implemented)
-- 📋 Bulk actions (multi-select + bulk delete)
-- 📋 Real-time updates via Supabase subscriptions
-- 📋 Role-based access control beyond shared active-advisor access
-- 📋 Formal student assignment model if OCF needs a true advisor caseload table
+See [docs/schema-reference.md](docs/schema-reference.md) and
+[supabase/SCHEMA.md](supabase/SCHEMA.md) for the full model.
 
 ---
 
@@ -209,7 +156,7 @@ pnpm dev              # Start development server
 pnpm build            # Build for production
 pnpm start            # Start production server
 pnpm lint             # Run ESLint
-pnpm db:types         # Generate TypeScript types from Supabase
+pnpm db:types         # Generate TypeScript types from the local Supabase instance
 pnpm test:connection  # Test Supabase connection
 ```
 
@@ -220,12 +167,35 @@ There is deliberately **no bare `pnpm test`**. The test layers are explicit:
 ```bash
 pnpm run test:unit            # Fast unit tests (no coverage)
 pnpm run test:unit:coverage   # Unit tests + threshold-enforced V8 coverage of lib/** and app/api/**
-pnpm run test:contract       # Contract/RLS tests (Docker-local Supabase, requires Docker)
-pnpm run test:e2e            # Playwright Chromium E2E (requires Docker + built app)
-pnpm run test:all            # Full aggregate: unit + contract + e2e
+pnpm run test:contract        # Contract/RLS tests (Docker-local Supabase, requires Docker)
+pnpm run test:e2e             # Playwright Chromium E2E (requires Docker + built app)
+pnpm run test:all             # Full aggregate: unit + contract + e2e
 ```
 
-See the [testing & verification guide](aidlc-docs/project/testing.md) for command semantics, coverage scope/baseline, and prerequisites.
+The contract and E2E suites automatically run the full migration chain against
+a throwaway isolated Docker-local instance. See the
+[Quick Start Guide](docs/quickstart.md) and
+[Testing & Verification](aidlc-docs/project/testing.md) for details.
+
+---
+
+## 🚧 Handoff Boundary
+
+This repository is a **source-code handoff for the local platform**. The
+following institutional responsibilities are **excluded** and remain with OCF /
+FGCU IT after handoff:
+
+- **Real data import** — importing real production data into the system
+- **University deployment** — production hosting, networking, domains, and
+  secret/credential management
+- **SSO** — university single sign-on integration
+- **Backups** — institutional backup and recovery procedures
+- **Monitoring** — production monitoring and alerting
+
+The repository ships no hosted/production configuration and must not be
+deployed against the hosted production database while the
+[production provenance freeze](supabase/SCHEMA.md#migration-deployment-freeze)
+is in effect.
 
 ---
 

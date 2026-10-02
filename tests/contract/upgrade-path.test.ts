@@ -39,7 +39,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { Pool } from "pg";
-import { createDbPool, getContractEnv } from "./helpers/setup";
+import { attachPoolErrorHandler, createDbPool, getContractEnv } from "./helpers/setup";
 import { syntheticEmail, syntheticName } from "./helpers/fixtures";
 
 const env = getContractEnv();
@@ -113,11 +113,14 @@ beforeAll(async () => {
 
   const scratchUrl = new URL(env.dbUrl);
   scratchUrl.pathname = `/${scratchDbName}`;
-  scratchPool = new Pool({
-    connectionString: scratchUrl.toString(),
-    max: 2,
-    connectionTimeoutMillis: 10_000,
-  });
+  scratchPool = attachPoolErrorHandler(
+    new Pool({
+      connectionString: scratchUrl.toString(),
+      max: 2,
+      connectionTimeoutMillis: 10_000,
+    }),
+    "upgrade-path scratch"
+  );
 
   // Scaffold the auth functions the legacy migrations reference.
   await applySql(scratchPool, AUTH_SCAFFOLD_SQL, "auth scaffold");

@@ -78,14 +78,17 @@ CREATE TRIGGER trg_sync_finalist_flags
 ## 3. `advisor` as the app user table
 
 **Current state:** `advisor` now serves both as the staff profile table and the
-authorization anchor for Supabase Auth.
+authorization anchor for Supabase Auth. It carries the one-time Supabase Auth
+bind (`auth_user_id`), the **sole** lifecycle field (`is_active`), and a
+protected `role` display projection (`Admin` / `Advisor`).
 
 **Why this design:** The OCF workflow is shared across staff. Advisors need full
 shared access to students, applications, fellowships, and advising history.
 Creating a separate `users` table would add extra joins without solving a real
 problem at the current project size.
 
-**Implementation shape:**
+**Historical implementation shape** (the migration `20260317000003` shape that
+later migrations extended):
 
 ```sql
 ALTER TABLE public.advisor
@@ -97,8 +100,23 @@ ALTER TABLE public.advisor
   ADD COLUMN last_login_at timestamptz;
 ```
 
+**Current role semantics (migrations `20261001000001`–`20261007000001`):**
+the `role` column is now constrained to exactly `Admin` / `Advisor` (CHECK,
+default `'Advisor'`) and is a **protected display projection reconciled to the
+Auth claim** — a bound advisor displays `Admin` only when
+`auth.users.raw_app_meta_data.ocf_admin` is the JSON boolean `true`, and
+`Advisor` otherwise. It is **never** an authorization input: effective
+administration is the immutable Auth claim **plus** an active, pre-bound
+advisor (`public.is_effective_admin()`), and direct authenticated role writes
+are rejected (42501). Role changes run through the atomic `set_advisor_role`
+RPC (migration `20261007000001`), which updates the claim and the display in
+one transaction.
+
 **Operating rule:** keep `advisor_name` UNIQUE, keep `advisor_id` as the integer
 business PK, and set `is_active = false` instead of deleting former staff.
+Advisor-row creation, peer UPDATE, and DELETE are denied to authenticated
+clients; advisor accounts are created and bound only through the trusted
+server-only provisioning path.
 
 ---
 
@@ -141,3 +159,49 @@ new `student_advisor` table over adding a single `primary_advisor_id` column.
 That bridge table can support primary and secondary relationships, active and
 inactive assignments, and assignment start/end dates without rewriting advising
 history.
+
+---
+
+## 6. Lifecycle: archive / deactivate instead of delete
+
+**Current state:** `student` and `fellowship` carry a nullable `archived_at`
+(`NULL` = active, a database-authored timestamp = archived) and `advisor` uses
+`is_active` as its **sole** lifecycle field (there is no advisor
+`archived_at`). Archive/deactivate is the only normal removal path; every FK
+keeps the default `NO ACTION` semantics, so no historical relationship is ever
+deleted, nulled, or cascaded.
+
+**Why this design:** Students, applications, advising meetings, and award
+history are durable records. Hard-deleting a student or fellowship would
+silently destroy the historical context that reports, advising continuity, and
+accountability depend on.
+
+**Enforcement:** the admin-only RPC `public.lifecycle_transition` is the only
+normal writer of lifecycle state; direct authenticated writes of
+`archived_at`/`is_active` are rejected by column-scoped database guards; and
+authenticated `DELETE` of `advisor`, `student`, `fellowship`, or `application`
+is revoked at the grant and RLS layers. New operational child rows
+(`application`, `advising_meeting`, `fellowship_thursday`,
+`scholarship_history`) can never reference an archived student/fellowship at
+the database boundary, while historical reads of rows referencing archived
+parents are preserved.
+
+---
+
+## 7. Advising corrections are amendments, not edits
+
+**Current state:** `advising_meeting` is database-enforced append-only history
+(active advisors can `SELECT` and `INSERT` only). Corrections are recorded in
+`advising_meeting_amendment`, an append-only child record with a database
+-authored creator and timestamp and trim-aware non-empty `reason`/`details`
+CHECKs.
+
+**Why this design:** A meeting record is evidence of what happened. Editing or
+deleting it would rewrite history. Recording the correction as a separate
+amendment preserves both the original record and the correction trail, and more
+than one amendment may reference the same meeting.
+
+**Enforcement:** RLS grants `SELECT`/`INSERT` on `advising_meeting_amendment`
+only; `UPDATE`/`DELETE` are denied; the creation trigger resolves the
+authenticated active advisor and the database timestamp, rejecting any
+client-supplied creator.

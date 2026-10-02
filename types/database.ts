@@ -7,10 +7,30 @@ export type Json =
   | Json[]
 
 export type Database = {
-  // Allows to automatically instantiate createClient with right options
-  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
-  __InternalSupabase: {
-    PostgrestVersion: "14.1"
+  graphql_public: {
+    Tables: {
+      [_ in never]: never
+    }
+    Views: {
+      [_ in never]: never
+    }
+    Functions: {
+      graphql: {
+        Args: {
+          extensions?: Json
+          operationName?: string
+          query?: string
+          variables?: Json
+        }
+        Returns: Json
+      }
+    }
+    Enums: {
+      [_ in never]: never
+    }
+    CompositeTypes: {
+      [_ in never]: never
+    }
   }
   public: {
     Tables: {
@@ -101,7 +121,7 @@ export type Database = {
         Insert: {
           amendment_id?: number
           created_at?: string
-          created_by_advisor_id?: number
+          created_by_advisor_id: number
           details: string
           meeting_id: number
           reason: string
@@ -163,6 +183,35 @@ export type Database = {
           role?: string
         }
         Relationships: []
+      }
+      advisor_role_lock: {
+        Row: {
+          advisor_id: number
+          created_at: string
+          holder: string
+          lease_expires_at: string
+        }
+        Insert: {
+          advisor_id: number
+          created_at?: string
+          holder: string
+          lease_expires_at: string
+        }
+        Update: {
+          advisor_id?: number
+          created_at?: string
+          holder?: string
+          lease_expires_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "advisor_role_lock_advisor_id_fkey"
+            columns: ["advisor_id"]
+            isOneToOne: true
+            referencedRelation: "advisor"
+            referencedColumns: ["advisor_id"]
+          },
+        ]
       }
       application: {
         Row: {
@@ -366,77 +415,45 @@ export type Database = {
         Returns: boolean
       }
       fenced_read_advisor_role_display: {
-        Args: {
-          p_advisor_id: number
-          p_holder: string
-        }
+        Args: { p_advisor_id: number; p_holder: string }
         Returns: string
       }
       fenced_write_advisor_role_display: {
-        Args: {
-          p_advisor_id: number
-          p_holder: string
-          p_role: string
-        }
+        Args: { p_advisor_id: number; p_holder: string; p_role: string }
         Returns: boolean
       }
-      is_active_advisor: {
-        Args: Record<PropertyKey, never>
-        Returns: boolean
-      }
-      is_ocf_admin: {
-        Args: Record<PropertyKey, never>
-        Returns: boolean
-      }
-      is_effective_admin: {
-        Args: Record<PropertyKey, never>
-        Returns: boolean
-      }
+      is_active_advisor: { Args: never; Returns: boolean }
+      is_effective_admin: { Args: never; Returns: boolean }
+      is_ocf_admin: { Args: never; Returns: boolean }
       lifecycle_transition: {
-        Args: {
-          p_entity: string
-          p_action: string
-          p_entity_id: number
-        }
+        Args: { p_action: string; p_entity: string; p_entity_id: number }
         Returns: {
-          entity: string
-          entity_id: number
           action: string
           applied: boolean
-          archived_at: string | null
-          is_active: boolean | null
+          archived_at: string
+          entity: string
+          entity_id: number
+          is_active: boolean
         }[]
       }
       reconcile_advisor_role_display: {
-        Args: {
-          p_advisor_id: number
-          p_holder: string
-        }
+        Args: { p_advisor_id: number; p_holder: string }
         Returns: string
       }
       release_advisor_role_lock: {
-        Args: {
-          p_advisor_id: number
-          p_holder: string
-        }
+        Args: { p_advisor_id: number; p_holder: string }
         Returns: boolean
       }
       set_advisor_role: {
-        Args: {
-          p_advisor_id: number
-          p_role: string
-        }
+        Args: { p_advisor_id: number; p_role: string }
         Returns: {
           advisor_id: number
-          role: string
           auth_user_id: string
+          role: string
         }[]
       }
       verify_advisor_role_lock: {
-        Args: {
-          p_advisor_id: number
-          p_holder: string
-        }
+        Args: { p_advisor_id: number; p_holder: string }
         Returns: boolean
       }
     }
@@ -567,6 +584,9 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
+  graphql_public: {
+    Enums: {},
+  },
   public: {
     Enums: {},
   },

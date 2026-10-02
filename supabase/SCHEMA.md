@@ -692,11 +692,17 @@ Approval-gated future-operation guidance:
 ### Applying migrations locally
 
 For a fresh, disposable local Supabase instance only, the chain can be applied
-via the isolated local harness; this is safe and is how the reconciliation
-baseline is produced. Applying the chain to a hosted project remains prohibited
-while provenance is unresolved.
+via the standard Docker-local workflow (`pnpm exec supabase start` then
+`pnpm exec supabase db reset --no-seed`, which applies every file in
+`supabase/migrations/` in order, ending with
+`20261007000001_atomic_advisor_role_change.sql`) or via the isolated local
+harness (`node scripts/schema-inventory/run-local.mjs --out <path>`); both are
+safe and the latter is how the reconciliation baseline is produced. Applying
+the chain to a hosted project remains prohibited while provenance is
+unresolved.
 
-Regenerate TypeScript types after any schema change:
+Regenerate TypeScript types after any schema change (against the running local
+instance):
 
 ```bash
 pnpm run db:types

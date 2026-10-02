@@ -1037,7 +1037,7 @@ export function sanitizeEnv(base = process.env) {
  *     signal or the timeout, or could not be spawned (`error` then carries the
  *     spawn error / `ETIMEDOUT`).
  */
-export function runProbe(cmd, args = [], { env, cwd, timeoutMs = 15_000, captureOutput = false } = {}) {
+export function runProbe(cmd, args = [], { env, cwd, timeoutMs = 15_000 } = {}) {
   const result = spawnSync(cmd, args, {
     cwd,
     encoding: "utf8",
@@ -1364,7 +1364,7 @@ function redactStreaming(text, { runtime, inSecretRow = false } = {}) {
   // Pre-runtime CLI `Label: value` pretty lines carry the same secrets as
   // `KEY="value"` lines; the label is preserved for diagnostics, the value is
   // masked (works even when `runtime` is empty because the capture failed).
-  out = out.replace(PRETTY_SECRET_RE, (whole, indent, label, sep, value) => {
+  out = out.replace(PRETTY_SECRET_RE, (whole, indent, label, sep) => {
     if (!PRETTY_SECRET_LABELS.has(label.trim().toLowerCase())) return whole;
     return `${indent}${label}:${sep}${REDACTED}`;
   });

@@ -197,6 +197,23 @@ describe("per-advisor role-change lease (migration 20261003000001)", () => {
     expect(rows.rows[0].anon_ok, "anon must have NO EXECUTE on the acquire RPC").toBe(false);
   });
 
+  it("audit: advisor_role_lock has RLS ENABLED with zero policies (fully locked down)", async () => {
+    const rows = await pool.query<{ rls_enabled: boolean; policy_count: number }>(
+      `SELECT c.relrowsecurity AS rls_enabled,
+              (SELECT count(*)::int
+                 FROM pg_policies p
+                WHERE p.schemaname = 'public'
+                  AND p.tablename = 'advisor_role_lock') AS policy_count
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relname = 'advisor_role_lock'`
+    );
+    expect(rows.rows, "advisor_role_lock catalog row").toHaveLength(1);
+    expect(rows.rows[0].rls_enabled, "advisor_role_lock must have RLS enabled").toBe(true);
+    expect(rows.rows[0].policy_count, "advisor_role_lock must have ZERO policies").toBe(0);
+  });
+
   it("catalog: the lock RPCs are SECURITY DEFINER with empty search_path and service_role-pinned EXECUTE", async () => {
     const rows = await pool.query<{ proname: string; prosecdef: boolean; proconfig: string[] | null; sr: boolean }>(
       `SELECT p.proname,
@@ -763,11 +780,12 @@ describe("atomic advisor role change (migration 20261007000001, final P1)", () =
   });
 
   it("catalog + surface: set_advisor_role is SECURITY DEFINER with empty search_path, service_role-pinned EXECUTE, and anon/authenticated denied", async () => {
-    const rows = await pool.query<{ prosecdef: boolean; proconfig: string[] | null; sr: boolean; anon: boolean }>(
+    const rows = await pool.query<{ prosecdef: boolean; proconfig: string[] | null; sr: boolean; anon: boolean; auth: boolean }>(
       `SELECT p.prosecdef,
               p.proconfig,
               has_function_privilege('service_role', 'public.set_advisor_role(integer, text)', 'EXECUTE') AS sr,
-              has_function_privilege('anon', 'public.set_advisor_role(integer, text)', 'EXECUTE') AS anon
+              has_function_privilege('anon', 'public.set_advisor_role(integer, text)', 'EXECUTE') AS anon,
+              has_function_privilege('authenticated', 'public.set_advisor_role(integer, text)', 'EXECUTE') AS auth
          FROM pg_proc p
          JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public'
@@ -778,6 +796,7 @@ describe("atomic advisor role change (migration 20261007000001, final P1)", () =
     expect(rows.rows[0].proconfig, "set_advisor_role must set an empty search_path").toEqual(["search_path=\"\""]);
     expect(rows.rows[0].sr, "service_role EXECUTE on set_advisor_role").toBe(true);
     expect(rows.rows[0].anon, "no anon EXECUTE on set_advisor_role").toBe(false);
+    expect(rows.rows[0].auth, "no authenticated EXECUTE on set_advisor_role").toBe(false);
 
     const anonCall = await anon.rpc("set_advisor_role", { p_advisor_id: atomicAdvisorId ?? 1, p_role: "Admin" });
     expect(anonCall.data).toBeNull();

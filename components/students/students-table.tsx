@@ -256,7 +256,6 @@ export function StudentsTable({
 
   const validateStudentForm = (
     data: typeof EMPTY_STUDENT_FORM,
-    isEdit = false,
   ): Record<string, string> => {
     const errors: Record<string, string> = {};
 
@@ -349,7 +348,7 @@ export function StudentsTable({
 
   const handleEditSubmit = async () => {
     if (!editingStudent) return;
-    const errors = validateStudentForm(editForm, true);
+    const errors = validateStudentForm(editForm);
     setEditFormErrors(errors);
     if (Object.keys(errors).length > 0) return;
 

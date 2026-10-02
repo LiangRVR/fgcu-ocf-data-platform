@@ -9,7 +9,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "db:types": "supabase gen types typescript --project-id ${SUPABASE_PROJECT_ID:-your-project-id} > types/database.ts",
+    "db:types": "supabase gen types --local > types/database.ts",
     "test:connection": "tsx scripts/test-connection.ts",
     "schema-inventory:capture": "tsx scripts/schema-inventory/cli.ts capture",
     "schema-inventory:diff": "tsx scripts/schema-inventory/cli.ts diff",

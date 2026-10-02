@@ -1757,7 +1757,7 @@ describe("completeRetryableTeardown retry-path sequencing (amendment A3)", () =>
     // teardown (stop + workdir removal), and only then proceed to attempt 2.
     await completeRetryableTeardown({
       lane,
-      stop: async (l) => {
+      stop: async () => {
         await sleep(25);
         events.push("stop");
       },
@@ -1772,7 +1772,7 @@ describe("completeRetryableTeardown retry-path sequencing (amendment A3)", () =>
     const lane = { workdir: "/tmp/lane-e2e", cleanup: () => events.push("remove") };
     await completeRetryableTeardown({
       lane,
-      stop: async (l) => {
+      stop: async () => {
         // Analogue of the E2E teardown Docker availability probe: a TRACKED
         // async subprocess that must fully finish (and be unregistered) before
         // the stack is stopped.
