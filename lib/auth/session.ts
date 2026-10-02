@@ -6,18 +6,63 @@ import type { Database } from "@/types/database";
 export type Advisor = Database["public"]["Tables"]["advisor"]["Row"];
 
 /**
+ * The exactly-two persisted display roles of the handoff model (migration
+ * 20261001000001). `advisor.role` is a protected visible projection / audit
+ * state, NEVER an RLS/RPC authorization input — effective authority comes from
+ * the immutable Auth `app_metadata.ocf_admin` boolean claim plus an active,
+ * pre-bound advisor row (`is_effective_admin`).
+ */
+export type AdvisorRole = "Admin" | "Advisor";
+
+export const ADVISOR_ROLES: readonly AdvisorRole[] = ["Admin", "Advisor"] as const;
+
+export function isAdvisorRole(value: unknown): value is AdvisorRole {
+  return value === "Admin" || value === "Advisor";
+}
+
+/**
  * True when the session user carries the immutable Auth JWT
  * `app_metadata.ocf_admin = true` claim.
  *
- * This is the ONLY administrator authority for lifecycle transitions. The
- * mutable `public.advisor.role` column is never consulted, because active
- * advisors can currently mutate it (see the entity-lifecycle-archiving design).
- * Users cannot edit app_metadata through standard client APIs, so this claim is
- * trusted at the database boundary by `public.is_ocf_admin()` /
- * `public.lifecycle_transition`.
+ * This is ONE HALF of effective Admin authority (the claim half). The mutable
+ * `public.advisor.role` column is never consulted, because it is a protected
+ * display projection. Users cannot edit app_metadata through standard client
+ * APIs, so this claim is trusted at the database boundary by
+ * `public.is_ocf_admin()` / `public.lifecycle_transition`.
  */
 export function isOcfAdmin(user: User | null | undefined): boolean {
   return user?.app_metadata?.ocf_admin === true;
+}
+
+/**
+ * Effective Admin authority: true ONLY when BOTH halves hold — the trusted
+ * boolean `app_metadata.ocf_admin` claim AND a current, active, pre-bound
+ * advisor identity. `advisor` must be the row resolved by `getCurrentAdvisor`
+ * (pre-bound by `auth_user_id = auth.uid()`); `advisor.is_active` gates it.
+ * Mirrors the database predicate `public.is_effective_admin()`.
+ */
+export function isEffectiveAdmin(
+  user: User | null | undefined,
+  advisor: Advisor | null | undefined
+): boolean {
+  return isOcfAdmin(user) && advisor?.is_active === true;
+}
+
+/**
+ * Resolve the authenticated caller's advisor row when they are an effective
+ * Admin (claim + active bound advisor); returns null otherwise. Server API
+ * routes use this before any privileged (service-role / lifecycle) call.
+ */
+export async function getEffectiveAdmin(sessionUser?: User | null): Promise<Advisor | null> {
+  const user = sessionUser ?? (await getSessionUser());
+  if (!isOcfAdmin(user)) {
+    return null;
+  }
+  const advisor = await getCurrentAdvisor(user);
+  if (!advisor || !advisor.is_active) {
+    return null;
+  }
+  return advisor;
 }
 
 export async function getSessionUser() {

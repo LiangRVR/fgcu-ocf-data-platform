@@ -123,6 +123,7 @@ export function FellowshipsTable({ initialFellowships, view }: FellowshipsTableP
                         <div className="min-w-0">
                           <Link
                             href={`/fellowships/${fellowship.fellowship_id}`}
+                            prefetch={false}
                             className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
                           >
                             {fellowship.fellowship_name}
@@ -134,7 +135,7 @@ export function FellowshipsTable({ initialFellowships, view }: FellowshipsTableP
                           </div>
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
-                          <Link href={`/fellowships/${fellowship.fellowship_id}`}>
+                          <Link href={`/fellowships/${fellowship.fellowship_id}`} prefetch={false}>
                             <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-600 hover:text-slate-900" title="View fellowship">
                               <Eye className="h-4 w-4" />
                             </Button>
@@ -180,6 +181,7 @@ export function FellowshipsTable({ initialFellowships, view }: FellowshipsTableP
                           <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                             <Link
                               href={`/fellowships/${fellowship.fellowship_id}`}
+                              prefetch={false}
                               className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
                             >
                               {fellowship.fellowship_name}
@@ -196,7 +198,7 @@ export function FellowshipsTable({ initialFellowships, view }: FellowshipsTableP
                           </td>
                           <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                             <div className="flex items-center justify-end gap-2">
-                              <Link href={`/fellowships/${fellowship.fellowship_id}`}>
+                              <Link href={`/fellowships/${fellowship.fellowship_id}`} prefetch={false}>
                                 <Button
                                   variant="ghost"
                                   size="icon"

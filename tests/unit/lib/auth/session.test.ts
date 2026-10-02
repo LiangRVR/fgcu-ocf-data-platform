@@ -26,9 +26,13 @@ vi.mock("next/navigation", () => ({
 
 import {
   getCurrentAdvisor,
+  getEffectiveAdmin,
   getSessionUser,
+  isAdvisorRole,
+  isEffectiveAdmin,
   isOcfAdmin,
   requireAdvisor,
+  ADVISOR_ROLES,
 } from "@/lib/auth/session";
 
 type Advisor = Database["public"]["Tables"]["advisor"]["Row"];
@@ -325,5 +329,106 @@ describe("requireAdvisor", () => {
 
     await expect(requireAdvisor()).resolves.toEqual(advisor);
     expect(redirect).not.toHaveBeenCalled();
+  });
+});
+// ── Effective Admin (migration 20261001000001) ─────────────────────────────
+//
+// Effective Admin authority = the trusted boolean `app_metadata.ocf_admin`
+// claim AND a current, active, pre-bound advisor identity. The mutable
+// `advisor.role` display column is never consulted.
+
+describe("AdvisorRole vocabulary", () => {
+  it("exposes exactly the Admin and Advisor display roles", () => {
+    expect(ADVISOR_ROLES).toEqual(["Admin", "Advisor"]);
+  });
+
+  it("classifies the role values strictly (case-sensitive)", () => {
+    expect(isAdvisorRole("Admin")).toBe(true);
+    expect(isAdvisorRole("Advisor")).toBe(true);
+    expect(isAdvisorRole("admin")).toBe(false);
+    expect(isAdvisorRole("advisor")).toBe(false);
+    expect(isAdvisorRole("Staff")).toBe(false);
+    expect(isAdvisorRole(undefined)).toBe(false);
+    expect(isAdvisorRole(null)).toBe(false);
+  });
+});
+
+describe("isEffectiveAdmin (claim + active bound advisor)", () => {
+  it("returns false with no session user", () => {
+    expect(isEffectiveAdmin(null, makeAdvisor({ is_active: true }))).toBe(false);
+    expect(isEffectiveAdmin(undefined, makeAdvisor({ is_active: true }))).toBe(false);
+  });
+
+  it("returns false when the claim is missing even with an active advisor", () => {
+    expect(isEffectiveAdmin(makeUser({ app_metadata: {} }), makeAdvisor({ is_active: true }))).toBe(false);
+  });
+
+  it("returns false when the advisor is missing or not pre-bound", () => {
+    expect(isEffectiveAdmin(makeUser({ app_metadata: { ocf_admin: true } }), null)).toBe(false);
+    expect(isEffectiveAdmin(makeUser({ app_metadata: { ocf_admin: true } }), undefined)).toBe(false);
+  });
+
+  it("returns false when the bound advisor is inactive (deactivated admin)", () => {
+    expect(
+      isEffectiveAdmin(makeUser({ app_metadata: { ocf_admin: true } }), makeAdvisor({ is_active: false }))
+    ).toBe(false);
+  });
+
+  it("returns true only for the boolean claim plus an active bound advisor", () => {
+    expect(
+      isEffectiveAdmin(makeUser({ app_metadata: { ocf_admin: true } }), makeAdvisor({ is_active: true }))
+    ).toBe(true);
+    // A string claim is never the trusted boolean true.
+    expect(
+      isEffectiveAdmin(makeUser({ app_metadata: { ocf_admin: "true" } }), makeAdvisor({ is_active: true }))
+    ).toBe(false);
+  });
+});
+
+describe("getEffectiveAdmin (server route gate)", () => {
+  it("returns the active bound advisor for a claim-bearing session", async () => {
+    const user = makeUser({ id: "user-123", app_metadata: { ocf_admin: true } });
+    const advisor = makeAdvisor({ advisor_id: 7, auth_user_id: "user-123", is_active: true });
+    query.maybeSingle.mockResolvedValue({ data: advisor, error: null });
+
+    await expect(getEffectiveAdmin(user)).resolves.toEqual(advisor);
+    expect(query.eq).toHaveBeenCalledWith("auth_user_id", "user-123");
+  });
+
+  it("returns null when the session user lacks the claim (no advisor lookup)", async () => {
+    const user = makeUser({ id: "user-123", app_metadata: {} });
+
+    await expect(getEffectiveAdmin(user)).resolves.toBeNull();
+    expect(query.maybeSingle).not.toHaveBeenCalled();
+  });
+
+  it("returns null when the bound advisor is inactive", async () => {
+    const user = makeUser({ id: "user-123", app_metadata: { ocf_admin: true } });
+    query.maybeSingle.mockResolvedValue({
+      data: makeAdvisor({ advisor_id: 7, auth_user_id: "user-123", is_active: false }),
+      error: null,
+    });
+
+    await expect(getEffectiveAdmin(user)).resolves.toBeNull();
+  });
+
+  it("returns null when no advisor is bound to the session", async () => {
+    const user = makeUser({ id: "user-123", app_metadata: { ocf_admin: true } });
+    query.maybeSingle.mockResolvedValue({ data: null, error: null });
+
+    await expect(getEffectiveAdmin(user)).resolves.toBeNull();
+  });
+
+  it("resolves through getSessionUser when no session user is passed", async () => {
+    const user = makeUser({ id: "user-123", app_metadata: { ocf_admin: true } });
+    client.auth.getClaims.mockResolvedValue({
+      data: { claims: { sub: "user-123" } },
+      error: null,
+    } as never);
+    client.auth.getUser.mockResolvedValue({ data: { user }, error: null });
+    const advisor = makeAdvisor({ advisor_id: 7, auth_user_id: "user-123", is_active: true });
+    query.maybeSingle.mockResolvedValue({ data: advisor, error: null });
+
+    await expect(getEffectiveAdmin()).resolves.toEqual(advisor);
   });
 });

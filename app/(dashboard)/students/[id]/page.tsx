@@ -37,6 +37,7 @@ import { LifecycleAction } from "@/components/lifecycle";
 import { formatDate } from "@/lib/utils/format";
 import { formatApplicationLabel } from "@/lib/applications/pipeline";
 import { Fragment } from "react";
+import { AdvisingHistory } from "@/components/advising/advising-table";
 
 type Student = Database["public"]["Tables"]["student"]["Row"];
 type Application = Database["public"]["Tables"]["application"]["Row"] & {
@@ -346,7 +347,17 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
 
       <div className="space-y-6">
         {/* Basic / Academic / Personal — inline-editable */}
-        <StudentInfoEditor initialStudent={student} />
+        <section aria-label="Student Profile" className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-xl font-semibold tracking-tight text-slate-900">Student Profile</h2>
+            <Button variant="ghost" size="sm" asChild>
+              <Link href="#student-profile-editor">Edit Profile</Link>
+            </Button>
+          </div>
+          <div id="student-profile-editor" className="scroll-mt-6" tabIndex={-1}>
+            <StudentInfoEditor initialStudent={student} />
+          </div>
+        </section>
 
         {/* Applications Section */}
         <Card className="border-gray-200 shadow-sm">
@@ -413,6 +424,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                         <MetricBadge tone="slate">
                           {app.destination_country || "No destination"}
                         </MetricBadge>
+                        <MetricBadge tone="blue">{advisingMeetings.filter((meeting) => meeting.application_id === app.application_id).length} advising sessions</MetricBadge>
                         {app.is_finalist ? (
                           <MetricBadge tone="blue">Finalist</MetricBadge>
                         ) : app.is_semi_finalist ? (
@@ -431,6 +443,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                     <tr className="border-b border-gray-100">
                       <th className="pb-3 text-left font-medium text-slate-500">Fellowship</th>
                       <th className="pb-3 text-left font-medium text-slate-500">Stage</th>
+                      <th className="pb-3 text-left font-medium text-slate-500">Advising</th>
                       <th className="hidden pb-3 text-left font-medium text-slate-500 md:table-cell">Destination</th>
                       <th className="hidden pb-3 text-left font-medium text-slate-500 sm:table-cell">Status</th>
                     </tr>
@@ -449,6 +462,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
                         <td className="py-3 pr-4 text-slate-700">
                           {app.stage_of_application || "—"}
                         </td>
+                        <td className="py-3 pr-4 text-slate-700">{advisingMeetings.filter((meeting) => meeting.application_id === app.application_id).length} sessions</td>
                         <td className="hidden py-3 pr-4 text-slate-700 md:table-cell">
                           {app.destination_country || "—"}
                         </td>
@@ -532,7 +546,8 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
               </div>
             ) : (
               <>
-                <div className="space-y-3 md:hidden">
+                <AdvisingHistory meetings={advisingMeetings} applications={applications.map((app) => ({ application_id: app.application_id, label: formatApplicationLabel(app.fellowship?.fellowship_name, app.application_year) }))} />
+                <div className="hidden">
                   {advisingMeetings.map((meeting) => (
                     <div key={meeting.meeting_id} className="rounded-2xl border border-border/70 bg-surface-subtle/70 p-4">
                       <div className="flex items-start justify-between gap-3">

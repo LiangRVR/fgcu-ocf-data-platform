@@ -61,7 +61,7 @@ export function LifecycleBadge({
         aria-label="Advisor inactive"
       >
         <ShieldOff className="h-3 w-3" aria-hidden="true" />
-        Inactive
+        Advisor Inactive
       </MetricBadge>
     );
   }
@@ -74,7 +74,7 @@ export function LifecycleBadge({
       aria-label={date ? `Archived since ${date}` : "Archived"}
     >
       <Archive className="h-3 w-3" aria-hidden="true" />
-      Archived{showTimestamp && date ? ` since ${date}` : ""}
+      {kind === "student" ? "Student Archived" : "Fellowship Archived"}{showTimestamp && date ? ` since ${date}` : ""}
     </MetricBadge>
   );
 }

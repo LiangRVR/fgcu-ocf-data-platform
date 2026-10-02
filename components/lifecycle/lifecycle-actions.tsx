@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Archive, ArchiveRestore, ShieldOff, ShieldCheck } from "lucide-react";
 
@@ -249,7 +249,19 @@ export function LifecycleAction({
 }: LifecycleActionProps) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [isPending, startTransition] = useTransition();
+
+  useEffect(() => {
+    let alive = true;
+    supabaseBrowserClient.auth.getSession().then(({ data }) => {
+      if (alive) setIsAdmin(data.session?.user.app_metadata?.ocf_admin === true);
+    });
+    return () => { alive = false; };
+  }, []);
+
+  // Lifecycle controls are admin-only affordances. Server/RLS remains authoritative.
+  if (!isAdmin) return null;
 
   const copy = COPY[entity][action];
 

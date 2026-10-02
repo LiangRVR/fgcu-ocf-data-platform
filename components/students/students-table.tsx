@@ -612,6 +612,7 @@ export function StudentsTable({
                         <div className="min-w-0 flex-1">
                           <Link
                             href={`/students/${student.student_id}`}
+                            prefetch={false}
                             className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
                           >
                             {student.full_name}
@@ -728,6 +729,7 @@ export function StudentsTable({
                           <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                             <Link
                               href={`/students/${student.student_id}`}
+                              prefetch={false}
                               className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
                               onClick={(e) => e.stopPropagation()}
                             >

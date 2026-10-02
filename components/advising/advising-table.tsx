@@ -445,6 +445,7 @@ export function AdvisingTable({
                           {meeting.student?.full_name ?? "—"}
                         </Link>
                         <div className="mt-0.5 text-sm text-slate-500">
+                          <span className="font-medium text-slate-500">Application/Fellowship: </span>
                           {meeting.application_id == null ? (
                             <span className="text-slate-500">General Advising</span>
                           ) : (
@@ -459,22 +460,21 @@ export function AdvisingTable({
                         <div className="mt-1 text-xs text-slate-400">
                           Recorded by {meeting.recorded_by?.advisor_name ?? "Unknown (legacy record)"} · Recorded {formatRecordedAt(meeting.created_at)}
                         </div>
-                        <div className="mt-0.5 text-sm text-slate-500">
+                        <div className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-sm text-slate-600">
+                          <span className="text-slate-500">Meeting Date</span>
                           {new Date(meeting.meeting_date + "T00:00:00").toLocaleDateString(
                             "en-US",
                             { year: "numeric", month: "short", day: "numeric" }
                           )}
-                          {meeting.advisor_id && (
-                            <span className="ml-1.5 text-slate-400">
-                              &middot;{" "}
+                          <span className="text-slate-500">Advisor</span>
+                          {meeting.advisor_id ? (
                               <Link
                                 href={`/advisors/${meeting.advisor_id}`}
                                 className="hover:text-[#006747] hover:underline"
                               >
                                 {meeting.advisor?.advisor_name ?? "—"}
                               </Link>
-                            </span>
-                          )}
+                          ) : <span>—</span>}
                         </div>
                         {meeting.notes && (
                           <div className="mt-0.5 truncate text-xs text-slate-400 max-w-xs">
@@ -482,9 +482,11 @@ export function AdvisingTable({
                           </div>
                         )}
                         <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          <span className="text-xs text-slate-500">Mode:</span>
                           <MetricBadge tone={meeting.meeting_mode === "Virtual" ? "blue" : "slate"}>
                             {meeting.meeting_mode}
                           </MetricBadge>
+                          <span className="ml-1 text-xs text-slate-500">No Show:</span>
                           {meeting.no_show ? (
                             <MetricBadge tone="red">
                               No-show
@@ -514,19 +516,19 @@ export function AdvisingTable({
                       Student
                     </th>
                     <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 md:table-cell">
-                      Context
+                      Application/Fellowship
                     </th>
                     <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 md:table-cell">
                       Advisor
                     </th>
                     <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
-                      Date
+                      Meeting Date
                     </th>
                     <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 sm:table-cell">
                       Mode
                     </th>
                     <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
-                      No-Show
+                      No Show
                     </th>
                     <th className="hidden px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 lg:table-cell">
                       Notes
@@ -699,6 +701,30 @@ export function AdvisingTable({
 
     </>
   );
+}
+
+type AdvisingHistoryMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
+  advisor: { advisor_name: string } | null;
+  recorded_by: { advisor_name: string } | null;
+  application_id: number | null;
+  application: AdvisingMeeting["application"];
+  amendments: AdvisingAmendment[];
+};
+
+export function AdvisingHistory({ meetings, applications }: { meetings: AdvisingHistoryMeeting[]; applications: { application_id: number; label: string }[] }) {
+  const [filter, setFilter] = useState("all");
+  const visible = meetings.filter((m) => filter === "all" || (filter === "general" ? m.application_id == null : String(m.application_id) === filter));
+  return <section className="mb-5 rounded-2xl border border-border/70 bg-white p-4">
+    <div className="mb-3 flex flex-wrap items-center gap-2"><h3 className="mr-auto font-semibold text-slate-900">Advising history</h3>
+      <select aria-label="Filter advising history" value={filter} onChange={(e) => setFilter(e.target.value)} className="h-10 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <option value="all">All</option><option value="general">General Advising</option>{applications.map(a => <option key={a.application_id} value={String(a.application_id)}>{a.label}</option>)}
+      </select>
+    </div>
+    <div className="space-y-3">{visible.map(m => <article key={m.meeting_id} className="rounded-xl border border-slate-200 p-4">
+      <div className="flex flex-wrap items-center gap-2"><strong>{new Date(m.meeting_date+"T00:00:00").toLocaleDateString("en-US",{year:"numeric",month:"short",day:"numeric"})}</strong><span className="text-slate-600">{m.advisor?.advisor_name ?? "Advisor unavailable"}</span><MetricBadge tone="slate">{m.application_id == null ? "General Advising" : formatApplicationLabel(m.application?.fellowship?.fellowship_name,m.application?.application_year)}</MetricBadge><MetricBadge tone={m.meeting_mode === "Virtual" ? "blue" : "slate"}>{m.meeting_mode}</MetricBadge><MetricBadge tone={m.no_show ? "red" : "green"}>{m.no_show ? "No-show" : "Attended"}</MetricBadge></div>
+      <p className="mt-3 whitespace-pre-wrap text-sm text-slate-700">{m.notes || "No notes recorded."}</p><p className="mt-2 text-xs text-slate-400">Recorded by {m.recorded_by?.advisor_name ?? "Unknown (legacy record)"} · {formatRecordedAt(m.created_at)}</p><AmendmentHistory amendments={m.amendments ?? []}/>
+    </article>)}{visible.length === 0 && <p className="py-5 text-sm text-slate-500">No advising history for this filter.</p>}</div>
+  </section>;
 }
 
 function AmendmentHistory({ amendments }: { amendments: AdvisingAmendment[] }) {

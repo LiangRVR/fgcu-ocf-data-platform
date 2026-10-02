@@ -148,6 +148,7 @@ async function main(): Promise<void> {
     email: string,
     authUserId: string,
     isActive: boolean,
+    role: "Admin" | "Advisor",
   ): Promise<number> => {
     const { data, error } = await service
       .from("advisor")
@@ -156,6 +157,7 @@ async function main(): Promise<void> {
         email,
         auth_user_id: authUserId,
         is_active: isActive,
+        role,
       })
       .select("advisor_id")
       .single();
@@ -168,8 +170,12 @@ async function main(): Promise<void> {
   const activeAdvisorName = `E2E Active Advisor ${RUN_TOKEN}`;
   const inactiveAdvisorName = `E2E Inactive Advisor ${RUN_TOKEN}`;
   const [activeAdvisorId, inactiveAdvisorId] = await Promise.all([
-    insertAdvisor(activeAdvisorName, activeEmail, activeUser.id, true),
-    insertAdvisor(inactiveAdvisorName, inactiveEmail, inactiveUser.id, false),
+    // The ACTIVE advisor carries the ocf_admin=true claim: the persisted
+    // display role is reconciled to Admin (the same claim/role alignment the
+    // reconciliation migration enforces). The INACTIVE advisor has no claim
+    // and displays the safe Advisor role.
+    insertAdvisor(activeAdvisorName, activeEmail, activeUser.id, true, "Admin"),
+    insertAdvisor(inactiveAdvisorName, inactiveEmail, inactiveUser.id, false, "Advisor"),
   ]);
 
   // ── OCF fixtures ─────────────────────────────────────────────────────────

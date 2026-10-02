@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { GraduationCap, X } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { NAV_ITEMS } from "@/lib/config/nav";
+import { supabaseBrowserClient } from "@/lib/supabase/client";
 
 interface SidebarProps {
   /** Whether the mobile overlay is open */
@@ -14,6 +16,17 @@ interface SidebarProps {
 
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const pathname = usePathname();
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    supabaseBrowserClient.auth.getSession().then(({ data }) => {
+      if (alive) setIsAdmin(data.session?.user.app_metadata?.ocf_admin === true);
+    });
+    const { data: listener } = supabaseBrowserClient.auth.onAuthStateChange((_event, session) => {
+      setIsAdmin(session?.user.app_metadata?.ocf_admin === true);
+    });
+    return () => { alive = false; listener.subscription.unsubscribe(); };
+  }, []);
 
   const navGroups = [
     {
@@ -22,7 +35,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
     },
     {
       title: "People",
-      items: NAV_ITEMS.filter((item) => ["/dashboard/account", "/students", "/advising"].includes(item.href)),
+      items: NAV_ITEMS.filter((item) => ["/dashboard/account", "/students", "/advising"].includes(item.href) || (isAdmin && item.href === "/advisors")),
     },
     {
       title: "Programs",
@@ -65,6 +78,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 <Link
                   key={item.href}
                   href={item.href}
+                  prefetch={false}
                   onClick={onClose}
                   className={cn(
                     "group flex items-center gap-3 rounded-2xl px-3.5 py-2.5 text-sm font-medium motion-safe:transition-all motion-safe:duration-200",

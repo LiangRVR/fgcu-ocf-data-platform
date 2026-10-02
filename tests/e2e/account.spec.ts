@@ -17,14 +17,17 @@
  *     "Update password" button.
  *
  * Explicitly NOT VERIFIED (unsupported/unavailable flows are documented, never
- * manufactured — see the skipped tests below):
- *   - advisor management (no create/edit/deactivate UI is exposed; only
- *     `/advisors/[id]` detail pages exist, reached from meeting records);
+ * manufactured — see the skipped test below):
  *   - password-recovery COMPLETION (changing the password via the emailed
  *     recovery link). The recovery link's redirect origin is server-controlled
  *     from `APP_URL` (see `lib/config/app.ts` — the Host header is never
  *     consulted), but exercising the emailed link requires local mail capture,
  *     which the isolated lane does not expose.
+ *
+ * Advisor management IS verified in this release: see
+ * tests/e2e/advisor-permissions.spec.ts (Admin provisioning/deactivation/role
+ * UI, Advisor-hidden controls, deactivated-access loss, historical
+ * attribution).
  */
 import { test, expect, type Page } from "@playwright/test";
 
@@ -118,13 +121,6 @@ test.describe("account workflow", () => {
 });
 
 test.describe("explicitly not verified", () => {
-  test("advisor management is NOT VERIFIED in this release", async () => {
-    test.skip(
-      true,
-      "No advisor create/edit/deactivate UI is exposed (only /advisors/[id] detail pages reached from meeting records exist). Not manufacturing a flow.",
-    );
-  });
-
   test("password-recovery completion is NOT VERIFIED in the isolated lane", async () => {
     test.skip(
       true,

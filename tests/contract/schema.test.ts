@@ -2,7 +2,7 @@
  * tests/contract/schema.test.ts
  *
  * Schema contract: asserts that the full migration chain
- * (20260305000000 → 20260930000006) produced exactly the expected steady state
+ * (20260305000000 → 20261001000001) produced exactly the expected steady state
  * on a fresh, isolated Docker-local instance:
  *   - all eight operational tables exist, with their PKs, FKs, and indexes;
  *   - the documented CHECK constraints exist;
@@ -545,10 +545,12 @@ describe("core-history DELETE lockdown policy shape (migration 20260930000006)",
       "SELECT:active_advisor_select_application",
       "UPDATE:active_advisor_update_application",
     ]);
+    // Migration 20261002000001: the broad active-staff INSERT policy is dropped
+    // (no authenticated advisor creation) and the UPDATE policy is self-scoped
+    // to the caller's own bound row; the self-or-active-staff SELECT remains.
     expect(byTable.get("advisor")?.sort()).toEqual([
-      "INSERT:advisor_insert_active_staff",
       "SELECT:advisor_select_self_or_active_staff",
-      "UPDATE:advisor_update_active_staff_only",
+      "UPDATE:advisor_update_own_profile",
     ]);
   });
 
@@ -826,5 +828,119 @@ describe("entity lifecycle archiving steady state (migration 20260930000005)", (
       expect(row.confdeltype, `${row.conname} confdeltype`).toBe("a");
       expect(row.confupdtype, `${row.conname} confupdtype`).toBe("a");
     }
+  });
+});
+
+describe("explicit admin/advisor permissions steady state (migration 20261001000001)", () => {
+  it("keeps advisor.role NOT NULL with the safe 'Advisor' default and pins the Admin/Advisor vocabulary with a CHECK", async () => {
+    const columns = await query(
+      `SELECT data_type, is_nullable, column_default
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'advisor'
+          AND column_name = 'role'`
+    );
+    expect(columns).toHaveLength(1);
+    expect(columns[0].data_type, "advisor.role data type").toBe("text");
+    expect(columns[0].is_nullable, "advisor.role must stay NOT NULL").toBe("NO");
+    // information_schema renders the default with an explicit cast.
+    expect(String(columns[0].column_default), "advisor.role default").toContain("'Advisor'");
+
+    const checks = await query(
+      `SELECT c.conname, pg_get_constraintdef(c.oid) AS definition
+         FROM pg_constraint AS c
+         JOIN pg_class AS t ON t.oid = c.conrelid
+         JOIN pg_namespace AS n ON n.oid = t.relnamespace
+        WHERE n.nspname = 'public'
+          AND t.relname = 'advisor'
+          AND c.conname = 'advisor_role_display_check'
+          AND c.contype = 'c'`
+    );
+    expect(checks).toHaveLength(1);
+    expect(String(checks[0].definition), "advisor_role_display_check definition").toContain("'Admin'");
+    expect(String(checks[0].definition), "advisor_role_display_check definition").toContain("'Advisor'");
+  });
+
+  it("creates the BEFORE INSERT OR UPDATE OF role guard trigger on public.advisor, column-scoped to role", async () => {
+    const rows = await query(
+      `SELECT t.tgname, t.tgtype, t.tgenabled, a.attname AS column_name
+         FROM pg_trigger t
+         JOIN pg_class c ON c.oid = t.tgrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(t.tgattr)
+        WHERE n.nspname = 'public'
+          AND c.relname = 'advisor'
+          AND t.tgname = 'trg_advisor_role_display'
+          AND NOT t.tgisinternal`
+    );
+    expect(rows).toHaveLength(1);
+    // tgtype bitmask: 1 (ROW) + 2 (BEFORE) + 4 (INSERT) + 16 (UPDATE) = 23.
+    expect(rows[0].tgtype, "trigger must be BEFORE ROW INSERT OR UPDATE").toBe(23);
+    expect(rows[0].column_name, "trigger must be column-scoped to role").toBe("role");
+    expect(rows[0].tgenabled, "trigger must be enabled").toBe("O");
+  });
+
+  it("keeps guard_advisor_role_display as SECURITY INVOKER with service_role-pinned EXECUTE and no authenticated/anon EXECUTE", async () => {
+    const rows = await query(
+      `SELECT p.prosecdef, p.proacl,
+              has_function_privilege('authenticated', 'public.guard_advisor_role_display()', 'EXECUTE') AS auth_exec,
+              has_function_privilege('anon', 'public.guard_advisor_role_display()', 'EXECUTE') AS anon_exec,
+              has_function_privilege('service_role', 'public.guard_advisor_role_display()', 'EXECUTE') AS sr_exec
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.proname = 'guard_advisor_role_display'`
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].prosecdef, "guard_advisor_role_display must be SECURITY INVOKER").toBe(false);
+    expect(rows[0].auth_exec, "no authenticated EXECUTE on guard_advisor_role_display").toBe(false);
+    expect(rows[0].anon_exec, "no anon EXECUTE on guard_advisor_role_display").toBe(false);
+    expect(rows[0].sr_exec, "service_role EXECUTE pins the guard ACL").toBe(true);
+  });
+
+  it("keeps is_ocf_admin as SECURITY INVOKER with empty search_path and authenticated-only EXECUTE after the strict-boolean replacement", async () => {
+    const rows = await query(
+      `SELECT p.prosecdef, p.proconfig, p.proacl::text[] AS acl,
+              has_function_privilege('authenticated', 'public.is_ocf_admin()', 'EXECUTE') AS auth_exec,
+              has_function_privilege('anon', 'public.is_ocf_admin()', 'EXECUTE') AS anon_exec
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.proname = 'is_ocf_admin'`
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].prosecdef, "is_ocf_admin must stay SECURITY INVOKER").toBe(false);
+    expect(rows[0].proconfig, "is_ocf_admin must keep an empty search_path").toEqual(["search_path=\"\""]);
+    expect(rows[0].auth_exec, "authenticated EXECUTE on is_ocf_admin").toBe(true);
+    expect(rows[0].anon_exec, "no anon EXECUTE on is_ocf_admin").toBe(false);
+
+    const acl = rows[0].acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "is_ocf_admin must carry an effective ACL").toBe(true);
+    const publicEntries = acl.filter((entry) => entry.startsWith("="));
+    expect(publicEntries, "no PUBLIC EXECUTE on is_ocf_admin").toHaveLength(0);
+  });
+
+  it("creates is_effective_admin as SECURITY DEFINER with empty search_path and authenticated-only EXECUTE", async () => {
+    const rows = await query(
+      `SELECT p.prosecdef, p.proconfig, p.proacl::text[] AS acl,
+              has_function_privilege('authenticated', 'public.is_effective_admin()', 'EXECUTE') AS auth_exec,
+              has_function_privilege('anon', 'public.is_effective_admin()', 'EXECUTE') AS anon_exec
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.proname = 'is_effective_admin'`
+    );
+    expect(rows).toHaveLength(1);
+    // SECURITY DEFINER so the advisor lookup bypasses RLS and reflects the true
+    // row state (mirrors is_active_advisor()); the JWT claim check is unaffected.
+    expect(rows[0].prosecdef, "is_effective_admin must be SECURITY DEFINER").toBe(true);
+    expect(rows[0].proconfig, "is_effective_admin must set an empty search_path").toEqual(["search_path=\"\""]);
+    expect(rows[0].auth_exec, "authenticated EXECUTE on is_effective_admin").toBe(true);
+    expect(rows[0].anon_exec, "no anon EXECUTE on is_effective_admin").toBe(false);
+
+    const acl = rows[0].acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "is_effective_admin must carry an effective ACL").toBe(true);
+    const publicEntries = acl.filter((entry) => entry.startsWith("="));
+    expect(publicEntries, "no PUBLIC EXECUTE on is_effective_admin").toHaveLength(0);
   });
 });

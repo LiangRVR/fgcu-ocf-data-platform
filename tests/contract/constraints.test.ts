@@ -247,6 +247,110 @@ describe("referential integrity", () => {
   });
 });
 
+describe("advisor.role display-vocabulary CHECK (migration 20261001000001)", () => {
+  // The trusted service_role client bypasses RLS, so the guard trigger's
+  // trusted path passes; these assertions isolate the CHECK constraint: the
+  // display role may only ever be the exact values Admin or Advisor.
+  it("defaults a role-less advisor insert to the safe 'Advisor' display role", async () => {
+    const { data: inserted, error } = await service
+      .from("advisor")
+      .insert({
+        advisor_name: syntheticName(nextUnique("role-default")),
+        email: syntheticEmail(nextUnique("role-default")),
+        is_active: false,
+      })
+      .select("advisor_id, role")
+      .single();
+    expect(error, "role-less advisor INSERT").toBeNull();
+    expect(inserted?.role, "default display role").toBe("Advisor");
+  });
+
+  it("accepts the exact display values Admin and Advisor through the trusted path", async () => {
+    for (const role of ["Admin", "Advisor"] as const) {
+      const { data: inserted, error } = await service
+        .from("advisor")
+        .insert({
+          advisor_name: syntheticName(nextUnique(`role-${role}`)),
+          email: syntheticEmail(nextUnique(`role-${role}`)),
+          is_active: false,
+          role,
+        })
+        .select("advisor_id, role")
+        .single();
+      expect(error, `role ${role} INSERT`).toBeNull();
+      expect(inserted?.role, `stored role ${role}`).toBe(role);
+    }
+  });
+
+  it("rejects a lowercase 'admin' value with a CHECK violation (23514)", async () => {
+    const { data, error } = await service
+      .from("advisor")
+      .insert({
+        advisor_name: syntheticName(nextUnique("role-lowercase")),
+        email: syntheticEmail(nextUnique("role-lowercase")),
+        is_active: false,
+        role: "admin",
+      })
+      .select("advisor_id");
+    expect(data ?? [], "a denied role insert must not return a row").toHaveLength(0);
+    expect(error, "lowercase 'admin' must be rejected").not.toBeNull();
+    expect(error?.code, "lowercase 'admin' rejection code").toBe("23514"); // check_violation
+  });
+
+  it("rejects a free-form role value with a CHECK violation (23514)", async () => {
+    const { data, error } = await service
+      .from("advisor")
+      .insert({
+        advisor_name: syntheticName(nextUnique("role-freeform")),
+        email: syntheticEmail(nextUnique("role-freeform")),
+        is_active: false,
+        role: "Superuser",
+      })
+      .select("advisor_id");
+    expect(data ?? [], "a denied role insert must not return a row").toHaveLength(0);
+    expect(error, "free-form role must be rejected").not.toBeNull();
+    expect(error?.code, "free-form role rejection code").toBe("23514"); // check_violation
+  });
+
+  it("accepts a trusted UPDATE of the display role to 'Admin' but rejects an invalid value", async () => {
+    const { advisor_id } = await service
+      .from("advisor")
+      .insert({
+        advisor_name: syntheticName(nextUnique("role-update")),
+        email: syntheticEmail(nextUnique("role-update")),
+        is_active: false,
+      })
+      .select("advisor_id")
+      .single()
+      .then(({ data }) => data as unknown as { advisor_id: number });
+
+    const { data: promoted, error: promoteError } = await service
+      .from("advisor")
+      .update({ role: "Admin" })
+      .eq("advisor_id", advisor_id)
+      .select("advisor_id, role")
+      .single();
+    expect(promoteError, "trusted role UPDATE to Admin").toBeNull();
+    expect(promoted?.role, "trusted role UPDATE stored value").toBe("Admin");
+
+    const { data: denied, error: invalidError } = await service
+      .from("advisor")
+      .update({ role: "admin" })
+      .eq("advisor_id", advisor_id)
+      .select("advisor_id");
+    expect(denied ?? [], "an invalid role UPDATE must not return a row").toHaveLength(0);
+    expect(invalidError, "lowercase role UPDATE must be rejected").not.toBeNull();
+    expect(invalidError?.code, "lowercase role UPDATE rejection code").toBe("23514"); // check_violation
+
+    const { data: row } = await service
+      .from("advisor")
+      .select("role")
+      .eq("advisor_id", advisor_id)
+      .maybeSingle();
+    expect(row?.role, "rejected UPDATE leaves the stored display role intact").toBe("Admin");
+  });
+});
+
 describe("unique constraints", () => {
   it("rejects a duplicate advisor_name", async () => {
     const name = syntheticName("duplicate");
@@ -290,17 +394,27 @@ describe("application stage/flag invariant (test-only CHECK, hardening Work 2)",
       "application_stage_flag_invariant_check"
     );
 
-    // Pins that enforcement is by CHECK, not by a user trigger.
+    // Pins that enforcement is by CHECK, not by a user trigger. The ONLY
+    // non-internal user trigger on `application` is the lifecycle archive-
+    // parent guard added by migration 20260930000007
+    // (`trg_application_archive_parents` / `guard_application_archive_parents`);
+    // no trigger implements the stage/flag invariant (before that migration
+    // the count was zero, and the guard is not an invariant enforcer).
     const triggers = await pool.query(
-      `SELECT count(*)::int AS n
+      `SELECT t.tgname, f.proname
          FROM pg_trigger t
          JOIN pg_class c ON c.oid = t.tgrelid
          JOIN pg_namespace n ON n.oid = c.relnamespace
+         JOIN pg_proc f ON f.oid = t.tgfoid
         WHERE n.nspname = 'public'
           AND c.relname = 'application'
-          AND NOT t.tgisinternal`
+          AND NOT t.tgisinternal
+        ORDER BY t.tgname`
     );
-    expect(triggers.rows[0].n).toBe(0);
+    expect(triggers.rows.map((row) => row.tgname as string)).toEqual([
+      "trg_application_archive_parents",
+    ]);
+    expect(String(triggers.rows[0].proname)).toBe("guard_application_archive_parents");
   });
 
   // Exactly the seven stage/flag combinations produced by deriveFlags.

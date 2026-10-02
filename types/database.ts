@@ -357,11 +357,38 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      acquire_advisor_role_lock: {
+        Args: {
+          p_advisor_id: number
+          p_holder: string
+          p_lease_seconds: number
+        }
+        Returns: boolean
+      }
+      fenced_read_advisor_role_display: {
+        Args: {
+          p_advisor_id: number
+          p_holder: string
+        }
+        Returns: string
+      }
+      fenced_write_advisor_role_display: {
+        Args: {
+          p_advisor_id: number
+          p_holder: string
+          p_role: string
+        }
+        Returns: boolean
+      }
       is_active_advisor: {
         Args: Record<PropertyKey, never>
         Returns: boolean
       }
       is_ocf_admin: {
+        Args: Record<PropertyKey, never>
+        Returns: boolean
+      }
+      is_effective_admin: {
         Args: Record<PropertyKey, never>
         Returns: boolean
       }
@@ -379,6 +406,38 @@ export type Database = {
           archived_at: string | null
           is_active: boolean | null
         }[]
+      }
+      reconcile_advisor_role_display: {
+        Args: {
+          p_advisor_id: number
+          p_holder: string
+        }
+        Returns: string
+      }
+      release_advisor_role_lock: {
+        Args: {
+          p_advisor_id: number
+          p_holder: string
+        }
+        Returns: boolean
+      }
+      set_advisor_role: {
+        Args: {
+          p_advisor_id: number
+          p_role: string
+        }
+        Returns: {
+          advisor_id: number
+          role: string
+          auth_user_id: string
+        }[]
+      }
+      verify_advisor_role_lock: {
+        Args: {
+          p_advisor_id: number
+          p_holder: string
+        }
+        Returns: boolean
       }
     }
     Enums: {

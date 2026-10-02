@@ -16,6 +16,11 @@
  * direct typed insert, and observe the correction re-render under the
  * unchanged original meeting across a reload.
  *
+ * Advising-continuity coverage (R6/R7): the application-scoped meeting test
+ * also asserts the rendered Mode and No Show state, and a dedicated test proves
+ * the Log Meeting dialog orders its fields Student, Application/Fellowship,
+ * Advisor, Meeting Date, Meeting Mode, No Show, Notes by DOM position.
+ *
  * Exactness: the reports test is FULLY SELF-CONTAINED. Every expectation is
  * EXACT absolute equality derived from the seed-exported totals
  * (`E2E_REPORT_TOTALS`) — no floors, no tolerances, and no cross-test or
@@ -628,18 +633,54 @@ test.describe("operational surfaces", () => {
 
     await page.getByRole("dialog").getByRole("button", { name: "Log Meeting" }).click();
 
-    // The row's Context cell shows the application's cycle label.
+    // The row's Context cell shows the application's cycle label, and the
+    // table also identifies the meeting mode and no-show state (R6).
     const row = page.locator("table tbody tr", { hasText: appMeetingNote });
     await expect(row).toBeVisible();
     await expect(row).toContainText(STUDENT_TWO_NAME);
     await expect(row).toContainText(cycleLabel);
+    await expect(row).toContainText("Virtual");
+    await expect(row).toContainText("Attended");
 
     // Reload → the application scoping persists server-side.
     await page.reload();
     const rowAfterReload = page.locator("table tbody tr", { hasText: appMeetingNote });
     await expect(rowAfterReload).toBeVisible();
     await expect(rowAfterReload).toContainText(cycleLabel);
+    await expect(rowAfterReload).toContainText("Virtual");
+    await expect(rowAfterReload).toContainText("Attended");
 
+  });
+
+  test("the Log Meeting dialog orders fields Student, Application, Advisor, Date, Mode, No Show, Notes (R7)", async ({ page }) => {
+    await signInAsActive(page);
+
+    await page.goto("/advising");
+    await page.getByRole("button", { name: "Log Meeting" }).click();
+
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+
+    // The shared meeting form declares the approved field order. Compare DOM
+    // positions of each field's id inside the dialog HTML so the assertion is
+    // layout-independent and immune to viewport-specific reordering.
+    const html = await dialog.innerHTML();
+    const fieldIds = [
+      'id="student_id"',
+      'id="application_id"',
+      'id="advisor_id"',
+      'id="meeting_date"',
+      'id="meeting_mode"',
+      'id="no_show"',
+      'id="notes"',
+    ];
+    let previousIndex = -1;
+    for (const field of fieldIds) {
+      const index = html.indexOf(field);
+      expect(index, `field ${field} must be rendered`).toBeGreaterThan(-1);
+      expect(index, `field ${field} must follow the previous field`).toBeGreaterThan(previousIndex);
+      previousIndex = index;
+    }
   });
 
   test("changing the student in the Log Meeting dialog refreshes the application options, clears a stale selection, and persists General Advising after submit/reload", async ({ page }) => {

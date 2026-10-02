@@ -319,10 +319,14 @@ test.describe("entity lifecycle", () => {
       await expect(page.getByRole("heading", { name })).toBeVisible();
 
       // Historical archived context: the badge and the historical application
-      // still render, while the child workflow action is hidden.
+      // still render, while the child workflow action is hidden. The badge
+      // carries the explicit "Student Archived" lifecycle label (R9) and no
+      // destructive Delete control exists on the archived detail surface.
       await expect(page.getByText(/Archived since/)).toBeVisible();
+      await expect(page.getByText(/Student Archived since/)).toBeVisible();
       await expect(page.getByRole("button", { name: "Restore Student" })).toBeVisible();
       await expect(page.getByRole("link", { name: "Add Application" })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Delete" })).toHaveCount(0);
 
       // The archived student's application is a historical join that survives:
       // the cycle-aware fellowship label still links from the detail surface.
