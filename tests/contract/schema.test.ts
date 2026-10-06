@@ -2,23 +2,31 @@
  * tests/contract/schema.test.ts
  *
  * Schema contract: asserts that the full migration chain
- * (20260305000000 → 20261001000001) produced exactly the expected steady state
+ * (20260305000000 → 20261008000001) produced exactly the expected steady state
  * on a fresh, isolated Docker-local instance:
- *   - all eight operational tables exist, with their PKs, FKs, and indexes;
+ *   - all ten operational tables exist, with their PKs, FKs, and indexes;
  *   - the documented CHECK constraints exist;
  *   - RLS is enabled on every table;
- *   - privilege steady state (migrations ...004 + ...006): `anon` has no
- *     schema/table/sequence access; `authenticated` has CRUD and sequence
+ *   - privilege steady state (migrations ...004 + ...006 + ...008): `anon` has
+ *     no schema/table/sequence access; `authenticated` has CRUD and sequence
  *     access except that `advising_meeting` and `advising_meeting_amendment`
- *     are SELECT/INSERT-only AND the core historical entities `advisor`,
+ *     are SELECT/INSERT-only, the core historical entities `advisor`,
  *     `student`, `fellowship`, and `application` are SELECT/INSERT/UPDATE-only
- *     (authenticated DELETE revoked by migration 20260930000006);
+ *     (authenticated DELETE revoked by migration 20260930000006), and
+ *     `fellowship_thursday` / `scholarship_history` plus their append-only
+ *     amendment tables are SELECT/INSERT-only (migration 20261008000001);
  *   - migration 20260929000001 adds the advising↔application link columns
  *     (nullable `application.application_year`, nullable
  *     `advising_meeting.application_id`, NOT NULL `created_at` default
  *     now(), nullable `created_by_advisor_id`), the direct + composite
  *     application FKs and indexes, and the hardened non-RPC creation-metadata
  *     trigger (SECURITY DEFINER, empty search_path, EXECUTE revoked).
+ *   - migration 20261008000001 adds the append-only Fellowship Thursday and
+ *     Scholarship History amendment tables (with their creation-metadata
+ *     triggers), the effective-value SECURITY INVOKER views, the base-history
+ *     SELECT/INSERT lockdown, the nine-stage application vocabulary with
+ *     flag-consistency and year bounds, and the authenticated new-meeting
+ *     advisor guard.
  *
  * Inspects the real migrated catalogs via Postgres (pg), never the hosted DB.
  */
@@ -37,7 +45,9 @@ const TABLES = [
   "advising_meeting",
   "advising_meeting_amendment",
   "fellowship_thursday",
+  "fellowship_thursday_amendment",
   "scholarship_history",
+  "scholarship_history_amendment",
 ] as const;
 
 const EXPECTED_PKS: Record<string, string> = {
@@ -48,7 +58,9 @@ const EXPECTED_PKS: Record<string, string> = {
   advising_meeting: "meeting_id",
   advising_meeting_amendment: "amendment_id",
   fellowship_thursday: "attendance_id",
+  fellowship_thursday_amendment: "amendment_id",
   scholarship_history: "history_id",
+  scholarship_history_amendment: "amendment_id",
 };
 
 const EXPECTED_FKS: Record<string, { table: string; columns: string[]; foreignTable: string }> = {
@@ -64,6 +76,15 @@ const EXPECTED_FKS: Record<string, { table: string; columns: string[]; foreignTa
   advising_meeting_amendment_meeting_id_fkey: { table: "advising_meeting_amendment", columns: ["meeting_id"], foreignTable: "advising_meeting" },
   advising_meeting_amendment_created_by_advisor_id_fkey: { table: "advising_meeting_amendment", columns: ["created_by_advisor_id"], foreignTable: "advisor" },
   fellowship_thursday_student_id_fkey: { table: "fellowship_thursday", columns: ["student_id"], foreignTable: "student" },
+  // migration 20261008000001: append-only Fellowship Thursday + Scholarship
+  // History amendment tables (attendance/history reference the immutable base,
+  // creator references advisor, and the scholarship correction references the
+  // corrected fellowship).
+  fellowship_thursday_amendment_attendance_id_fkey: { table: "fellowship_thursday_amendment", columns: ["attendance_id"], foreignTable: "fellowship_thursday" },
+  fellowship_thursday_amendment_created_by_advisor_id_fkey: { table: "fellowship_thursday_amendment", columns: ["created_by_advisor_id"], foreignTable: "advisor" },
+  scholarship_history_amendment_history_id_fkey: { table: "scholarship_history_amendment", columns: ["history_id"], foreignTable: "scholarship_history" },
+  scholarship_history_amendment_created_by_advisor_id_fkey: { table: "scholarship_history_amendment", columns: ["created_by_advisor_id"], foreignTable: "advisor" },
+  scholarship_history_amendment_corrected_fellowship_id_fkey: { table: "scholarship_history_amendment", columns: ["corrected_fellowship_id"], foreignTable: "fellowship" },
   scholarship_history_student_id_fkey: { table: "scholarship_history", columns: ["student_id"], foreignTable: "student" },
   scholarship_history_fellowship_id_fkey: { table: "scholarship_history", columns: ["fellowship_id"], foreignTable: "fellowship" },
 };
@@ -95,6 +116,11 @@ const EXPECTED_INDEXES = [
   "idx_advising_meeting_created_by_advisor",
   "idx_advising_meeting_amendment_meeting",
   "idx_advising_meeting_amendment_created_by_advisor",
+  // migration 20261008000001: amendment retrieval/creator indexes
+  "idx_fellowship_thursday_amendment_attendance",
+  "idx_fellowship_thursday_amendment_created_by_advisor",
+  "idx_scholarship_history_amendment_history",
+  "idx_scholarship_history_amendment_created_by_advisor",
 ];
 
 const EXPECTED_CHECKS = [
@@ -102,10 +128,22 @@ const EXPECTED_CHECKS = [
   "student_class_standing_check",
   "student_gender_check",
   "application_stage_check",
+  "application_stage_flag_consistency_check",
+  "application_year_range_check",
   "advising_meeting_mode_check",
   "fellowship_thursday_source_check",
   "advising_meeting_amendment_reason_not_blank",
   "advising_meeting_amendment_details_not_blank",
+  // migration 20261008000001: amendment payload CHECKs
+  "fellowship_thursday_amendment_reason_not_blank",
+  "fellowship_thursday_amendment_details_not_blank",
+  "fellowship_thursday_amendment_at_least_one_correction",
+  "fellowship_thursday_amendment_source_check",
+  "fellowship_thursday_amendment_flag_source_consistency",
+  "scholarship_history_amendment_type_check",
+  "scholarship_history_amendment_reason_not_blank",
+  "scholarship_history_amendment_details_not_blank",
+  "scholarship_history_amendment_void_no_correction",
 ];
 
 const EXPECTED_SEQUENCES = [
@@ -116,7 +154,9 @@ const EXPECTED_SEQUENCES = [
   "advising_meeting_meeting_id_seq",
   "advising_meeting_amendment_amendment_id_seq",
   "fellowship_thursday_attendance_id_seq",
+  "fellowship_thursday_amendment_amendment_id_seq",
   "scholarship_history_history_id_seq",
+  "scholarship_history_amendment_amendment_id_seq",
 ];
 
 interface Row {
@@ -137,7 +177,7 @@ afterAll(async () => {
 });
 
 describe("tables exist", () => {
-  it("creates all eight operational tables", async () => {
+  it("creates all ten operational tables", async () => {
     const rows = await query(
       "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
     );
@@ -227,7 +267,7 @@ describe("CHECK constraints", () => {
 });
 
 describe("sequences", () => {
-  it("defines the eight backing sequences", async () => {
+  it("defines the ten backing sequences", async () => {
     const rows = await query(
       "SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public'"
     );
@@ -427,7 +467,7 @@ describe("invoker-security one-time-bind trigger (rows 16-24, R1/R11)", () => {
   });
 });
 
-describe("privilege steady state (migrations ...004 + ...006 core-history DELETE lockdown)", () => {
+describe("privilege steady state (migrations ...004 + ...006 + ...008)", () => {
   it("revokes anon access entirely and restricts authenticated DELETE to non-core operational rows", async () => {
     const rows = await query(
       `SELECT c.relname,
@@ -457,11 +497,20 @@ describe("privilege steady state (migrations ...004 + ...006 core-history DELETE
       }
     }
 
-    // UPDATE is revoked from authenticated only on the append-only histories.
-    const updateRevoked = new Set(["advising_meeting", "advising_meeting_amendment"]);
+    // UPDATE is revoked from authenticated only on the append-only histories
+    // (advising + the migration 20261008000001 base-history lockdown).
+    const updateRevoked = new Set([
+      "advising_meeting",
+      "advising_meeting_amendment",
+      "fellowship_thursday",
+      "fellowship_thursday_amendment",
+      "scholarship_history",
+      "scholarship_history_amendment",
+    ]);
     // DELETE is revoked from authenticated on the append-only histories AND on
-    // the core historical entities (migration 20260930000006). The operational
-    // rows fellowship_thursday / scholarship_history keep authenticated DELETE.
+    // the core historical entities (migration 20260930000006). The migration
+    // 20261008000001 lockdown extends the append-only DELETE revocation to
+    // fellowship_thursday / scholarship_history and their amendment tables.
     const deleteRevoked = new Set([
       "advisor",
       "student",
@@ -469,6 +518,10 @@ describe("privilege steady state (migrations ...004 + ...006 core-history DELETE
       "application",
       "advising_meeting",
       "advising_meeting_amendment",
+      "fellowship_thursday",
+      "fellowship_thursday_amendment",
+      "scholarship_history",
+      "scholarship_history_amendment",
     ]);
     for (const row of rows) {
       expect(row.auth_update, `${row.relname}.auth_update`).toBe(!updateRevoked.has(String(row.relname)));
@@ -657,6 +710,261 @@ describe("advising_meeting_amendment schema and policy shape (migration 20260930
     );
     expect(rows).toHaveLength(1);
     expect(String(rows[0].indexdef)).toMatch(/\(meeting_id, created_at, amendment_id\)/);
+  });
+});
+
+describe("historical integrity remediation steady state (migration 20261008000001)", () => {
+  it("defines the exact fellowship_thursday_amendment columns", async () => {
+    const rows = await query(
+      `SELECT column_name, data_type, is_nullable, column_default
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'fellowship_thursday_amendment'
+        ORDER BY ordinal_position`
+    );
+    expect(rows).toEqual([
+      { column_name: "amendment_id", data_type: "integer", is_nullable: "NO", column_default: expect.any(String) },
+      { column_name: "attendance_id", data_type: "integer", is_nullable: "NO", column_default: null },
+      { column_name: "created_by_advisor_id", data_type: "integer", is_nullable: "NO", column_default: null },
+      { column_name: "created_at", data_type: "timestamp with time zone", is_nullable: "NO", column_default: "now()" },
+      { column_name: "reason", data_type: "text", is_nullable: "NO", column_default: null },
+      { column_name: "details", data_type: "text", is_nullable: "YES", column_default: null },
+      { column_name: "corrected_attended", data_type: "boolean", is_nullable: "YES", column_default: null },
+      { column_name: "corrects_source_info", data_type: "boolean", is_nullable: "NO", column_default: "false" },
+      { column_name: "corrected_source_info", data_type: "character varying", is_nullable: "YES", column_default: null },
+    ]);
+  });
+
+  it("defines the exact scholarship_history_amendment columns", async () => {
+    const rows = await query(
+      `SELECT column_name, data_type, is_nullable, column_default
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'scholarship_history_amendment'
+        ORDER BY ordinal_position`
+    );
+    expect(rows).toEqual([
+      { column_name: "amendment_id", data_type: "integer", is_nullable: "NO", column_default: expect.any(String) },
+      { column_name: "history_id", data_type: "integer", is_nullable: "NO", column_default: null },
+      { column_name: "created_by_advisor_id", data_type: "integer", is_nullable: "NO", column_default: null },
+      { column_name: "created_at", data_type: "timestamp with time zone", is_nullable: "NO", column_default: "now()" },
+      { column_name: "amendment_type", data_type: "character varying", is_nullable: "NO", column_default: null },
+      { column_name: "reason", data_type: "text", is_nullable: "NO", column_default: null },
+      { column_name: "details", data_type: "text", is_nullable: "YES", column_default: null },
+      { column_name: "corrected_fellowship_id", data_type: "integer", is_nullable: "YES", column_default: null },
+    ]);
+  });
+
+  it("has only active-advisor SELECT/INSERT policies on the amendment tables", async () => {
+    for (const table of ["fellowship_thursday_amendment", "scholarship_history_amendment"] as const) {
+      const rows = await query(
+        `SELECT policyname, cmd, roles::text[] AS roles
+           FROM pg_policies
+          WHERE schemaname = 'public'
+            AND tablename = $1
+          ORDER BY policyname`,
+        [table]
+      );
+      expect(rows, `${table} policies`).toEqual([
+        { policyname: `active_advisor_insert_${table}`, cmd: "INSERT", roles: ["authenticated"] },
+        { policyname: `active_advisor_select_${table}`, cmd: "SELECT", roles: ["authenticated"] },
+      ]);
+    }
+  });
+
+  it("grants authenticated only SELECT/INSERT on the amendment tables (no UPDATE/DELETE/TRUNCATE) and on their backing sequences", async () => {
+    for (const table of ["fellowship_thursday_amendment", "scholarship_history_amendment"] as const) {
+      const rows = await query(
+        `SELECT privilege_type
+           FROM information_schema.role_table_grants
+          WHERE table_schema = 'public'
+            AND table_name = $1
+            AND grantee = 'authenticated'
+          ORDER BY privilege_type`,
+        [table]
+      );
+      const privileges = rows.map((r) => r.privilege_type as string);
+      expect(privileges, `${table} authenticated grants`).toContain("INSERT");
+      expect(privileges, `${table} authenticated grants`).toContain("SELECT");
+      for (const denied of ["UPDATE", "DELETE", "TRUNCATE"]) {
+        expect(privileges, `${table} authenticated must not hold ${denied}`).not.toContain(denied);
+      }
+    }
+    for (const sequence of [
+      "fellowship_thursday_amendment_amendment_id_seq",
+      "scholarship_history_amendment_amendment_id_seq",
+    ] as const) {
+      const rows = await query(
+        `SELECT has_sequence_privilege('authenticated', 'public.${sequence}', 'USAGE') AS auth_usage,
+                has_sequence_privilege('authenticated', 'public.${sequence}', 'SELECT') AS auth_select,
+                has_sequence_privilege('anon', 'public.${sequence}', 'USAGE') AS anon_usage
+        `
+      );
+      expect(rows[0].auth_usage, `${sequence} authenticated USAGE`).toBe(true);
+      expect(rows[0].auth_select, `${sequence} authenticated SELECT`).toBe(true);
+      expect(rows[0].anon_usage, `${sequence} anon USAGE revoked`).toBe(false);
+    }
+  });
+
+  it("creates the amendment creation-metadata triggers/backing functions as SECURITY DEFINER", async () => {
+    const triggers = await query(
+      "SELECT tgname, c.relname AS table_name, f.proname AS function_name FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_proc f ON f.oid = t.tgfoid WHERE n.nspname = 'public' AND t.tgname IN ('trg_fellowship_thursday_amendment_created_metadata', 'trg_scholarship_history_amendment_created_metadata') AND NOT t.tgisinternal ORDER BY t.tgname"
+    );
+    expect(triggers.map((t) => ({ name: t.tgname, table: t.table_name }))).toEqual([
+      { name: "trg_fellowship_thursday_amendment_created_metadata", table: "fellowship_thursday_amendment" },
+      { name: "trg_scholarship_history_amendment_created_metadata", table: "scholarship_history_amendment" },
+    ]);
+    for (const fn of [
+      "set_fellowship_thursday_amendment_metadata",
+      "set_scholarship_history_amendment_metadata",
+    ] as const) {
+      const rows = await query(
+        `SELECT p.prosecdef, p.proconfig,
+                has_function_privilege('authenticated', 'public.${fn}()', 'EXECUTE') AS auth_exec,
+                has_function_privilege('anon', 'public.${fn}()', 'EXECUTE') AS anon_exec,
+                has_function_privilege('service_role', 'public.${fn}()', 'EXECUTE') AS sr_exec
+           FROM pg_proc p
+           JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'public' AND p.proname = $1`,
+        [fn]
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].prosecdef, `${fn} must be SECURITY DEFINER`).toBe(true);
+      expect(rows[0].proconfig, `${fn} empty search_path`).toEqual(["search_path=\"\""]);
+      expect(rows[0].auth_exec, `no authenticated EXECUTE on ${fn}`).toBe(false);
+      expect(rows[0].anon_exec, `no anon EXECUTE on ${fn}`).toBe(false);
+      expect(rows[0].sr_exec, `service_role EXECUTE pins ${fn} ACL`).toBe(true);
+    }
+  });
+
+  it("creates the effective_value views as SECURITY INVOKER with the documented columns", async () => {
+    for (const view of ["effective_fellowship_thursday", "effective_scholarship_history"]) {
+      const rows = await query(
+        `SELECT reloptions
+           FROM pg_class
+          WHERE relname = $1
+            AND relnamespace = 'public'::regnamespace`,
+        [view]
+      );
+      expect(rows).toHaveLength(1);
+      // security_invoker surfaces in pg_class.reloptions as {"security_invoker=true"}.
+      expect(String(rows[0].reloptions ?? ""), `${view} must be SECURITY INVOKER`).toContain("security_invoker");
+    }
+
+    const ftColumns = await query(
+      `SELECT column_name
+         FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'effective_fellowship_thursday'
+        ORDER BY ordinal_position`
+    );
+    expect(ftColumns.map((c) => c.column_name)).toEqual([
+      "attendance_id",
+      "student_id",
+      "base_attended",
+      "base_source_info",
+      "attended",
+      "source_info",
+      "has_amendments",
+    ]);
+
+    const shColumns = await query(
+      `SELECT column_name
+         FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'effective_scholarship_history'
+        ORDER BY ordinal_position`
+    );
+    expect(shColumns.map((c) => c.column_name)).toEqual([
+      "history_id",
+      "student_id",
+      "base_fellowship_id",
+      "fellowship_id",
+      "has_correction",
+      "is_voided",
+      "void_amendment_id",
+      "voided_at",
+      "voided_by_advisor_id",
+    ]);
+
+    for (const view of ["effective_fellowship_thursday", "effective_scholarship_history"]) {
+      const rows = await query(
+        `SELECT has_table_privilege('authenticated', 'public.${view}', 'SELECT') AS auth_select,
+                has_table_privilege('anon', 'public.${view}', 'SELECT') AS anon_select,
+                has_table_privilege('anon', 'public.${view}', 'INSERT') AS anon_insert
+         `
+      );
+      expect(rows[0].auth_select, `${view} authenticated SELECT`).toBe(true);
+      expect(rows[0].anon_select, `${view} anon SELECT revoked`).toBe(false);
+      expect(rows[0].anon_insert, `${view} anon INSERT revoked`).toBe(false);
+    }
+  });
+
+  it("replaces the base-history FOR ALL policies with explicit SELECT/INSERT policies", async () => {
+    for (const table of ["fellowship_thursday", "scholarship_history"] as const) {
+      const rows = await query(
+        `SELECT policyname, cmd, roles::text[] AS roles
+           FROM pg_policies
+          WHERE schemaname = 'public' AND tablename = $1
+          ORDER BY policyname`,
+        [table]
+      );
+      expect(rows, `${table} policies`).toEqual([
+        { policyname: `active_advisor_insert_${table}`, cmd: "INSERT", roles: ["authenticated"] },
+        { policyname: `active_advisor_select_${table}`, cmd: "SELECT", roles: ["authenticated"] },
+      ]);
+    }
+  });
+
+  it("creates the authenticated new-meeting advisor guard as SECURITY INVOKER", async () => {
+    const fn = await query(
+      `SELECT p.prosecdef, p.proconfig,
+              has_function_privilege('authenticated', 'public.guard_advising_meeting_advisor_required()', 'EXECUTE') AS auth_exec,
+              has_function_privilege('anon', 'public.guard_advising_meeting_advisor_required()', 'EXECUTE') AS anon_exec,
+              has_function_privilege('service_role', 'public.guard_advising_meeting_advisor_required()', 'EXECUTE') AS sr_exec
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.proname = 'guard_advising_meeting_advisor_required'`
+    );
+    expect(fn).toHaveLength(1);
+    expect(fn[0].prosecdef, "guard must be SECURITY INVOKER").toBe(false);
+    expect(fn[0].proconfig, "guard empty search_path").toEqual(["search_path=\"\""]);
+    expect(fn[0].auth_exec, "no authenticated EXECUTE on the guard").toBe(false);
+    expect(fn[0].anon_exec, "no anon EXECUTE on the guard").toBe(false);
+    expect(fn[0].sr_exec, "service_role EXECUTE pins the guard ACL").toBe(true);
+
+    const triggers = await query(
+      `SELECT t.tgname, t.tgtype, t.tgenabled
+         FROM pg_trigger t
+         JOIN pg_class c ON c.oid = t.tgrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relname = 'advising_meeting' AND t.tgname = 'trg_advising_meeting_advisor_required' AND NOT t.tgisinternal`
+    );
+    expect(triggers).toHaveLength(1);
+    // tgtype: 1 (ROW) + 2 (BEFORE) + 4 (INSERT) = 7.
+    expect(triggers[0].tgtype, "guard must be BEFORE ROW INSERT only").toBe(7);
+    expect(triggers[0].tgenabled, "guard must be enabled").toBe("O");
+  });
+
+  it("enforces the nine-stage vocabulary, flag consistency, and year bounds as production CHECKs on application", async () => {
+    const rows = await query(
+      `SELECT c.conname, pg_get_constraintdef(c.oid) AS definition
+         FROM pg_constraint AS c
+         JOIN pg_class AS t ON t.oid = c.conrelid
+         JOIN pg_namespace AS n ON n.oid = t.relnamespace
+        WHERE n.nspname = 'public'
+          AND t.relname = 'application'
+          AND c.contype = 'c'
+        ORDER BY c.conname`
+    );
+    const byName = new Map(rows.map((r) => [r.conname as string, String(r.definition)]));
+
+    const stageDef = byName.get("application_stage_check");
+    expect(stageDef, "application_stage_check definition").toBeDefined();
+    for (const named of ["Started", "Submitted", "Under Review", "Did Not Submit", "Semi-Finalist", "Finalist", "Awarded", "Rejected", "Withdrawn"]) {
+      expect(stageDef, `application_stage_check includes ${named}`).toContain(`'${named}'`);
+    }
+
+    expect(byName.get("application_stage_flag_consistency_check"), "flag-consistency CHECK").toBeDefined();
+    expect(byName.get("application_year_range_check"), "year-range CHECK").toBeDefined();
   });
 });
 

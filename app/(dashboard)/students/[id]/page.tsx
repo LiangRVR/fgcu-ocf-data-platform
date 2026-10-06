@@ -36,7 +36,6 @@ import { LifecycleBadge } from "@/components/lifecycle";
 import { LifecycleAction } from "@/components/lifecycle";
 import { formatDate } from "@/lib/utils/format";
 import { formatApplicationLabel } from "@/lib/applications/pipeline";
-import { Fragment } from "react";
 import { AdvisingHistory } from "@/components/advising/advising-table";
 
 type Student = Database["public"]["Tables"]["student"]["Row"];
@@ -59,38 +58,8 @@ type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] &
   })[];
 };
 
-function formatRecordedAt(createdAt: string | null | undefined): string {
-  if (!createdAt) return "date unavailable";
-  const date = new Date(createdAt);
-  if (Number.isNaN(date.getTime())) return "date unavailable";
-  return date.toLocaleString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
-function AmendmentHistory({ amendments }: { amendments: AdvisingMeeting["amendments"] }) {
-  if (!amendments.length) return null;
-  return (
-    <div className="mt-3 border-l-2 border-amber-300 pl-3">
-      <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">Corrections</p>
-      <div className="mt-2 space-y-2">
-        {amendments.map((amendment) => (
-          <div key={amendment.amendment_id} className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-sm text-slate-700">
-            <p className="font-medium text-slate-900">{amendment.reason}</p>
-            <p className="mt-1 whitespace-pre-wrap leading-5">{amendment.details}</p>
-            <p className="mt-2 text-xs text-slate-500">Added by {amendment.created_by?.advisor_name ?? "Unknown advisor"} · {formatRecordedAt(amendment.created_at)}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-type FellowshipThursday = Database["public"]["Tables"]["fellowship_thursday"]["Row"];
-type ScholarshipHistory = Database["public"]["Tables"]["scholarship_history"]["Row"] & {
+type FellowshipThursday = Database["public"]["Views"]["effective_fellowship_thursday"]["Row"];
+type ScholarshipHistory = Database["public"]["Views"]["effective_scholarship_history"]["Row"] & {
   fellowship: { fellowship_name: string } | null;
 };
 
@@ -159,11 +128,17 @@ async function getAdvisingMeetings(studentId: number): Promise<AdvisingMeeting[]
   }
 }
 
-async function getFellowshipThursday(studentId: number): Promise<FellowshipThursday[]> {
+/**
+ * Student-detail Fellowship Thursday reader. Operational values come from the
+ * shared `effective_fellowship_thursday` view, so the attended/source figures
+ * on the detail surface (and the summary count) reflect the newest applicable
+ * correction instead of the immutable base row.
+ */
+export async function getFellowshipThursday(studentId: number): Promise<FellowshipThursday[]> {
   const supabase = createServerClient();
   try {
     const { data, error } = await supabase
-      .from("fellowship_thursday")
+      .from("effective_fellowship_thursday")
       .select("*")
       .eq("student_id", studentId);
     if (error) return [];
@@ -173,15 +148,41 @@ async function getFellowshipThursday(studentId: number): Promise<FellowshipThurs
   }
 }
 
-async function getScholarshipHistory(studentId: number): Promise<ScholarshipHistory[]> {
+/**
+ * Student-detail Scholarship History reader. Reads the shared
+ * `effective_scholarship_history` view so corrected award programs are used
+ * and voided awards are excluded from the operational list and its count. The
+ * base rows stay auditable through the Scholarship History surface.
+ */
+export async function getScholarshipHistory(studentId: number): Promise<ScholarshipHistory[]> {
   const supabase = createServerClient();
   try {
     const { data, error } = await supabase
-      .from("scholarship_history")
-      .select("*, fellowship(fellowship_name)")
-      .eq("student_id", studentId);
+      .from("effective_scholarship_history")
+      .select("*")
+      .eq("student_id", studentId)
+      .eq("is_voided", false);
     if (error) return [];
-    return (data as ScholarshipHistory[]) || [];
+
+    const records = (data as Database["public"]["Views"]["effective_scholarship_history"]["Row"][]) || [];
+    const fellowshipIds = [...new Set(records.map((record) => record.fellowship_id))];
+    const fellowshipNameById = new Map<number, string>();
+    if (fellowshipIds.length > 0) {
+      const { data: fellowships } = await supabase
+        .from("fellowship")
+        .select("fellowship_id, fellowship_name")
+        .in("fellowship_id", fellowshipIds);
+      for (const fellowship of fellowships ?? []) {
+        fellowshipNameById.set(fellowship.fellowship_id, fellowship.fellowship_name);
+      }
+    }
+
+    return records.map((record) => ({
+      ...record,
+      fellowship: fellowshipNameById.has(record.fellowship_id)
+        ? { fellowship_name: fellowshipNameById.get(record.fellowship_id)! }
+        : null,
+    }));
   } catch {
     return [];
   }
@@ -214,8 +215,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
   // render — applications, advising meetings, attendance, and scholarship
   // history reference the archived student by FK (NO ACTION) and continue
   // to display the archived name. Restore is offered as a single primary
-  // action on the archived detail page (any signed-in advisor can restore
-  // a student through the lifecycle_transition RPC).
+  // action on the archived detail page; restore requires an effective Admin.
   const isArchived = student.archived_at != null;
 
   // Derived summary stats
@@ -546,134 +546,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
               </div>
             ) : (
               <>
-                <AdvisingHistory meetings={advisingMeetings} applications={applications.map((app) => ({ application_id: app.application_id, label: formatApplicationLabel(app.fellowship?.fellowship_name, app.application_year) }))} />
-                <div className="hidden">
-                  {advisingMeetings.map((meeting) => (
-                    <div key={meeting.meeting_id} className="rounded-2xl border border-border/70 bg-surface-subtle/70 p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <MetricBadge tone="slate">
-                          {new Date(meeting.meeting_date + "T00:00:00").toLocaleDateString("en-US", {
-                            year: "numeric",
-                            month: "short",
-                            day: "numeric",
-                          })}
-                        </MetricBadge>
-                        <MetricBadge tone={meeting.no_show ? "red" : "green"}>
-                          {meeting.no_show ? "No-Show" : "Attended"}
-                        </MetricBadge>
-                      </div>
-                      <div className="mt-2 text-sm text-slate-600">
-                        {meeting.application_id == null
-                          ? "General Advising"
-                          : formatApplicationLabel(
-                              meeting.application?.fellowship?.fellowship_name,
-                              meeting.application?.application_year
-                            )}
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <MetricBadge tone={meeting.meeting_mode === "Virtual" ? "blue" : "slate"}>
-                          {meeting.meeting_mode}
-                        </MetricBadge>
-                        {meeting.advisor_id ? (
-                          <Link href={`/advisors/${meeting.advisor_id}`}>
-                            <MetricBadge tone="slate" className="cursor-pointer hover:border-slate-300">
-                              {meeting.advisor?.advisor_name ?? "Advisor"}
-                            </MetricBadge>
-                          </Link>
-                        ) : null}
-                      </div>
-                      <p className="mt-3 text-xs text-slate-400">
-                        Recorded by {meeting.recorded_by?.advisor_name ?? "Unknown (legacy record)"} · Recorded {formatRecordedAt(meeting.created_at)}
-                      </p>
-                      <p className="mt-3 text-sm leading-6 text-slate-600">
-                        {meeting.notes || "No notes recorded yet."}
-                      </p>
-                      <AmendmentHistory amendments={meeting.amendments ?? []} />
-                    </div>
-                  ))}
-                </div>
-
-                <div className="hidden overflow-x-auto md:block">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-100">
-                      <th className="pb-3 text-left font-medium text-slate-500">Date</th>
-                      <th className="hidden pb-3 text-left font-medium text-slate-500 sm:table-cell">Mode</th>
-                      <th className="hidden pb-3 text-left font-medium text-slate-500 md:table-cell">Context</th>
-                      <th className="hidden pb-3 text-left font-medium text-slate-500 md:table-cell">Advisor</th>
-                      <th className="pb-3 text-left font-medium text-slate-500">No-Show</th>
-                      <th className="hidden pb-3 text-left font-medium text-slate-500 lg:table-cell">Notes</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50">
-                    {advisingMeetings.map((meeting) => (
-                      <Fragment key={meeting.meeting_id}>
-                      <tr>
-                        <td className="py-3 pr-4 text-slate-700">
-                          <div>
-                            {new Date(meeting.meeting_date + "T00:00:00").toLocaleDateString("en-US", {
-                              year: "numeric",
-                              month: "short",
-                              day: "numeric",
-                            })}
-                          </div>
-                          <div className="mt-1 text-xs text-slate-400">
-                            Recorded by {meeting.recorded_by?.advisor_name ?? "Unknown (legacy record)"}
-                            <span className="block">Recorded {formatRecordedAt(meeting.created_at)}</span>
-                          </div>
-                        </td>
-                        <td className="hidden py-3 pr-4 text-slate-700 sm:table-cell">
-                          {meeting.meeting_mode}
-                        </td>
-                        <td className="hidden py-3 pr-4 md:table-cell">
-                          {meeting.application_id == null
-                            ? "General Advising"
-                            : formatApplicationLabel(
-                                meeting.application?.fellowship?.fellowship_name,
-                                meeting.application?.application_year
-                              )}
-                        </td>
-                        <td className="hidden py-3 pr-4 md:table-cell">
-                          {meeting.advisor_id ? (
-                            <Link
-                              href={`/advisors/${meeting.advisor_id}`}
-                              className="text-slate-700 hover:text-[#006747] hover:underline"
-                            >
-                              {meeting.advisor?.advisor_name ?? "—"}
-                            </Link>
-                          ) : (
-                            <span className="text-slate-400">—</span>
-                          )}
-                        </td>
-                        <td className="py-3 pr-4">
-                          {meeting.no_show ? (
-                            <span className="inline-flex items-center gap-1 text-red-600">
-                              <XCircle className="h-4 w-4" />
-                              No-Show
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 text-green-600">
-                              <CheckCircle2 className="h-4 w-4" />
-                              Attended
-                            </span>
-                          )}
-                        </td>
-                        <td className="hidden max-w-xs py-3 text-slate-600 lg:table-cell">
-                          {meeting.notes || <span className="text-slate-400">—</span>}
-                        </td>
-                      </tr>
-                      {meeting.amendments?.length > 0 ? (
-                        <tr className="bg-amber-50/40">
-                          <td colSpan={6} className="px-0 pb-4 pt-0">
-                            <AmendmentHistory amendments={meeting.amendments} />
-                          </td>
-                        </tr>
-                      ) : null}
-                      </Fragment>
-                    ))}
-                  </tbody>
-                </table>
-                </div>
+                <AdvisingHistory canCorrect={!isArchived} meetings={advisingMeetings} applications={applications.map((app) => ({ application_id: app.application_id, label: formatApplicationLabel(app.fellowship?.fellowship_name, app.application_year) }))} />
               </>
             )}
           </CardContent>

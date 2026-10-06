@@ -96,8 +96,11 @@ export async function getReportsData(): Promise<ReportsDataResult> {
       supabase
         .from("student")
         .select("student_id, full_name, major, class_standing"),
+      // Operational Fellowship Thursday reads MUST consume the shared
+      // effective view: a correction must change the operational attendance
+      // totals and correction rows must never inflate the counts.
       supabase
-        .from("fellowship_thursday")
+        .from("effective_fellowship_thursday")
         .select("student_id, attended"),
     ]);
 

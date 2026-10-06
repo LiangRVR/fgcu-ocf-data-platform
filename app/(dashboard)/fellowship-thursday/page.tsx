@@ -17,28 +17,61 @@ interface Props {
   }>;
 }
 
-type FellowshipThursday =
-  Database["public"]["Tables"]["fellowship_thursday"]["Row"] & {
-    student: { full_name: string } | null;
-  };
+type EffectiveFellowshipThursday =
+  Database["public"]["Views"]["effective_fellowship_thursday"]["Row"];
+
+type FellowshipThursday = EffectiveFellowshipThursday & {
+  student: { full_name: string } | null;
+};
 
 type StudentRow = Pick<
   Database["public"]["Tables"]["student"]["Row"],
   "student_id" | "full_name"
 >;
 
-async function getFellowshipThursdayRecords(): Promise<FellowshipThursday[]> {
+/**
+ * Operational Fellowship Thursday reader.
+ *
+ * Reads the shared `effective_fellowship_thursday` SECURITY INVOKER view so the
+ * page-level stats and table consume the newest applicable correction per
+ * field; the immutable base rows and the amendment audit trail remain readable
+ * through their own surfaces. Corrections are never extra attendance rows, so
+ * the effective view has exactly one row per attendance record.
+ *
+ * The view carries no PostgREST relationship to `student`, so the display names
+ * are resolved with a second scoped lookup rather than an embedded join.
+ */
+export async function getFellowshipThursdayRecords(): Promise<FellowshipThursday[]> {
   const supabase = createServerClient();
   try {
     const { data, error } = await supabase
-      .from("fellowship_thursday")
-      .select(`*, student(full_name)`)
+      .from("effective_fellowship_thursday")
+      .select("*")
       .order("attendance_id", { ascending: false });
     if (error) {
       console.error("Error fetching fellowship thursday records:", error);
       return [];
     }
-    return (data as FellowshipThursday[]) || [];
+
+    const records = (data as EffectiveFellowshipThursday[]) || [];
+    const studentIds = [...new Set(records.map((record) => record.student_id))];
+    const nameById = new Map<number, string>();
+    if (studentIds.length > 0) {
+      const { data: students } = await supabase
+        .from("student")
+        .select("student_id, full_name")
+        .in("student_id", studentIds);
+      for (const student of students ?? []) {
+        nameById.set(student.student_id, student.full_name);
+      }
+    }
+
+    return records.map((record) => ({
+      ...record,
+      student: nameById.has(record.student_id)
+        ? { full_name: nameById.get(record.student_id)! }
+        : null,
+    }));
   } catch {
     return [];
   }

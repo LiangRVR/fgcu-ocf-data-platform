@@ -29,13 +29,15 @@
  *     and never created), so an authenticated account whose email matches an
  *     unlinked `advisor` row can never claim, bind, or take over that identity
  *     (pre-existing-matching-account takeover, row 8);
- *   - pre-bound active advisors retain shared staff CRUD on the operational
- *     rows `fellowship_thursday` and `scholarship_history`, and shared
- *     INSERT/read/UPDATE (never DELETE) on the core historical entities
- *     `student`, `fellowship`, `application`, and `advisor` (migration
- *     ...006 revokes/denies authenticated DELETE of core history), while
- *     `advising_meeting` is append-only: active advisors may SELECT and INSERT
- *     but direct UPDATE and DELETE are denied;
+ *   - pre-bound active advisors retain shared staff SELECT/INSERT on the
+ *     operational rows `fellowship_thursday` and `scholarship_history`
+ *     (migration 20261008000001 locks these base-history tables down to
+ *     append-only INSERT + read; corrections/voids move to their amendment
+ *     tables), and INSERT/read/UPDATE (never DELETE) on the core historical
+ *     entities `student`, `fellowship`, `application`, and `advisor`
+ *     (migration ...006 revokes/denies authenticated DELETE of core history),
+ *     while `advising_meeting` is append-only: active advisors may SELECT and
+ *     INSERT but direct UPDATE and DELETE are denied;
  *   - pre-bound inactive advisors and authenticated users with no advisor row
  *     are blocked from operational data;
  *   - advisor email identity is case-normalized (R11, regression row 15): a
@@ -166,10 +168,12 @@ const OPERATIONAL_TABLES = [
 type OperationalTable = (typeof OPERATIONAL_TABLES)[number];
 
 /**
- * Operational rows that remain fully mutable (insert/read/update/delete) by
- * active staff; advising_meeting is append-only.
+ * Base-history tables locked down by migration 20261008000001: active staff
+ * may INSERT + read new base rows, but UPDATE and DELETE are revoked at both
+ * the grant and RLS-policy level (append-only style, like advising_meeting).
+ * Corrections/voids go through the append-only amendment records.
  */
-const ACTIVE_ADVISOR_FULL_CRUD_TABLES = [
+const APPEND_ONLY_BASE_TABLES = [
   "fellowship_thursday",
   "scholarship_history",
 ] as const satisfies readonly OperationalTable[];
@@ -185,7 +189,7 @@ const CORE_HISTORY_DELETE_DENIED_TABLES = [
   "application",
 ] as const satisfies readonly OperationalTable[];
 
-/** Insert payload for one active-staff CRUD cycle on an operational table. */
+/** Insert payload for one active-staff insert/read cycle on an operational table. */
 function operationalInsertPayload(table: OperationalTable): Record<string, unknown> {
   switch (table) {
     case "student":
@@ -199,7 +203,9 @@ function operationalInsertPayload(table: OperationalTable): Record<string, unkno
         stage_of_application: "Started",
       };
     case "advising_meeting":
-      return { student_id: fixtures.studentId, meeting_date: "2026-09-20", meeting_mode: "Virtual" };
+      // R8 (migration 20261008000001): authenticated new meetings must name
+      // the conducting advisor at the database boundary.
+      return { student_id: fixtures.studentId, advisor_id: fixtures.advisorSelfId, meeting_date: "2026-09-20", meeting_mode: "Virtual" };
     case "fellowship_thursday":
       return { student_id: fixtures.studentId, attended: true, source_info: "OCF" };
     case "scholarship_history":
@@ -1251,10 +1257,14 @@ describe("pre-bound active advisor has staff access", () => {
     await assertDeleteBlocked(selfClient, "advising_meeting", "meeting_id", fixtures.meetingId);
   });
 
-  // Regression matrix row 11 — CRUD is proven on every operational table that
-  // remains fully mutable (insert → read → update → delete), not a sample.
-  it.each(ACTIVE_ADVISOR_FULL_CRUD_TABLES)(
-    "active staff can insert, read, update, and delete %s rows",
+  // Regression matrix row 11 — CRUD was historically proven on every fully
+  // mutable operational table. Migration 20261008000001 removed the last fully
+  // mutable operational rows: `fellowship_thursday` and `scholarship_history`
+  // are now append-only base tables (INSERT + read only), so the insert/read
+  // cycle below plus blocked UPDATE/DELETE (row preserved) replaces the old
+  // full-CRUD proof.
+  it.each(APPEND_ONLY_BASE_TABLES)(
+    "active staff can insert and read %s base rows but cannot UPDATE or DELETE them (migration 20261008000001, row preserved)",
     async (table) => {
       const idColumn = ID_COLUMN[table];
 
@@ -1275,26 +1285,10 @@ describe("pre-bound active advisor has staff access", () => {
       expect(readError, `${table} read`).toBeNull();
       expect(read).not.toBeNull();
 
-      const { data: updated, error: updateError } = await selfClient
-        .from(table)
-        .update(operationalUpdatePayload(table))
-        .eq(idColumn, rowId)
-        .select(idColumn);
-      expect(updateError, `${table} update`).toBeNull();
-      expect(updated ?? [], `${table} update affected rows`).toHaveLength(1);
-
-      const { error: deleteError } = await selfClient
-        .from(table)
-        .delete()
-        .eq(idColumn, rowId);
-      expect(deleteError, `${table} delete`).toBeNull();
-
-      // Deleted for real: the row is gone even under service role.
-      const { data: remaining } = await service
-        .from(table)
-        .select(idColumn)
-        .eq(idColumn, rowId);
-      expect(remaining ?? [], `${table} post-delete rows`).toHaveLength(0);
+      // UPDATE/DELETE are denied at both the grant and RLS-policy boundary and
+      // the freshly inserted row is proven byte-for-byte unchanged.
+      await assertMutationBlocked(selfClient, table, idColumn, rowId, operationalUpdatePayload(table));
+      await assertDeleteBlocked(selfClient, table, idColumn, rowId);
     }
   );
 

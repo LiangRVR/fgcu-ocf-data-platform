@@ -1478,7 +1478,15 @@ describe("archived students/fellowships reject new and re-linked operational chi
 
     const { data: meeting, error: meetingError } = await staffActive.client
       .from("advising_meeting")
-      .insert({ student_id: activeStudentId, meeting_date: "2026-09-01", meeting_mode: "Virtual" })
+      .insert({
+        student_id: activeStudentId,
+        // R8 (migration 20261008000001): authenticated new meetings must name
+        // the conducting advisor; inactive-advisor conduct is allowed for
+        // historical attribution, but NULL advisor is a legacy-only state.
+        advisor_id: staffActive.advisorId!,
+        meeting_date: "2026-09-01",
+        meeting_mode: "Virtual",
+      })
       .select("meeting_id")
       .single();
     expect(meetingError, "active-reference meeting INSERT").toBeNull();

@@ -9,7 +9,9 @@ export const STAGE_ORDER = [
   "Semi-Finalist",
   "Finalist",
   "Awarded",
+  "Did Not Submit",
   "Rejected",
+  "Withdrawn",
 ] as const;
 
 export const CLASS_ORDER = [
@@ -62,9 +64,38 @@ export type ReportStudentRow = {
   class_standing: string | null;
 };
 
+/**
+ * One Fellowship Thursday record for reporting, sourced from the shared
+ * `effective_fellowship_thursday` SECURITY INVOKER view — never from raw base
+ * rows plus correction rows (corrections must never inflate attendance
+ * counts). `attended`/`source_info` are the deterministic effective values
+ * (newest applicable amendment per field, ordered by created_at/amendment_id).
+ * The optional `base_*` / `has_amendments` columns let callers surface the
+ * original record and its audit state.
+ */
 export type ReportFellowshipThursdayRow = {
   student_id: number;
   attended: boolean;
+  base_attended?: boolean;
+  source_info?: string | null;
+  base_source_info?: string | null;
+  has_amendments?: boolean;
+};
+
+/**
+ * One Scholarship History award for operational reads, sourced from the shared
+ * `effective_scholarship_history` SECURITY INVOKER view. Voids remain auditable
+ * in history but are excluded from operational award counts (`is_voided`).
+ */
+export type ReportScholarshipHistoryRow = {
+  history_id: number;
+  student_id: number;
+  fellowship_id: number;
+  base_fellowship_id?: number;
+  has_correction?: boolean;
+  is_voided?: boolean;
+  voided_at?: string | null;
+  voided_by_advisor_id?: number | null;
 };
 
 // ── result types ──────────────────────────────────────────────────────────────

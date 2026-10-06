@@ -22,7 +22,7 @@ type Fellowship = Database["public"]["Tables"]["fellowship"]["Row"];
 type Application = Database["public"]["Tables"]["application"]["Row"] & {
   student: { student_id: number; full_name: string } | null;
 };
-type ScholarshipHistory = Database["public"]["Tables"]["scholarship_history"]["Row"] & {
+type ScholarshipHistory = Database["public"]["Views"]["effective_scholarship_history"]["Row"] & {
   student: { student_id: number; full_name: string } | null;
 };
 
@@ -60,15 +60,44 @@ async function getApplications(fellowshipId: number): Promise<Application[]> {
   }
 }
 
-async function getScholarshipHistory(fellowshipId: number): Promise<ScholarshipHistory[]> {
+/**
+ * Fellowship-detail Scholarship History reader.
+ *
+ * Reads the shared `effective_scholarship_history` view so the surface follows
+ * the corrected award program (an award whose program was corrected away from
+ * this fellowship no longer appears here, and one corrected to it does) and so
+ * voided awards are excluded. Student names are resolved with a scoped lookup
+ * because the view carries no PostgREST relationship to `student`.
+ */
+export async function getScholarshipHistory(fellowshipId: number): Promise<ScholarshipHistory[]> {
   const supabase = createServerClient();
   try {
     const { data, error } = await supabase
-      .from("scholarship_history")
-      .select("*, student(student_id, full_name)")
-      .eq("fellowship_id", fellowshipId);
+      .from("effective_scholarship_history")
+      .select("*")
+      .eq("fellowship_id", fellowshipId)
+      .eq("is_voided", false);
     if (error) return [];
-    return (data as ScholarshipHistory[]) || [];
+
+    const records = (data as Database["public"]["Views"]["effective_scholarship_history"]["Row"][]) || [];
+    const studentIds = [...new Set(records.map((record) => record.student_id))];
+    const nameById = new Map<number, string>();
+    if (studentIds.length > 0) {
+      const { data: students } = await supabase
+        .from("student")
+        .select("student_id, full_name")
+        .in("student_id", studentIds);
+      for (const student of students ?? []) {
+        nameById.set(student.student_id, student.full_name);
+      }
+    }
+
+    return records.map((record) => ({
+      ...record,
+      student: nameById.has(record.student_id)
+        ? { student_id: record.student_id, full_name: nameById.get(record.student_id)! }
+        : null,
+    }));
   } catch {
     return [];
   }

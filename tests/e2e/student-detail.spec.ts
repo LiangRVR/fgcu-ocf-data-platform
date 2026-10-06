@@ -12,13 +12,15 @@
  *     each application's derived advising-session count ("{n} sessions" in the
  *     applications table's Advising column);
  *   - confirm the advising history surfaces the immutable meeting record
- *     alongside its provenance while remaining read-only — no Edit/Delete or
- *     Add Correction affordance is exposed from the student detail surface,
- *     and the history filter offers All / General Advising / each application;
- *   - with synthetic amendments attached to the seeded advising meeting,
- *     verify the student detail view shows each correction's reason, details,
- *     creator, and timestamp under the unchanged original meeting, in
- *     chronological order, without exposing the Add Correction control;
+ *     alongside its provenance through ONE shared history implementation and
+ *     exposes the shared Add Correction affordance for the eligible
+ *     (non-archived) meeting while still offering no direct Edit/Delete meeting
+ *     control; the history filter offers All / General Advising / each
+ *     application;
+ *   - through the shared Add Correction dialog on the student detail surface,
+ *     verify required-field validation, that the appended correction shows its
+ *     reason, details, creator, and timestamp under the unchanged original
+ *     meeting, in chronological order, and that it survives a reload;
  *   - with a synthetic application-scoped meeting attached to the seeded
  *     student's application, verify the filter (All / General Advising /
  *     application) exposes only its expected records, that the application
@@ -239,24 +241,26 @@ test.describe("student detail workflow", () => {
       historyFilter.locator("option", { hasText: `${FELLOWSHIP_NAME} — ${APPLICATION_YEAR}` }),
     ).toHaveCount(1);
 
-    // The advising history remains a read-only record with its seeded context
-    // and notes intact after the advising lane became append-only.
-    const advisingHistory = main.locator("table").filter({ hasText: "E2E seeded advising session" });
-    const seededMeeting = advisingHistory.locator("tbody tr", { hasText: "E2E seeded advising session" });
+    // R5: Student Detail renders exactly ONE advising-history surface (the
+    // shared AdvisingHistory implementation). The legacy duplicate table markup
+    // is gone: the seeded meeting renders as a history article, never a table.
+    const historySurface = main.locator("section", { hasText: "Advising history" });
+    await expect(main.getByRole("heading", { name: "Advising history" })).toHaveCount(1);
+    await expect(main.locator("table", { hasText: "E2E seeded advising session" })).toHaveCount(0);
+
+    const seededMeeting = historySurface.locator("article", {
+      hasText: "E2E seeded advising session",
+    });
+    await expect(seededMeeting).toHaveCount(1);
     await expect(seededMeeting.getByText("General Advising", { exact: true })).toBeVisible();
     await expect(seededMeeting.getByText("E2E seeded advising session", { exact: true })).toBeVisible();
-    await expect(
-      seededMeeting.getByText(/^Recorded by /),
-    ).toBeVisible();
-    await expect(seededMeeting.getByText(/^Recorded (?!by)/)).toBeVisible();
-    // Corrections are an advising-history concern; the student detail surface
-    // stays read-only and never offers the Add Correction control.
-    await expect(seededMeeting.getByRole("button", { name: "Add Correction" })).toHaveCount(0);
-    await expect(main.getByRole("button", { name: "Add Correction" })).toHaveCount(0);
-    // R8: historical meetings expose no normal Edit/Delete controls here
-    // either (the profile's per-section Edit buttons are the only "Edit" on
-    // the page and are not meeting controls, so the meeting-oriented controls
-    // are asserted by their exact titles/roles).
+    await expect(seededMeeting.getByText(/^Recorded by .+ · /)).toBeVisible();
+    // R6: the shared Add Correction affordance is exposed beside the eligible
+    // (non-archived) meeting. There is still no direct Edit/Delete meeting
+    // control (the profile's per-section Edit buttons are the only "Edit" on
+    // the page and are not meeting controls, so meeting-oriented controls are
+    // asserted by their exact titles/roles).
+    await expect(seededMeeting.getByRole("button", { name: "Add Correction" })).toBeVisible();
     await expect(main.getByTitle("Edit meeting")).toHaveCount(0);
     await expect(main.getByTitle("Delete meeting")).toHaveCount(0);
     await expect(main.getByRole("button", { name: "Delete" })).toHaveCount(0);
@@ -288,54 +292,18 @@ test.describe("student detail workflow", () => {
     await expect(page.getByText("Program Detail", { exact: true })).toBeVisible();
   });
 
-  test("attached amendments render under the unchanged original meeting in chronological order with full provenance and no Add Correction control", async ({ page }) => {
+  test("the shared Add Correction dialog on Student Detail validates, appends chronological corrections under the unchanged original meeting, and refreshes after a reload", async ({ page }) => {
     const meetingId = await findSeededMeetingId();
-    const advisor = await activeAdvisorClient();
 
-    // Two synthetic corrections on the SAME seeded meeting, with the second
-    // inserted AFTER the first so the database-authored `created_at` strictly
-    // increases. Unique reason / details keep the assertions stable across
-    // re-runs even if a previous run left rows behind.
+    // Unique reason / details keep the assertions and cleanup stable across
+    // re-runs even if a previous run left unrelated rows behind (the advising
+    // lane deliberately retains its own corrections).
     const earlierReason = `E2E student-detail earlier ${Date.now()}`;
     const earlierDetails = `E2E student-detail earlier details ${Date.now()}`;
     const laterReason = `E2E student-detail later ${Date.now() + 1}`;
     const laterDetails = `E2E student-detail later details ${Date.now() + 1}`;
 
-    // IDs of amendments THIS spec inserted. Cleanup deletes only these IDs;
-    // it never sweeps every correction on the seeded meeting, so unrelated
-    // amendments from other lanes or prior runs survive untouched.
-    const createdAmendmentIds: number[] = [];
-
     try {
-      const { data: firstInsert, error: firstError } = await advisor
-        .from("advising_meeting_amendment")
-        .insert({
-          meeting_id: meetingId,
-          reason: earlierReason,
-          details: earlierDetails,
-        })
-        .select("amendment_id")
-        .single();
-      if (firstError) throw new Error(`insert earlier amendment: ${firstError.message}`);
-      createdAmendmentIds.push(firstInsert.amendment_id as number);
-
-      // The PostgreSQL trigger stamps `created_at = now()`; sleep long enough
-      // that the second insert's `created_at` is strictly later than the first.
-      await new Promise((resolve) => setTimeout(resolve, 1100));
-
-      const { data: secondInsert, error: secondError } = await advisor
-        .from("advising_meeting_amendment")
-        .insert({
-          meeting_id: meetingId,
-          reason: laterReason,
-          details: laterDetails,
-        })
-        .select("amendment_id")
-        .single();
-      if (secondError) throw new Error(`insert later amendment: ${secondError.message}`);
-      createdAmendmentIds.push(secondInsert.amendment_id as number);
-
-      // Open the student's detail page (the read-only advising history).
       await signInAsActive(page);
       await page.goto("/students");
       await page
@@ -348,74 +316,108 @@ test.describe("student detail workflow", () => {
         timeout: 15_000,
       });
 
-      const main = page.locator("main");
+      const historyPage = page.locator("main");
+      // R5: exactly ONE advising-history surface; the legacy duplicate table
+      // markup is gone (the meeting renders as a history article).
+      const historySurface = historyPage.locator("section", { hasText: "Advising history" });
+      await expect(historyPage.getByRole("heading", { name: "Advising history" })).toHaveCount(1);
+      await expect(
+        historyPage.locator("table", { hasText: "E2E seeded advising session" }),
+      ).toHaveCount(0);
 
-      // The original meeting row stays untouched: its seeded context
-      // (General Advising), notes marker, and provenance render verbatim
-      // beneath the meeting row's identifier.
-      const advisingSection = main.locator("table").filter({
+      // The original meeting article stays untouched and carries the shared
+      // Add Correction affordance (R6, eligible non-archived meeting).
+      const seededMeeting = historySurface.locator("article", {
         hasText: "E2E seeded advising session",
       });
-      const seededMeeting = advisingSection
-        .locator("tbody tr", { hasText: "E2E seeded advising session" })
-        .first();
+      await expect(seededMeeting).toHaveCount(1);
       await expect(seededMeeting.getByText("General Advising", { exact: true })).toBeVisible();
       await expect(
         seededMeeting.getByText("E2E seeded advising session", { exact: true }),
       ).toBeVisible();
       await expect(seededMeeting.getByText(/^Recorded by /)).toBeVisible();
+      await expect(seededMeeting.getByRole("button", { name: "Add Correction" })).toBeVisible();
 
-      // Each correction surfaces its reason, details, creator attribution, and
-      // database-authored timestamp. The amber `Corrections` panel is the
-      // exact panel the advising lane uses, attached to the unchanged meeting.
-      const earlierCorrection = advisingSection.locator("tbody tr", {
-        hasText: earlierReason,
-      });
-      const laterCorrection = advisingSection.locator("tbody tr", {
-        hasText: laterReason,
-      });
-      await expect(earlierCorrection).toBeVisible();
-      await expect(earlierCorrection).toContainText(earlierDetails);
-      await expect(earlierCorrection).toContainText("Added by");
-      await expect(laterCorrection).toBeVisible();
-      await expect(laterCorrection).toContainText(laterDetails);
-      await expect(laterCorrection).toContainText("Added by");
+      // Each correction is created through the SAME shared dialog the
+      // /advising surface uses: Reason + Details only, with required-field
+      // validation and a database-authored creator/timestamp.
+      const submitCorrection = async (reason: string, details: string): Promise<void> => {
+        await seededMeeting.getByRole("button", { name: "Add Correction" }).click();
+        const dialog = page.getByRole("dialog");
+        await expect(dialog).toBeVisible();
+        const reasonInput = dialog.locator('input[id^="correction-reason-"]');
+        const detailsInput = dialog.locator('textarea[id^="correction-details-"]');
+        await expect(reasonInput).toBeVisible();
+        await expect(detailsInput).toBeVisible();
+        // No editable meeting id / creator / timestamp inputs are exposed.
+        await expect(dialog.locator("input[name='meeting_id']")).toHaveCount(0);
+        await expect(dialog.locator("input[name='created_by_advisor_id']")).toHaveCount(0);
+        await expect(dialog.locator("input[name='created_at']")).toHaveCount(0);
+
+        // Submitting empty shows the required-field errors (no insert yet).
+        await dialog.getByRole("button", { name: "Add Correction" }).click();
+        await expect(dialog.getByText("Reason is required.")).toBeVisible();
+        await expect(dialog.getByText("Details are required.")).toBeVisible();
+
+        await reasonInput.fill(reason);
+        await detailsInput.fill(details);
+        await dialog.getByRole("button", { name: "Add Correction" }).click();
+        await expect(dialog).toBeHidden();
+      };
+
+      await submitCorrection(earlierReason, earlierDetails);
+      // Wait long enough that the database-authored `created_at` strictly
+      // advances for the second correction (PostgreSQL timestamptz resolution
+      // is microseconds).
+      await page.waitForTimeout(1100);
+      await submitCorrection(laterReason, laterDetails);
+
+      // Each correction surfaces its reason, details, and creator attribution
+      // under the unchanged original meeting.
+      await expect(seededMeeting.getByText(earlierReason)).toBeVisible();
+      await expect(seededMeeting.getByText(earlierDetails)).toBeVisible();
+      await expect(seededMeeting.getByText(laterReason)).toBeVisible();
+      await expect(seededMeeting.getByText(laterDetails)).toBeVisible();
+      await expect(seededMeeting.getByText("E2E seeded advising session", { exact: true })).toBeVisible();
 
       // Chronological order: the earlier correction's reason appears in the
-      // rendered table HTML BEFORE the later correction's reason. Comparing
-      // positions in the table HTML keeps this layout-independent.
-      const tableHtml = await advisingSection.first().innerHTML();
-      const earlierIndex = tableHtml.indexOf(earlierReason);
-      const laterIndex = tableHtml.indexOf(laterReason);
+      // history HTML BEFORE the later correction's reason. Comparing positions
+      // in the history HTML keeps this layout-independent.
+      const surfaceHtml = await historySurface.innerHTML();
+      const earlierIndex = surfaceHtml.indexOf(earlierReason);
+      const laterIndex = surfaceHtml.indexOf(laterReason);
       expect(earlierIndex).toBeGreaterThan(-1);
       expect(laterIndex).toBeGreaterThan(earlierIndex);
 
-      // The student detail surface stays read-only: no Add Correction
-      // affordance anywhere on the page, in either the meeting row or the
-      // attached corrections.
-      await expect(main.getByRole("button", { name: "Add Correction" })).toHaveCount(0);
-      await expect(seededMeeting.getByRole("button", { name: "Add Correction" })).toHaveCount(0);
-      await expect(earlierCorrection.getByRole("button", { name: "Add Correction" })).toHaveCount(0);
-      await expect(laterCorrection.getByRole("button", { name: "Add Correction" })).toHaveCount(0);
+      // Reload → R6: the appended corrections survive via the server loader and
+      // still render in order under the unchanged original meeting.
+      await page.reload();
+      const persistedSurface = page.locator("main section", { hasText: "Advising history" });
+      await expect(persistedSurface.getByText(earlierReason)).toBeVisible();
+      await expect(persistedSurface.getByText(laterReason)).toBeVisible();
+      await expect(
+        persistedSurface
+          .locator("article", { hasText: "E2E seeded advising session" })
+          .getByRole("button", { name: "Add Correction" }),
+      ).toBeVisible();
+      const persistedHtml = await persistedSurface.innerHTML();
+      expect(persistedHtml.indexOf(earlierReason)).toBeGreaterThan(-1);
+      expect(persistedHtml.indexOf(laterReason)).toBeGreaterThan(
+        persistedHtml.indexOf(earlierReason),
+      );
     } finally {
-      // Service-role cleanup. The amendment trigger raises on UPDATE/DELETE for
-      // the authenticated role, but service role bypasses RLS and there is no
-      // DELETE trigger. Scope the cleanup to the amendment_ids we just created
-      // so unrelated corrections on the seeded meeting (from other lanes or
-      // prior runs) are never touched — the seed baseline is preserved across
-      // every rerun of this spec.
-      await advisor.auth.signOut();
-      if (createdAmendmentIds.length > 0) {
-        const service = serviceClient();
-        const { error: deleteError } = await service
-          .from("advising_meeting_amendment")
-          .delete()
-          .in("amendment_id", createdAmendmentIds);
-        if (deleteError) {
-          throw new Error(
-            `amendment cleanup failed for ids [${createdAmendmentIds.join(", ")}]: ${deleteError.message}`,
-          );
-        }
+      // Service-role cleanup. The amendment trigger denies UPDATE for
+      // authenticated clients and there is no DELETE trigger, so service role
+      // removes exactly the two corrections this test created (matched by their
+      // unique reasons) and never touches unrelated rows.
+      const service = serviceClient();
+      const { error: deleteError } = await service
+        .from("advising_meeting_amendment")
+        .delete()
+        .eq("meeting_id", meetingId)
+        .in("reason", [earlierReason, laterReason]);
+      if (deleteError) {
+        throw new Error(`amendment cleanup failed: ${deleteError.message}`);
       }
     }
   });
@@ -531,20 +533,13 @@ test.describe("student detail workflow", () => {
         historySection.locator("article", { hasText: "E2E seeded advising session" }),
       ).toHaveCount(0);
 
-      // R8: the student-detail history stays immutable — no Edit/Delete and no
-      // Add Correction affordance anywhere on the advising surface.
-      await expect(historySection.getByRole("button")).toHaveCount(0);
+      // R6: the eligible meeting exposes the shared Add Correction control
+      // beside it, and the historical surface offers no direct Edit/Delete
+      // meeting control.
+      await expect(scopedArticle.getByRole("button", { name: "Add Correction" })).toBeVisible();
       await expect(main.getByTitle("Edit meeting")).toHaveCount(0);
       await expect(main.getByTitle("Delete meeting")).toHaveCount(0);
       await expect(main.getByRole("button", { name: "Delete" })).toHaveCount(0);
-
-      // R3/R6: the desktop advising table mirrors the scoped meeting with its
-      // application context and provenance.
-      const desktopTableRow = main
-        .locator("table", { hasText: scopedNote })
-        .locator("tbody tr", { hasText: scopedNote });
-      await expect(desktopTableRow).toContainText(appLabel);
-      await expect(desktopTableRow).toContainText("Recorded by");
     } finally {
       // Service-role cleanup of only this test's meeting so the seeded
       // baseline (and the reports spec's exact Advising Meetings total) is

@@ -82,6 +82,10 @@ function stageBadgeClass(stage: string): string {
       return "border-emerald-200 bg-emerald-100 text-emerald-800 font-semibold";
     case "Rejected":
       return "border-red-200 bg-red-100 text-red-700";
+    case "Did Not Submit":
+      return "border-orange-200 bg-orange-100 text-orange-800";
+    case "Withdrawn":
+      return "border-slate-300 bg-slate-100 text-slate-700";
     default:
       return "border-gray-200 bg-gray-100 text-gray-700";
   }
@@ -642,12 +646,8 @@ export function ApplicationsTable({
         </DialogContent>
       </Dialog>
 
-      {/* ── No destructive delete dialog ──────────────────────────
-          Applications are historical records. The destructive delete
-          control has been removed by design — this change introduces an
-          archive/outcome lifecycle is intentionally NOT in scope (see the
-          entity-lifecycle-archiving change intent). Edits remain the only
-          mutation path. */}
+      {/* Terminal outcomes are represented by explicit application stages;
+          applications remain available for historical reporting. */}
     </>
   );
 }

@@ -110,7 +110,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 ├── lib/                    # Server-side auth/session helpers, config, Supabase clients
 ├── types/                  # TypeScript types (auto-generated database + app-level)
 ├── supabase/
-│   ├── migrations/         # Forward-only migration chain (20 migrations)
+│   ├── migrations/         # Forward-only migration chain (22 migrations)
 │   ├── SCHEMA.md           # One-page schema reference
 │   └── README.md           # Supabase setup guide
 ├── docs/                   # Project documentation
@@ -129,20 +129,27 @@ Management page) and the reports surface, see the
   administration is the immutable Auth claim plus an active, pre-bound advisor
   identity; the mutable `advisor.role` display column is never authorization.
   Advisor accounts are provisioned through a server-only admin pre-binding path
-  (never email self-link). See [supabase/README.md](supabase/README.md).
+  (never email self-link); the first effective Admin is bootstrapped out of
+  band via the service role / Supabase Admin API — no public bootstrap
+  endpoint, no exposed secrets — after which normal protected provisioning
+  applies. See [supabase/README.md](supabase/README.md).
 - **Archive instead of delete** — students/fellowships archive
   (`student.archived_at` / `fellowship.archived_at`) and advisors
   deactivate/reactivate via the admin-only `lifecycle_transition` RPC;
   historical relationships are preserved, and core tables have an
   authenticated DELETE lockdown.
-- **Append-only advising history** — advising meetings are append-only;
-  corrections are recorded as `advising_meeting_amendment` rows, never as edits
-  or deletes.
+- **Append-only history** — advising meetings, Fellowship Thursday attendance,
+  and Scholarship History awards are append-only base records; corrections are
+  recorded as `advising_meeting_amendment`, `fellowship_thursday_amendment`,
+  and `scholarship_history_amendment` rows, never as edits or deletes.
+  Scholarship `Void` amendments keep the original award in the audit trail
+  while excluding it from operational counts.
 
-> **Architectural rule:** Advising meetings are historical append-only records.
-> Existing meetings must not be directly edited or deleted through normal
-> application workflows. Corrections are represented as separate amendment
-> records.
+> **Architectural rule:** Historical records (advising meetings, Fellowship
+> Thursday attendance, scholarship awards) are append-only. Existing base rows
+> must not be directly edited or deleted through normal application workflows.
+> Corrections are represented as separate amendment records (and `Void` for
+> wrongly recorded awards), never as edits or deletes.
 
 See [docs/schema-reference.md](docs/schema-reference.md) and
 [supabase/SCHEMA.md](supabase/SCHEMA.md) for the full model.

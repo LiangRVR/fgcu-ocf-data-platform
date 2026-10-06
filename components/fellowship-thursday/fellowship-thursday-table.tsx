@@ -23,32 +23,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Search, Pencil, Trash2, UserPlus, CalendarDays, MoreHorizontal, SlidersHorizontal } from "lucide-react";
+import { Search, UserPlus, CalendarDays, SlidersHorizontal, History } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
 import type { Database } from "@/types/database";
 
-type FellowshipThursday =
-  Database["public"]["Tables"]["fellowship_thursday"]["Row"] & {
+type FellowshipThursday = Database["public"]["Tables"]["fellowship_thursday"]["Row"] & Partial<Database["public"]["Views"]["effective_fellowship_thursday"]["Row"]> & {
     student: { full_name: string } | null;
   };
+type Amendment = Database["public"]["Tables"]["fellowship_thursday_amendment"]["Row"] & { created_by: { advisor_name: string } | null };
 
 type StudentRow = Pick<
   Database["public"]["Tables"]["student"]["Row"],
@@ -79,20 +63,41 @@ export function FellowshipThursdayTable({
   autoOpenAdd,
 }: FellowshipThursdayTableProps) {
   const [records, setRecords] = useState<FellowshipThursday[]>(initialRecords);
+  const [amendments, setAmendments] = useState<Record<number, Amendment[]>>({});
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [attendedFilter, setAttendedFilter] = useState<string>("all");
   const [sourceFilter, setSourceFilter] = useState<string>("all");
 
   const [addOpen, setAddOpen] = useState(false);
-  const [editOpen, setEditOpen] = useState(false);
-  const [deleteId, setDeleteId] = useState<number | null>(null);
-  const [editingRecord, setEditingRecord] = useState<FellowshipThursday | null>(null);
+  const [correctionRecord, setCorrectionRecord] = useState<FellowshipThursday | null>(null);
+  const [reason, setReason] = useState("");
+  const [details, setDetails] = useState("");
+  const [correctAttendance, setCorrectAttendance] = useState(false);
+  const [correctedAttended, setCorrectedAttended] = useState(false);
+  const [correctSource, setCorrectSource] = useState(false);
+  const [correctedSource, setCorrectedSource] = useState<SourceInfo | "">("");
 
   const [form, setForm] = useState(EMPTY_FORM);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+
+  useEffect(() => {
+    if (!records.length) return;
+    void supabaseBrowserClient.from("effective_fellowship_thursday").select("*").then(({ data, error }) => {
+      if (error) { console.error(error); toast.error("Failed to refresh attendance records."); return; }
+      if (data) setRecords(data.map((row) => ({ ...row, student: records.find((r) => r.attendance_id === row.attendance_id)?.student ?? null })) as FellowshipThursday[]);
+    });
+    void supabaseBrowserClient.from("fellowship_thursday_amendment").select("*, created_by:advisor!fellowship_thursday_amendment_created_by_advisor_id_fkey(advisor_name)").in("attendance_id", records.map((r) => r.attendance_id)).order("created_at", { ascending: true }).then(({ data, error }) => {
+      if (error) { console.error(error); toast.error("Failed to load correction history."); return; }
+      const grouped: Record<number, Amendment[]> = {};
+      for (const item of data ?? []) { const a = item as unknown as Amendment; (grouped[a.attendance_id] ??= []).push(a); }
+      setAmendments(grouped);
+    });
+  // Refresh effective values and audit trail on mount.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Pre-fill and auto-open add dialog when arriving from a contextual link
   useEffect(() => {
@@ -171,78 +176,27 @@ export function FellowshipThursdayTable({
     }
   };
 
-  const openEdit = (record: FellowshipThursday) => {
-    setEditingRecord(record);
-    setForm({
-      student_id: String(record.student_id),
-      attended: record.attended,
-      source_info: (record.source_info as SourceInfo) ?? "",
-    });
-    setFormErrors({});
-    setEditOpen(true);
-  };
-
-  const handleEditSubmit = async () => {
-    if (!editingRecord) return;
-    const errors = validateForm(form);
-    setFormErrors(errors);
-    if (Object.keys(errors).length > 0) return;
-
+  const submitCorrection = async () => {
+    if (!correctionRecord || !reason.trim() || (!correctAttendance && !correctSource)) return;
     setIsLoading(true);
     try {
-      const { data, error } = await supabaseBrowserClient
-        .from("fellowship_thursday")
-        .update({
-          student_id: Number(form.student_id),
-          attended: form.attended,
-          source_info: form.source_info || null,
-        })
-        .eq("attendance_id", editingRecord.attendance_id)
-        .select(`*, student(full_name)`)
-        .single();
-
+      const { data: userData, error: userError } = await supabaseBrowserClient.auth.getUser();
+      if (userError || !userData.user) throw userError ?? new Error("Sign in required");
+      const { data: advisor, error: advisorError } = await supabaseBrowserClient.from("advisor").select("advisor_id").eq("auth_user_id", userData.user.id).single();
+      if (advisorError) throw advisorError;
+      const { error } = await supabaseBrowserClient.from("fellowship_thursday_amendment").insert({ attendance_id: correctionRecord.attendance_id, created_by_advisor_id: advisor.advisor_id, reason: reason.trim(), details: details.trim() || null, corrected_attended: correctAttendance ? correctedAttended : null, corrects_source_info: correctSource, corrected_source_info: correctSource ? correctedSource || null : null });
       if (error) throw error;
-
-      setRecords((prev) =>
-        prev.map((r) =>
-          r.attendance_id === editingRecord.attendance_id
-            ? (data as FellowshipThursday)
-            : r
-        )
-      );
-      toast.success("Attendance record updated.");
-      setEditOpen(false);
-      setEditingRecord(null);
-      setForm(EMPTY_FORM);
-      setFormErrors({});
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to update attendance record.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleDeleteConfirm = async () => {
-    if (!deleteId) return;
-    setIsLoading(true);
-    try {
-      const { error } = await supabaseBrowserClient
-        .from("fellowship_thursday")
-        .delete()
-        .eq("attendance_id", deleteId);
-
-      if (error) throw error;
-
-      setRecords((prev) => prev.filter((r) => r.attendance_id !== deleteId));
-      toast.success("Attendance record deleted.");
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to delete attendance record.");
-    } finally {
-      setIsLoading(false);
-      setDeleteId(null);
-    }
+      const [effective, history] = await Promise.all([
+        supabaseBrowserClient.from("effective_fellowship_thursday").select("*").eq("attendance_id", correctionRecord.attendance_id).single(),
+        supabaseBrowserClient.from("fellowship_thursday_amendment").select("*, created_by:advisor!fellowship_thursday_amendment_created_by_advisor_id_fkey(advisor_name)").eq("attendance_id", correctionRecord.attendance_id).order("created_at", { ascending: true }),
+      ]);
+      if (effective.error) throw effective.error;
+      if (history.error) throw history.error;
+      setRecords((prev) => prev.map((r) => r.attendance_id === correctionRecord.attendance_id ? { ...effective.data, student: r.student } : r));
+      setAmendments((prev) => ({ ...prev, [correctionRecord.attendance_id]: (history.data ?? []) as unknown as Amendment[] }));
+      toast.success("Correction added to the audit trail."); setCorrectionRecord(null); setReason(""); setDetails(""); setCorrectAttendance(false); setCorrectSource(false); setCorrectedSource("");
+    } catch (err) { console.error(err); toast.error("Failed to add correction."); }
+    finally { setIsLoading(false); }
   };
 
   const resetAndCloseAdd = () => {
@@ -251,12 +205,7 @@ export function FellowshipThursdayTable({
     setAddOpen(false);
   };
 
-  const resetAndCloseEdit = () => {
-    setForm(EMPTY_FORM);
-    setFormErrors({});
-    setEditingRecord(null);
-    setEditOpen(false);
-  };
+  const resetCorrection = () => { setCorrectionRecord(null); setReason(""); setDetails(""); setCorrectAttendance(false); setCorrectSource(false); setCorrectedSource(""); };
 
   const sourceLabel: Record<string, string> = { OCF: "OCF", HC: "Honors College", MM: "Mass Media" };
 
@@ -373,27 +322,8 @@ export function FellowshipThursdayTable({
                           )}
                         </div>
                       </div>
-                      <DropdownMenu modal={false}>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0 text-slate-500">
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => openEdit(record)}>
-                            <Pencil className="mr-2 h-4 w-4" />
-                            Edit
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            className="text-red-600 focus:text-red-600"
-                            onClick={() => setDeleteId(record.attendance_id)}
-                          >
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
                     </div>
+                    <RecordAudit record={record} amendments={amendments[record.attendance_id] ?? []} onCorrect={() => setCorrectionRecord(record)} sourceLabel={sourceLabel} />
                   </div>
                 ))}
               </div>
@@ -412,7 +342,7 @@ export function FellowshipThursdayTable({
                       Source
                     </th>
                     <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">
-                      Actions
+                      Correction history
                     </th>
                   </tr>
                 </thead>
@@ -449,27 +379,8 @@ export function FellowshipThursdayTable({
                           <span className="text-xs text-slate-300">—</span>
                         )}
                       </td>
-                      <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
-                        <div className="flex items-center justify-end gap-2">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-slate-600 hover:text-slate-900"
-                            title="Edit record"
-                            onClick={() => openEdit(record)}
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-slate-600 hover:text-red-600"
-                            title="Delete record"
-                            onClick={() => setDeleteId(record.attendance_id)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
+                      <td className="min-w-64 px-3 py-3 sm:px-6 sm:py-4">
+                        <RecordAudit record={record} amendments={amendments[record.attendance_id] ?? []} onCorrect={() => setCorrectionRecord(record)} sourceLabel={sourceLabel} />
                       </td>
                     </tr>
                   ))}
@@ -521,64 +432,41 @@ export function FellowshipThursdayTable({
         </DialogContent>
       </Dialog>
 
-      {/* ── Edit Dialog ────────────────────────── */}
-      <Dialog open={editOpen} onOpenChange={(o) => !o && resetAndCloseEdit()}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Edit Attendance Record</DialogTitle>
-            <DialogDescription>
-              Update this Fellowship Thursday attendance record.
-            </DialogDescription>
-          </DialogHeader>
-
-          <ThursdayForm
-            form={form}
-            setForm={setForm}
-            formErrors={formErrors}
-            students={students}
-          />
-
-          <DialogFooter>
-            <Button variant="outline" onClick={resetAndCloseEdit} disabled={isLoading}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleEditSubmit}
-              disabled={isLoading}
-              className="bg-[#006747] hover:bg-[#00563b]"
-            >
-              {isLoading ? "Saving…" : "Save Changes"}
-            </Button>
-          </DialogFooter>
+      <Dialog open={correctionRecord !== null} onOpenChange={(open) => !open && resetCorrection()}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader><DialogTitle>Add attendance correction</DialogTitle><DialogDescription>This appends an auditable correction; the original attendance record remains unchanged.</DialogDescription></DialogHeader>
+          <div className="grid gap-4 py-2">
+            <label className="grid gap-1.5 text-sm font-medium" htmlFor="ft-correction-reason">Reason <span className="text-red-600">*</span><Input id="ft-correction-reason" value={reason} onChange={(e) => setReason(e.target.value)} required aria-required="true" /></label>
+            <label className="grid gap-1.5 text-sm font-medium" htmlFor="ft-correction-details">Additional details <span className="font-normal text-slate-400">(optional)</span><Input id="ft-correction-details" value={details} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDetails(e.target.value)} /></label>
+            <label className="flex min-h-11 items-center gap-3 rounded-md border px-3 py-2 text-sm"><input type="checkbox" checked={correctAttendance} onChange={(e) => setCorrectAttendance(e.target.checked)} className="h-4 w-4 accent-[#006747]" />Correct attendance value</label>
+            {correctAttendance && <Select value={String(correctedAttended)} onValueChange={(v) => setCorrectedAttended(v === "true")}><SelectTrigger aria-label="Corrected attendance"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="true">Attended</SelectItem><SelectItem value="false">Not attended</SelectItem></SelectContent></Select>}
+            <label className="flex min-h-11 items-center gap-3 rounded-md border px-3 py-2 text-sm"><input type="checkbox" checked={correctSource} onChange={(e) => setCorrectSource(e.target.checked)} className="h-4 w-4 accent-[#006747]" />Correct source value</label>
+            {correctSource && <Select value={correctedSource || "__cleared__"} onValueChange={(v) => setCorrectedSource(v === "__cleared__" ? "" : v as SourceInfo)}><SelectTrigger aria-label="Corrected source"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__cleared__">Clear source (NULL)</SelectItem>{SOURCE_OPTIONS.map((s) => <SelectItem key={s} value={s}>{sourceLabel[s]}</SelectItem>)}</SelectContent></Select>}
+            {!correctAttendance && !correctSource && <p role="alert" className="text-xs text-red-600">Choose at least one value to correct.</p>}
+          </div>
+          <DialogFooter><Button variant="outline" onClick={resetCorrection} disabled={isLoading}>Cancel</Button><Button onClick={submitCorrection} disabled={isLoading || !reason.trim() || (!correctAttendance && !correctSource)} className="bg-[#006747] hover:bg-[#00563b]">{isLoading ? "Saving…" : "Add correction"}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* ── Delete Confirmation ────────────────── */}
-      <AlertDialog open={deleteId !== null} onOpenChange={(o) => !o && setDeleteId(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete this record?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This action cannot be undone. The attendance record will be permanently removed.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isLoading}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDeleteConfirm}
-              disabled={isLoading}
-              className="bg-red-600 hover:bg-red-700"
-            >
-              {isLoading ? "Deleting…" : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </>
   );
 }
 
 // ── Shared Form Component ──────────────────────────────────────────────────
+
+function RecordAudit({ record, amendments, onCorrect, sourceLabel }: { record: FellowshipThursday; amendments: Amendment[]; onCorrect: () => void; sourceLabel: Record<string, string> }) {
+  return <div className="space-y-2 text-xs">
+    <div className="text-slate-500">Original: {(record.base_attended ?? record.attended) ? "Attended" : "Not attended"} · {(record.base_source_info ?? record.source_info) ? sourceLabel[(record.base_source_info ?? record.source_info)!] ?? (record.base_source_info ?? record.source_info) : "No source"}</div>
+    <div className="font-medium text-slate-700">Current: {record.attended ? "Attended" : "Not attended"} · {record.source_info ? sourceLabel[record.source_info] ?? record.source_info : "No source"}</div>
+    {amendments.map((a) => <div key={a.amendment_id} className="border-l-2 border-[#006747]/30 pl-2 text-slate-500">
+      <div className="font-medium text-slate-700"><History className="mr-1 inline h-3 w-3" />{a.reason}</div>
+      {a.corrected_attended !== null && <div>Attendance → {a.corrected_attended ? "Attended" : "Not attended"}</div>}
+      {a.corrects_source_info && <div>Source → {a.corrected_source_info ? sourceLabel[a.corrected_source_info] ?? a.corrected_source_info : "Cleared (NULL)"}</div>}
+      {a.details && <div>{a.details}</div>}
+      <div>{new Date(a.created_at).toLocaleString()}{a.created_by?.advisor_name ? ` · ${a.created_by.advisor_name}` : ""}</div>
+    </div>)}
+    <Button variant="outline" size="sm" className="h-8" onClick={onCorrect}>Add correction</Button>
+  </div>;
+}
 
 interface ThursdayFormProps {
   form: typeof EMPTY_FORM;

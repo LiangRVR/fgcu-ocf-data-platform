@@ -144,15 +144,30 @@ describe("computeReportMetrics", () => {
 
     it("appends stages not in the pipeline after known ones, in first-seen order", () => {
       const r = compute([
-        app({ student_id: 1, fellowship_id: 10, stage_of_application: "Withdrawn" }),
+        app({ student_id: 1, fellowship_id: 10, stage_of_application: "Deferred" }),
         app({ student_id: 2, fellowship_id: 10, stage_of_application: "Submitted" }),
-        app({ student_id: 3, fellowship_id: 11, stage_of_application: "Deferred" }),
-        app({ student_id: 4, fellowship_id: 11, stage_of_application: "Withdrawn" }),
+        app({ student_id: 3, fellowship_id: 11, stage_of_application: "Provisional" }),
+        app({ student_id: 4, fellowship_id: 11, stage_of_application: "Deferred" }),
       ]);
       expect(r.applicationsByStage).toEqual([
         { stage: "Submitted", count: 1 },
-        { stage: "Withdrawn", count: 2 },
-        { stage: "Deferred", count: 1 },
+        { stage: "Deferred", count: 2 },
+        { stage: "Provisional", count: 1 },
+      ]);
+    });
+
+    it("counts the Did Not Submit and Withdrawn terminal stages in pipeline order", () => {
+      const r = compute([
+        app({ student_id: 1, fellowship_id: 10, stage_of_application: "Awarded" }),
+        app({ student_id: 2, fellowship_id: 10, stage_of_application: "Withdrawn" }),
+        app({ student_id: 3, fellowship_id: 11, stage_of_application: "Did Not Submit" }),
+        app({ student_id: 4, fellowship_id: 11, stage_of_application: "Rejected" }),
+      ]);
+      expect(r.applicationsByStage).toEqual([
+        { stage: "Awarded", count: 1 },
+        { stage: "Did Not Submit", count: 1 },
+        { stage: "Rejected", count: 1 },
+        { stage: "Withdrawn", count: 1 },
       ]);
     });
 
@@ -730,6 +745,37 @@ describe("computeReportMetrics", () => {
       expect(r.ftThenApplied).toEqual([]);
       expect(r.ftNotYetApplied).toEqual([{ student_id: 1, full_name: "Known Student", major: null, class_standing: null }]);
       expect(r.totals.ftAttendees).toBe(2); // count includes unknown student 99
+    });
+
+    it("counts each effective attendance row exactly once even when amended (R2)", () => {
+      // The effective_fellowship_thursday view resolves one row per base
+      // attendance with the corrected values and has_amendments=true; the
+      // aggregator must never multiply attendance by the number of
+      // correction rows.
+      const r = compute(
+        [],
+        [],
+        [
+          student({ student_id: 1, full_name: "Corrected Out" }),
+          student({ student_id: 2, full_name: "Clean Attendee" }),
+        ],
+        [
+          {
+            student_id: 1,
+            attended: false,
+            base_attended: true,
+            source_info: null,
+            base_source_info: "OCF",
+            has_amendments: true,
+          },
+          ft({ student_id: 2, attended: true, has_amendments: false }),
+        ],
+      );
+      // Student 1's amendment corrected attended to false: excluded from the
+      // funnel (the single effective row wins; no double counting).
+      expect(r.ftThenApplied).toEqual([]);
+      expect(r.ftNotYetApplied.map((s) => s.full_name)).toEqual(["Clean Attendee"]);
+      expect(r.totals.ftAttendees).toBe(1);
     });
   });
 

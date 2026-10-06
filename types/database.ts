@@ -308,6 +308,57 @@ export type Database = {
           },
         ]
       }
+      fellowship_thursday_amendment: {
+        Row: {
+          amendment_id: number
+          attendance_id: number
+          corrects_source_info: boolean
+          corrected_attended: boolean | null
+          corrected_source_info: string | null
+          created_at: string
+          created_by_advisor_id: number
+          details: string | null
+          reason: string
+        }
+        Insert: {
+          amendment_id?: number
+          attendance_id: number
+          corrects_source_info?: boolean
+          corrected_attended?: boolean | null
+          corrected_source_info?: string | null
+          created_at?: string
+          created_by_advisor_id?: number
+          details?: string | null
+          reason: string
+        }
+        Update: {
+          amendment_id?: number
+          attendance_id?: number
+          corrects_source_info?: boolean
+          corrected_attended?: boolean | null
+          corrected_source_info?: string | null
+          created_at?: string
+          created_by_advisor_id?: number
+          details?: string | null
+          reason?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "fellowship_thursday_amendment_attendance_id_fkey"
+            columns: ["attendance_id"]
+            isOneToOne: false
+            referencedRelation: "fellowship_thursday"
+            referencedColumns: ["attendance_id"]
+          },
+          {
+            foreignKeyName: "fellowship_thursday_amendment_created_by_advisor_id_fkey"
+            columns: ["created_by_advisor_id"]
+            isOneToOne: false
+            referencedRelation: "advisor"
+            referencedColumns: ["advisor_id"]
+          },
+        ]
+      }
       scholarship_history: {
         Row: {
           fellowship_id: number
@@ -338,6 +389,61 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "student"
             referencedColumns: ["student_id"]
+          },
+        ]
+      }
+      scholarship_history_amendment: {
+        Row: {
+          amendment_id: number
+          amendment_type: string
+          corrected_fellowship_id: number | null
+          created_at: string
+          created_by_advisor_id: number
+          details: string | null
+          history_id: number
+          reason: string
+        }
+        Insert: {
+          amendment_id?: number
+          amendment_type: string
+          corrected_fellowship_id?: number | null
+          created_at?: string
+          created_by_advisor_id?: number
+          details?: string | null
+          history_id: number
+          reason: string
+        }
+        Update: {
+          amendment_id?: number
+          amendment_type?: string
+          corrected_fellowship_id?: number | null
+          created_at?: string
+          created_by_advisor_id?: number
+          details?: string | null
+          history_id?: number
+          reason?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scholarship_history_amendment_corrected_fellowship_id_fkey"
+            columns: ["corrected_fellowship_id"]
+            isOneToOne: false
+            referencedRelation: "fellowship"
+            referencedColumns: ["fellowship_id"]
+          },
+          {
+            foreignKeyName: "scholarship_history_amendment_created_by_advisor_id_fkey"
+            columns: ["created_by_advisor_id"]
+            isOneToOne: false
+            referencedRelation: "advisor"
+            referencedColumns: ["advisor_id"]
+          },
+          {
+            foreignKeyName: "scholarship_history_amendment_history_id_fkey"
+            columns: ["history_id"]
+            isOneToOne: false
+            referencedRelation: "scholarship_history"
+            referencedColumns: ["history_id"]
           },
         ]
       }
@@ -403,7 +509,48 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      effective_fellowship_thursday: {
+        Row: {
+          attendance_id: number
+          attended: boolean
+          base_attended: boolean
+          base_source_info: string | null
+          has_amendments: boolean
+          source_info: string | null
+          student_id: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "never"
+            columns: []
+            isOneToOne: false
+            referencedRelation: "fellowship_thursday"
+            referencedColumns: ["attendance_id"]
+          },
+        ]
+      }
+      effective_scholarship_history: {
+        Row: {
+          base_fellowship_id: number
+          fellowship_id: number
+          has_correction: boolean
+          history_id: number
+          is_voided: boolean
+          student_id: number
+          void_amendment_id: number | null
+          voided_at: string | null
+          voided_by_advisor_id: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "never"
+            columns: []
+            isOneToOne: false
+            referencedRelation: "scholarship_history"
+            referencedColumns: ["history_id"]
+          },
+        ]
+      }
     }
     Functions: {
       acquire_advisor_role_lock: {

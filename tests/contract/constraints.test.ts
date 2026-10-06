@@ -9,13 +9,17 @@
  * used strictly for local fixture creation and constraint isolation.
  *
  * Also documents the design fact that the denormalized
- * `is_semi_finalist`/`is_finalist` ↔ `stage_of_application` invariant is
- * enforced by the forward-only local CHECK constraint applied by the contract
- * lane as TEST-ONLY SQL (`scripts/test-support/invariant-application-stage-flag.sql`)
- * AFTER the production-equivalent migration chain (mirroring
- * lib/applications/pipeline.ts) — a CHECK, not a trigger. The file
- * deliberately lives OUTSIDE `supabase/migrations/`: it is never part of a
- * deployable migration path.
+ * `is_semi_finalist`/`is_finalist` ↔ `stage_of_application` invariant is now
+ * enforced by the PRODUCTION migration-check constraint
+ * `application_stage_flag_consistency_check` (migration 20261008000001, which
+ * also widens `application_stage_check` to the nine named stages and bounds
+ * nullable `application_year` to 2000–2100). The isolated contract lane still
+ * applies the TEST-ONLY mirror
+ * (`application_stage_flag_invariant_check`) AFTER the migration chain; that
+ * file lives outside `supabase/migrations/` and never reaches production. It
+ * mirrors the production nine-stage vocabulary exactly (including the two
+ * terminal stages `Did Not Submit` and `Withdrawn`), so the insert matrix below
+ * covers all nine stages. The invariant remains a CHECK, never a trigger.
  *
  * FK delete behavior is asserted FROM THE LOCAL SCHEMA (all local FKs are the
  * Postgres default NO ACTION): deleting a parent with children fails with a
@@ -340,7 +344,17 @@ describe("advisor.role display-vocabulary CHECK (migration 20261001000001)", () 
       .select("advisor_id");
     expect(denied ?? [], "an invalid role UPDATE must not return a row").toHaveLength(0);
     expect(invalidError, "lowercase role UPDATE must be rejected").not.toBeNull();
-    expect(invalidError?.code, "lowercase role UPDATE rejection code").toBe("23514"); // check_violation
+
+    // Pin the rejection to the display-vocabulary CHECK itself through the
+    // direct (trusted postgres) session. This asserts the SQLSTATE at the
+    // database boundary and is independent of the PostgREST/Kong gateway
+    // error-body shape (a transient gateway error can surface as a non-null
+    // error object whose `code` is undefined). The API assertion above already
+    // proves the trusted service-role UPDATE path is rejected without writing a
+    // row; this proves the rejection is the 23514 vocabulary violation.
+    await expect(
+      pool.query("UPDATE public.advisor SET role = $1 WHERE advisor_id = $2", ["admin", advisor_id])
+    ).rejects.toMatchObject({ code: "23514" }); // check_violation
 
     const { data: row } = await service
       .from("advisor")
@@ -374,32 +388,48 @@ describe("NOT NULL enforcement", () => {
   });
 });
 
-describe("application stage/flag invariant (test-only CHECK, hardening Work 2)", () => {
+describe("application stage/flag invariant + year bounds (production CHECKs, migration 20261008000001)", () => {
   // The denormalized is_semi_finalist/is_finalist flags must be exactly
-  // consistent with stage_of_application. The contract lane applies the
-  // TEST-ONLY file scripts/test-support/invariant-application-stage-flag.sql
-  // AFTER the production-equivalent migration chain; it enforces this with a
-  // CHECK constraint that mirrors lib/applications/pipeline.ts
+  // consistent with stage_of_application, and application_year must be NULL or
+  // 2000–2100. The PRODUCTION migration (20261008000001) now enforces all of
+  // this with CHECK constraints that mirror lib/applications/pipeline.ts
   // (deriveFlags/validateConsistency). Enforcement is a CHECK, not a trigger.
-  it("enforces the invariant with a CHECK constraint (not a trigger)", async () => {
+  it("enforces the invariant and year bounds with production CHECK constraints (not a trigger)", async () => {
     const rows = await pool.query(
-      `SELECT conname
-         FROM pg_constraint
-        WHERE connamespace = 'public'::regnamespace
-          AND conrelid = 'public.application'::regclass
-          AND contype = 'c'`
+      `SELECT c.conname, pg_get_constraintdef(c.oid) AS definition
+         FROM pg_constraint AS c
+         JOIN pg_class AS t ON t.oid = c.conrelid
+         JOIN pg_namespace AS n ON n.oid = t.relnamespace
+        WHERE n.nspname = 'public'
+          AND t.relname = 'application'
+          AND c.contype = 'c'`
     );
-    const names = rows.rows.map((row) => row.conname as string);
-    expect(names, "application CHECK constraints").toContain(
-      "application_stage_flag_invariant_check"
-    );
+    const byName = new Map(rows.rows.map((r) => [String(r.conname), String(r.definition)]));
+
+    // The nine-stage vocabulary CHECK accepts the two new terminal stages.
+    const stageDef = byName.get("application_stage_check");
+    expect(stageDef, "application_stage_check definition").toBeDefined();
+    for (const named of ["Started", "Submitted", "Under Review", "Did Not Submit", "Semi-Finalist", "Finalist", "Awarded", "Rejected", "Withdrawn"]) {
+      expect(stageDef, `application_stage_check includes ${named}`).toContain(`'${named}'`);
+    }
+
+    // The flag-consistency invariant is a real PRODUCTION constraint.
+    const flagDef = byName.get("application_stage_flag_consistency_check");
+    expect(flagDef, "application_stage_flag_consistency_check").toBeDefined();
+    expect(flagDef, "flag-consistency CHECK covers the terminal stages").toContain("'Did Not Submit'");
+    expect(flagDef, "flag-consistency CHECK covers Withdrawn").toContain("'Withdrawn'");
+
+    // application_year is nullable but bounded 2000–2100.
+    const yearDef = byName.get("application_year_range_check");
+    expect(yearDef, "application_year_range_check").toBeDefined();
+    expect(String(yearDef), "year bound lower").toContain("2000");
+    expect(String(yearDef), "year bound upper").toContain("2100");
 
     // Pins that enforcement is by CHECK, not by a user trigger. The ONLY
     // non-internal user trigger on `application` is the lifecycle archive-
     // parent guard added by migration 20260930000007
     // (`trg_application_archive_parents` / `guard_application_archive_parents`);
-    // no trigger implements the stage/flag invariant (before that migration
-    // the count was zero, and the guard is not an invariant enforcer).
+    // no trigger implements the stage/flag invariant or the year bound.
     const triggers = await pool.query(
       `SELECT t.tgname, f.proname
          FROM pg_trigger t
@@ -417,20 +447,72 @@ describe("application stage/flag invariant (test-only CHECK, hardening Work 2)",
     expect(String(triggers.rows[0].proname)).toBe("guard_application_archive_parents");
   });
 
-  // Exactly the seven stage/flag combinations produced by deriveFlags.
+  it("rejects an out-of-range application_year and accepts NULL for legacy rows", async () => {
+    const ids = await insertStudentAndFellowship();
+    const { data: reject, error: rejectError } = await service.from("application").insert({
+      student_id: ids.studentId,
+      fellowship_id: ids.fellowshipId,
+      stage_of_application: "Started",
+      application_year: 1999,
+    });
+    expect(reject, "1999 must not insert").toBeNull();
+    expect(rejectError, "1999 must be a CHECK violation").not.toBeNull();
+    expect(rejectError?.code, "1999 rejection code").toBe("23514");
+
+    const { data: rejectHigh, error: rejectHighError } = await service.from("application").insert({
+      student_id: ids.studentId,
+      fellowship_id: ids.fellowshipId,
+      stage_of_application: "Started",
+      application_year: 2101,
+    });
+    expect(rejectHigh, "2101 must not insert").toBeNull();
+    expect(rejectHighError, "2101 must be a CHECK violation").not.toBeNull();
+    expect(rejectHighError?.code, "2101 rejection code").toBe("23514");
+
+    // Legacy/unknown cycles stay truthful: NULL year and boundary years insert.
+    for (const applicationYear of [null, 2000, 2100]) {
+      const { data, error } = await service
+        .from("application")
+        .insert({
+          student_id: ids.studentId,
+          fellowship_id: ids.fellowshipId,
+          stage_of_application: "Started",
+          application_year: applicationYear,
+        })
+        .select("application_id")
+        .single();
+      expect(error, `application_year=${String(applicationYear)} INSERT`).toBeNull();
+      expect(data, `application_year=${String(applicationYear)} insert row`).not.toBeNull();
+    }
+  });
+
+  // Exactly the nine stage/flag combinations produced by deriveFlags.
   const validCases: Array<{ stage: string; semi: boolean; final: boolean }> = [
     { stage: "Started", semi: false, final: false },
     { stage: "Submitted", semi: false, final: false },
     { stage: "Under Review", semi: false, final: false },
+    { stage: "Did Not Submit", semi: false, final: false },
     { stage: "Rejected", semi: false, final: false },
+    { stage: "Withdrawn", semi: false, final: false },
     { stage: "Semi-Finalist", semi: true, final: false },
     { stage: "Finalist", semi: true, final: true },
     { stage: "Awarded", semi: true, final: true },
   ];
 
-  // Every other combination of the seven stages × two flags is invalid.
+  // Every other combination of the nine stages × two flags is invalid.
+  const allStages = [
+    "Started",
+    "Submitted",
+    "Under Review",
+    "Did Not Submit",
+    "Semi-Finalist",
+    "Finalist",
+    "Awarded",
+    "Rejected",
+    "Withdrawn",
+  ];
   const invalidCases: Array<{ stage: string; semi: boolean; final: boolean }> = [];
-  for (const stage of ["Started", "Submitted", "Under Review", "Semi-Finalist", "Finalist", "Awarded", "Rejected"]) {
+  for (const stage of allStages) {
     for (const semi of [false, true]) {
       for (const final of [false, true]) {
         if (!validCases.some((c) => c.stage === stage && c.semi === semi && c.final === final)) {
@@ -439,7 +521,7 @@ describe("application stage/flag invariant (test-only CHECK, hardening Work 2)",
       }
     }
   }
-  expect(invalidCases.length).toBe(28 - validCases.length);
+  expect(invalidCases.length).toBe(allStages.length * 4 - validCases.length);
 
   it.each(validCases)(
     "accepts stage $stage with is_semi_finalist=$semi, is_finalist=$final",

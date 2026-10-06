@@ -120,6 +120,15 @@ test.describe("mobile smoke", () => {
         .locator("article", { hasText: "E2E seeded advising session" }),
     ).toBeVisible();
 
+    // R6: the shared Add Correction affordance stays reachable at this viewport.
+    await expect(
+      page
+        .locator("main")
+        .locator("section", { hasText: "Advising history" })
+        .getByRole("button", { name: "Add Correction" })
+        .first(),
+    ).toBeVisible();
+
     // The application-specific advising-session count renders at this size
     // (desktop table cell "0 sessions" or mobile card badge "0 advising
     // sessions", whichever this project surfaces).

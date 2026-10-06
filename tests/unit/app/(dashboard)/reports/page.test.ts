@@ -67,7 +67,7 @@ describe("getReportsData", () => {
         application: { data: [], error: null },
         advising_meeting: { data: [], error: { message: "db timeout" } },
         student: { data: [], error: null },
-        fellowship_thursday: { data: [], error: null },
+        effective_fellowship_thursday: { data: [], error: null },
       })
     );
 
@@ -101,7 +101,7 @@ describe("getReportsData", () => {
         application: { data: [], error: null },
         advising_meeting: { data: [], error: null },
         student: { data: [], error: null },
-        fellowship_thursday: { data: [], error: null },
+        effective_fellowship_thursday: { data: [], error: null },
       })
     );
 
@@ -111,6 +111,12 @@ describe("getReportsData", () => {
     expect(meetingQuery?.columns).toContain("application_id");
     expect(meetingQuery?.columns).toContain("application!advising_meeting_application_id_fkey");
     expect(meetingQuery?.columns).toContain("fellowship(fellowship_name)");
+
+    // Operational FT reporting must read the effective view, never the raw
+    // base table, so corrections affect the totals and cannot inflate counts.
+    const ftQuery = selectedQueries.find(({ table }) => table === "effective_fellowship_thursday");
+    expect(ftQuery?.columns).toContain("attended");
+    expect(selectedQueries.some(({ table }) => table === "fellowship_thursday")).toBe(false);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -182,7 +188,7 @@ describe("ReportsPage", () => {
         application: { data: [], error: null },
         advising_meeting: { data: [], error: { message: "db timeout" } },
         student: { data: [], error: null },
-        fellowship_thursday: { data: [], error: null },
+        effective_fellowship_thursday: { data: [], error: null },
       })
     );
 
@@ -198,7 +204,7 @@ describe("ReportsPage", () => {
         application: { data: [], error: null },
         advising_meeting: { data: [], error: null },
         student: { data: [], error: null },
-        fellowship_thursday: { data: [], error: null },
+        effective_fellowship_thursday: { data: [], error: null },
       })
     );
 

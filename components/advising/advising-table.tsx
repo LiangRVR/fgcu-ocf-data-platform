@@ -23,13 +23,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Search, CalendarPlus, Calendar, SlidersHorizontal, FilePenLine } from "lucide-react";
+import { Search, CalendarPlus, Calendar, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
 import type { Database } from "@/types/database";
 import { formatApplicationLabel } from "@/lib/applications/pipeline";
+import { AddCorrection } from "@/components/advising/add-correction";
 
 type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
   student: { full_name: string } | null;
@@ -119,8 +120,6 @@ const EMPTY_FORM = {
   notes: "",
 };
 
-const EMPTY_CORRECTION_FORM = { reason: "", details: "" };
-
 export function AdvisingTable({
   initialMeetings,
   students,
@@ -145,10 +144,6 @@ export function AdvisingTable({
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [correctionMeeting, setCorrectionMeeting] = useState<AdvisingMeeting | null>(null);
-  const [correctionForm, setCorrectionForm] = useState(EMPTY_CORRECTION_FORM);
-  const [correctionErrors, setCorrectionErrors] = useState<Record<string, string>>({});
-  const [isCorrectionLoading, setIsCorrectionLoading] = useState(false);
 
   // Pre-fill and auto-open add dialog when arriving from a contextual link
   useEffect(() => {
@@ -205,6 +200,7 @@ export function AdvisingTable({
   const validateForm = (f: typeof form): Record<string, string> => {
     const errors: Record<string, string> = {};
     if (!f.student_id) errors.student_id = "Student is required.";
+    if (!f.advisor_id) errors.advisor_id = "Advisor is required.";
     if (!f.meeting_date) errors.meeting_date = "Meeting date is required.";
     if (!f.meeting_mode) errors.meeting_mode = "Meeting mode is required.";
 
@@ -235,7 +231,7 @@ export function AdvisingTable({
         .from("advising_meeting")
         .insert({
           student_id: Number(form.student_id),
-          advisor_id: form.advisor_id ? Number(form.advisor_id) : null,
+          advisor_id: Number(form.advisor_id),
           application_id: applicationId,
           meeting_date: form.meeting_date,
           meeting_mode: form.meeting_mode,
@@ -270,63 +266,6 @@ export function AdvisingTable({
     setForm({ ...EMPTY_FORM, advisor_id: String(currentAdvisorId) });
     setFormErrors({});
     setAddOpen(false);
-  };
-
-  const openCorrection = (meeting: AdvisingMeeting) => {
-    setCorrectionMeeting(meeting);
-    setCorrectionForm(EMPTY_CORRECTION_FORM);
-    setCorrectionErrors({});
-  };
-
-  const closeCorrection = () => {
-    if (isCorrectionLoading) return;
-    setCorrectionMeeting(null);
-    setCorrectionForm(EMPTY_CORRECTION_FORM);
-    setCorrectionErrors({});
-  };
-
-  const handleCorrectionSubmit = async () => {
-    if (!correctionMeeting) return;
-    const errors: Record<string, string> = {};
-    if (!correctionForm.reason.trim()) errors.reason = "Reason is required.";
-    if (!correctionForm.details.trim()) errors.details = "Details are required.";
-    setCorrectionErrors(errors);
-    if (Object.keys(errors).length) return;
-
-    setIsCorrectionLoading(true);
-    try {
-      const { data, error } = await supabaseBrowserClient
-        .from("advising_meeting_amendment")
-        .insert({
-          meeting_id: correctionMeeting.meeting_id,
-          reason: correctionForm.reason.trim(),
-          details: correctionForm.details.trim(),
-        } as Database["public"]["Tables"]["advising_meeting_amendment"]["Insert"])
-        .select("amendment_id, meeting_id, reason, details, created_at, created_by_advisor_id, created_by:advisor!advising_meeting_amendment_created_by_advisor_id_fkey(advisor_name)")
-        .single();
-      if (error) throw error;
-
-      const amendment = data as AdvisingAmendment;
-      setMeetings((previous) => previous.map((meeting) =>
-        meeting.meeting_id !== correctionMeeting.meeting_id
-          ? meeting
-          : {
-              ...meeting,
-              amendments: [...(meeting.amendments ?? []), amendment].sort((a, b) =>
-                a.created_at.localeCompare(b.created_at) || a.amendment_id - b.amendment_id
-              ),
-            }
-      ));
-      toast.success("Correction added to the meeting history.");
-      setCorrectionMeeting(null);
-      setCorrectionForm(EMPTY_CORRECTION_FORM);
-      setCorrectionErrors({});
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to add correction.");
-    } finally {
-      setIsCorrectionLoading(false);
-    }
   };
 
   return (
@@ -497,10 +436,7 @@ export function AdvisingTable({
                             </MetricBadge>
                           )}
                         </div>
-                        <Button variant="outline" size="sm" className="mt-3 h-8 text-xs" onClick={() => openCorrection(meeting)}>
-                          <FilePenLine className="mr-1.5 h-3.5 w-3.5" />
-                          Add Correction
-                        </Button>
+                        <div className="mt-3"><AddCorrection meetingId={meeting.meeting_id} onSaved={(amendment) => setMeetings((previous) => previous.map((item) => item.meeting_id !== meeting.meeting_id ? item : { ...item, amendments: [...(item.amendments ?? []), amendment].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.amendment_id - b.amendment_id) }))} /></div>
                         <AmendmentHistory amendments={meeting.amendments ?? []} />
                       </div>
                     </div>
@@ -608,9 +544,7 @@ export function AdvisingTable({
                         </div>
                       </td>
                       <td className="px-3 py-3 text-right sm:px-6 sm:py-4">
-                        <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => openCorrection(meeting)}>
-                          Add Correction
-                        </Button>
+                        <AddCorrection meetingId={meeting.meeting_id} onSaved={(amendment) => setMeetings((previous) => previous.map((item) => item.meeting_id !== meeting.meeting_id ? item : { ...item, amendments: [...(item.amendments ?? []), amendment].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.amendment_id - b.amendment_id) }))} />
                       </td>
                     </tr>
                     {meeting.amendments?.length > 0 ? (
@@ -672,33 +606,6 @@ export function AdvisingTable({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={correctionMeeting !== null} onOpenChange={(open) => !open && closeCorrection()}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Add Correction</DialogTitle>
-            <DialogDescription>
-              Add an attached historical correction. The original meeting remains unchanged.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-2">
-            <div className="grid gap-1.5">
-              <Label htmlFor="correction_reason">Reason <span className="text-red-500">*</span></Label>
-              <Input id="correction_reason" value={correctionForm.reason} onChange={(event) => setCorrectionForm((form) => ({ ...form, reason: event.target.value }))} />
-              {correctionErrors.reason ? <p className="text-xs text-red-500">{correctionErrors.reason}</p> : null}
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="correction_details">Details <span className="text-red-500">*</span></Label>
-              <textarea id="correction_details" rows={4} value={correctionForm.details} onChange={(event) => setCorrectionForm((form) => ({ ...form, details: event.target.value }))} className="flex min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" />
-              {correctionErrors.details ? <p className="text-xs text-red-500">{correctionErrors.details}</p> : null}
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={closeCorrection} disabled={isCorrectionLoading}>Cancel</Button>
-            <Button onClick={handleCorrectionSubmit} disabled={isCorrectionLoading} className="bg-[#006747] hover:bg-[#00563b]">{isCorrectionLoading ? "Saving…" : "Add Correction"}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
     </>
   );
 }
@@ -711,9 +618,10 @@ type AdvisingHistoryMeeting = Database["public"]["Tables"]["advising_meeting"]["
   amendments: AdvisingAmendment[];
 };
 
-export function AdvisingHistory({ meetings, applications }: { meetings: AdvisingHistoryMeeting[]; applications: { application_id: number; label: string }[] }) {
+export function AdvisingHistory({ meetings, applications, canCorrect = true }: { meetings: AdvisingHistoryMeeting[]; applications: { application_id: number; label: string }[]; canCorrect?: boolean }) {
   const [filter, setFilter] = useState("all");
-  const visible = meetings.filter((m) => filter === "all" || (filter === "general" ? m.application_id == null : String(m.application_id) === filter));
+  const [historyMeetings, setHistoryMeetings] = useState(meetings);
+  const visible = historyMeetings.filter((m) => filter === "all" || (filter === "general" ? m.application_id == null : String(m.application_id) === filter));
   return <section className="mb-5 rounded-2xl border border-border/70 bg-white p-4">
     <div className="mb-3 flex flex-wrap items-center gap-2"><h3 className="mr-auto font-semibold text-slate-900">Advising history</h3>
       <select aria-label="Filter advising history" value={filter} onChange={(e) => setFilter(e.target.value)} className="h-10 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -721,7 +629,7 @@ export function AdvisingHistory({ meetings, applications }: { meetings: Advising
       </select>
     </div>
     <div className="space-y-3">{visible.map(m => <article key={m.meeting_id} className="rounded-xl border border-slate-200 p-4">
-      <div className="flex flex-wrap items-center gap-2"><strong>{new Date(m.meeting_date+"T00:00:00").toLocaleDateString("en-US",{year:"numeric",month:"short",day:"numeric"})}</strong><span className="text-slate-600">{m.advisor?.advisor_name ?? "Advisor unavailable"}</span><MetricBadge tone="slate">{m.application_id == null ? "General Advising" : formatApplicationLabel(m.application?.fellowship?.fellowship_name,m.application?.application_year)}</MetricBadge><MetricBadge tone={m.meeting_mode === "Virtual" ? "blue" : "slate"}>{m.meeting_mode}</MetricBadge><MetricBadge tone={m.no_show ? "red" : "green"}>{m.no_show ? "No-show" : "Attended"}</MetricBadge></div>
+      <div className="flex flex-wrap items-center gap-2"><strong>{new Date(m.meeting_date+"T00:00:00").toLocaleDateString("en-US",{year:"numeric",month:"short",day:"numeric"})}</strong><span className="text-slate-600">{m.advisor?.advisor_name ?? "Advisor unavailable"}</span><MetricBadge tone="slate">{m.application_id == null ? "General Advising" : formatApplicationLabel(m.application?.fellowship?.fellowship_name,m.application?.application_year)}</MetricBadge><MetricBadge tone={m.meeting_mode === "Virtual" ? "blue" : "slate"}>{m.meeting_mode}</MetricBadge><MetricBadge tone={m.no_show ? "red" : "green"}>{m.no_show ? "No-show" : "Attended"}</MetricBadge>{canCorrect && <AddCorrection meetingId={m.meeting_id} onSaved={(amendment) => setHistoryMeetings((previous) => previous.map((item) => item.meeting_id !== m.meeting_id ? item : { ...item, amendments: [...(item.amendments ?? []), amendment].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.amendment_id - b.amendment_id) }))} />}</div>
       <p className="mt-3 whitespace-pre-wrap text-sm text-slate-700">{m.notes || "No notes recorded."}</p><p className="mt-2 text-xs text-slate-400">Recorded by {m.recorded_by?.advisor_name ?? "Unknown (legacy record)"} · {formatRecordedAt(m.created_at)}</p><AmendmentHistory amendments={m.amendments ?? []}/>
     </article>)}{visible.length === 0 && <p className="py-5 text-sm text-slate-500">No advising history for this filter.</p>}</div>
   </section>;
@@ -822,16 +730,15 @@ function MeetingForm({ form, setForm, formErrors, students, advisors, applicatio
 
       {/* Advisor */}
       <div className="grid gap-1.5">
-        <Label htmlFor="advisor_id">Advisor</Label>
+        <Label htmlFor="advisor_id">Advisor <span className="text-red-500">*</span></Label>
         <Select
-          value={form.advisor_id || "none"}
-          onValueChange={(v) => setForm((prev) => ({ ...prev, advisor_id: v === "none" ? "" : v }))}
+          value={form.advisor_id}
+          onValueChange={(v) => setForm((prev) => ({ ...prev, advisor_id: v }))}
         >
           <SelectTrigger id="advisor_id">
-            <SelectValue placeholder="Select an advisor (optional)…" />
+            <SelectValue placeholder="Select an advisor…" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="none">— None —</SelectItem>
             {advisors.map((a) => (
               <SelectItem key={a.advisor_id} value={String(a.advisor_id)}>
                 {a.advisor_name}
@@ -839,6 +746,7 @@ function MeetingForm({ form, setForm, formErrors, students, advisors, applicatio
             ))}
           </SelectContent>
         </Select>
+        {formErrors.advisor_id && <p className="text-xs text-red-500">{formErrors.advisor_id}</p>}
       </div>
 
       {/* Meeting Date */}

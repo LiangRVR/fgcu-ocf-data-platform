@@ -433,8 +433,10 @@ test.describe("operational surfaces", () => {
     // database, so no editable meeting ID / creator / timestamp input exists.
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
-    await expect(dialog.locator("#correction_reason")).toBeVisible();
-    await expect(dialog.locator("#correction_details")).toBeVisible();
+    const reasonInput = dialog.locator('input[id^="correction-reason-"]');
+    const detailsInput = dialog.locator('textarea[id^="correction-details-"]');
+    await expect(reasonInput).toBeVisible();
+    await expect(detailsInput).toBeVisible();
     await expect(dialog.locator("input[name='meeting_id']")).toHaveCount(0);
     await expect(dialog.locator("input[name='created_by_advisor_id']")).toHaveCount(0);
     await expect(dialog.locator("input[name='created_at']")).toHaveCount(0);
@@ -445,8 +447,8 @@ test.describe("operational surfaces", () => {
     await expect(dialog.getByText("Details are required.")).toBeVisible();
 
     // Fill in and submit a real correction.
-    await dialog.locator("#correction_reason").fill(correctionReason);
-    await dialog.locator("#correction_details").fill(correctionDetails);
+    await reasonInput.fill(correctionReason);
+    await detailsInput.fill(correctionDetails);
     await dialog.getByRole("button", { name: "Add Correction" }).click();
 
     // The dialog dismisses once the typed direct insert succeeds.
@@ -498,8 +500,8 @@ test.describe("operational surfaces", () => {
       await seededRow.getByRole("button", { name: "Add Correction" }).click();
       const dialog = page.getByRole("dialog");
       await expect(dialog).toBeVisible();
-      await dialog.locator("#correction_reason").fill(reason);
-      await dialog.locator("#correction_details").fill(details);
+      await dialog.locator('input[id^="correction-reason-"]').fill(reason);
+      await dialog.locator('textarea[id^="correction-details-"]').fill(details);
       await dialog.getByRole("button", { name: "Add Correction" }).click();
       await expect(dialog).toBeHidden();
     };
@@ -888,6 +890,74 @@ test.describe("operational surfaces", () => {
     await expect(hcRowAfterReload).toContainText("No");
   });
 
+  test("fellowship-thursday offers no Edit/Delete and an advisor can append a reasoned attendance correction that becomes effective and persists", async ({ page }) => {
+    await signInAsActive(page);
+
+    const correctionReason = `E2E FT correction ${Date.now()}`;
+    const correctionDetails = `E2E FT correction details ${Date.now()}`;
+
+    try {
+      await page.goto("/fellowship-thursday");
+      await expect(page.getByRole("heading", { name: "Fellowship Thursday" })).toBeVisible();
+
+      // The base attendance record has no direct mutation path.
+      await expect(page.getByTitle("Edit attendance")).toHaveCount(0);
+      await expect(page.getByTitle("Delete attendance")).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Delete" })).toHaveCount(0);
+
+      // The seeded student's OCF-sourced record is corrected, never replaced.
+      const ocfRow = page
+        .locator("table tbody tr", { hasText: STUDENT_NAME })
+        .filter({ hasText: "OCF" });
+      await expect(ocfRow).toBeVisible();
+      await expect(ocfRow).toContainText("Original: Attended");
+      await ocfRow.getByRole("button", { name: "Add correction" }).click();
+
+      const dialog = page.getByRole("dialog");
+      await expect(dialog).toBeVisible();
+      await expect(
+        dialog.getByRole("heading", { name: "Add attendance correction" }),
+      ).toBeVisible();
+
+      // A reason AND at least one corrected value are required.
+      await expect(dialog.getByRole("button", { name: "Add correction" })).toBeDisabled();
+      await dialog.locator("#ft-correction-reason").fill(correctionReason);
+      // Still disabled: no corrected value selected yet.
+      await expect(dialog.getByRole("button", { name: "Add correction" })).toBeDisabled();
+      // The first checkbox is "Correct attendance value"; the corrected
+      // attendance defaults to "Not attended", so the effective value flips.
+      await dialog.locator('input[type="checkbox"]').first().check();
+      await dialog.locator("#ft-correction-details").fill(correctionDetails);
+      await expect(dialog.getByRole("button", { name: "Add correction" })).toBeEnabled();
+      await dialog.getByRole("button", { name: "Add correction" }).click();
+      await expect(dialog).toBeHidden();
+
+      // The effective value flips while the original stays visible.
+      await expect(ocfRow).toContainText("Original: Attended");
+      await expect(ocfRow).toContainText("Current: Not attended");
+      await expect(ocfRow).toContainText(correctionReason);
+      await expect(ocfRow).toContainText(correctionDetails);
+      await expect(ocfRow).toContainText("Attendance → Not attended");
+
+      // Reload → effective value + audit trail persist server-side.
+      await page.reload();
+      const ocfRowAfterReload = page
+        .locator("table tbody tr", { hasText: STUDENT_NAME })
+        .filter({ hasText: "OCF" });
+      await expect(ocfRowAfterReload).toContainText("Current: Not attended");
+      await expect(ocfRowAfterReload).toContainText(correctionReason);
+    } finally {
+      // Service-role cleanup: the amendment is append-only for authenticated
+      // clients, so remove exactly this test's correction by its unique reason.
+      const service = serviceClient();
+      const { error } = await service
+        .from("fellowship_thursday_amendment")
+        .delete()
+        .eq("reason", correctionReason);
+      if (error) throw new Error(`FT amendment cleanup: ${error.message}`);
+    }
+  });
+
   test("scholarship-history page renders the seeded award record", async ({ page }) => {
     await signInAsActive(page);
 
@@ -909,13 +979,125 @@ test.describe("operational surfaces", () => {
 
     await page.getByRole("dialog").getByRole("button", { name: "Add Record" }).click();
 
-    // The seeded student now has 2 scholarship rows (the seeded award plus the
-    // one just added through the UI).
-    const studentRows = page.locator("table tbody tr", { hasText: STUDENT_NAME });
-    await expect(studentRows).toHaveCount(2);
+    // The seeded student now has 2 scholarship award articles (the seeded
+    // award plus the one just added through the UI). The surface renders
+    // articles, not table rows.
+    const studentAwards = page.locator("article", { hasText: STUDENT_NAME });
+    await expect(studentAwards).toHaveCount(2);
 
     // Reload → the new award record is persisted server-side.
     await page.reload();
-    await expect(page.locator("table tbody tr", { hasText: STUDENT_NAME })).toHaveCount(2);
+    await expect(page.locator("article", { hasText: STUDENT_NAME })).toHaveCount(2);
+  });
+
+  test("scholarship history uses append-only Correction and Void with a visible audit trail and no Edit/Delete control", async ({ page }) => {
+    const service = serviceClient();
+    const studentId = await findStudentIdByName(STUDENT_NAME);
+    const fellowshipName = `E2E SH Fellowship ${Date.now()}`;
+    const correctedFellowshipName = `E2E SH Corrected Fellowship ${Date.now()}`;
+    const insertFellowship = async (name: string): Promise<number> => {
+      const { data, error } = await service
+        .from("fellowship")
+        .insert({ fellowship_name: name })
+        .select("fellowship_id")
+        .single();
+      if (error) throw new Error(`seed SH fellowship (${name}): ${error.message}`);
+      return data.fellowship_id as number;
+    };
+    const fellowshipId = await insertFellowship(fellowshipName);
+    const correctedFellowshipId = await insertFellowship(correctedFellowshipName);
+    const { data: award, error: awardError } = await service
+      .from("scholarship_history")
+      .insert({ student_id: studentId, fellowship_id: fellowshipId })
+      .select("history_id")
+      .single();
+    if (awardError) throw new Error(`seed SH award: ${awardError.message}`);
+
+    const correctionReason = `E2E SH correction ${Date.now()}`;
+    const voidReason = `E2E SH void ${Date.now() + 1}`;
+    // Scope by the immutable award identifier: a correction changes the
+    // displayed program name, so the original name is not a durable locator.
+    const article = page.locator("article", {
+      hasText: `Original award record · #${award.history_id}`,
+    });
+
+    try {
+      await signInAsActive(page);
+      await page.goto("/scholarship-history");
+      await expect(page.getByRole("heading", { name: "Scholarship History" })).toBeVisible();
+
+      await expect(article).toBeVisible();
+      await expect(article).toContainText(fellowshipName);
+      // The original base record has no direct Edit/Delete path.
+      await expect(article.getByRole("button", { name: "Edit" })).toHaveCount(0);
+      await expect(article.getByRole("button", { name: "Delete" })).toHaveCount(0);
+      await expect(article).toContainText("No corrections or voids recorded.");
+
+      // ── Correction: requires a reason, corrects the effective fellowship ──
+      await article.getByRole("button", { name: "Add Correction" }).click();
+      let dialog = page.getByRole("dialog");
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByRole("heading", { name: "Add Correction" })).toBeVisible();
+      await dialog.getByRole("button", { name: "Add Correction" }).click();
+      await expect(dialog.getByText("A reason is required.")).toBeVisible();
+      await dialog.locator("#amendment_reason").fill(correctionReason);
+      await dialog.locator("#corrected_fellowship").click();
+      await page.getByRole("option", { name: correctedFellowshipName, exact: true }).click();
+      await dialog.getByRole("button", { name: "Add Correction" }).click();
+      await expect(dialog).toBeHidden();
+
+      // The effective award now carries the corrected fellowship and is marked
+      // as corrected, while the audit trail retains the amendment.
+      await expect(article.getByText("Corrected", { exact: true })).toBeVisible();
+      await expect(article.getByText("Correction", { exact: true })).toBeVisible();
+      await expect(article).toContainText(`Corrected fellowship: ${correctedFellowshipName}`);
+      await expect(article).toContainText(correctionReason);
+
+      // ── Void: terminal, original stays auditable, further actions hidden ──
+      await article.getByRole("button", { name: "Void Award Record" }).click();
+      dialog = page.getByRole("dialog");
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByRole("heading", { name: "Void Award Record" })).toBeVisible();
+      await dialog.locator("#amendment_reason").fill(voidReason);
+      await dialog.getByRole("button", { name: "Void Award Record" }).click();
+      await expect(dialog).toBeHidden();
+
+      await expect(article.getByText("Voided award")).toBeVisible();
+      await expect(article).toContainText(correctionReason);
+      await expect(article).toContainText(voidReason);
+      await expect(article).toContainText(correctedFellowshipName);
+      // Void is terminal: no further amendment actions are offered.
+      await expect(article.getByRole("button", { name: "Add Correction" })).toHaveCount(0);
+      await expect(article.getByRole("button", { name: "Void Award Record" })).toHaveCount(0);
+
+      // Reload → audit trail + voided state persist server-side.
+      await page.reload();
+      await expect(article.getByText("Voided award")).toBeVisible();
+      await expect(article).toContainText(correctionReason);
+      await expect(article).toContainText(voidReason);
+      await expect(article).toContainText(correctedFellowshipName);
+    } finally {
+      // Service-role cleanup: this test's amendments first (FK), then the
+      // synthetic award and both synthetic fellowships.
+      const cleanup = await service
+        .from("scholarship_history_amendment")
+        .delete()
+        .eq("history_id", award.history_id);
+      if (cleanup.error) throw new Error(`SH amendment cleanup: ${cleanup.error.message}`);
+      const awardCleanup = await service
+        .from("scholarship_history")
+        .delete()
+        .eq("history_id", award.history_id);
+      if (awardCleanup.error) throw new Error(`SH award cleanup: ${awardCleanup.error.message}`);
+      for (const id of [fellowshipId, correctedFellowshipId]) {
+        const fellowshipCleanup = await service
+          .from("fellowship")
+          .delete()
+          .eq("fellowship_id", id);
+        if (fellowshipCleanup.error) {
+          throw new Error(`SH fellowship cleanup (${id}): ${fellowshipCleanup.error.message}`);
+        }
+      }
+    }
   });
 });

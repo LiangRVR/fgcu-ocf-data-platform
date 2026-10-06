@@ -153,6 +153,37 @@ async function deleteApplication(applicationId: number): Promise<void> {
   if (error) throw new Error(`cleanup application ${applicationId}: ${error.message}`);
 }
 
+/**
+ * Seed one advising meeting for a student. `advisor_id` is intentionally NULL:
+ * this is a trusted service-role (technical) write, which the new-meeting
+ * advisor guard must continue to allow while rejecting authenticated inserts
+ * with a NULL conducting advisor (R8). The meeting gives the archived-student
+ * detail page a historical advising record to render.
+ */
+async function seedAdvisingMeeting(studentId: number): Promise<number> {
+  const service = serviceClient();
+  const { data, error } = await service
+    .from("advising_meeting")
+    .insert({
+      student_id: studentId,
+      advisor_id: null,
+      meeting_date: "2026-09-01",
+      meeting_mode: "Virtual",
+      no_show: false,
+      notes: "E2E lifecycle archived meeting",
+    })
+    .select("meeting_id")
+    .single();
+  if (error) throw new Error(`seed advising meeting for student ${studentId}: ${error.message}`);
+  return data.meeting_id as number;
+}
+
+async function deleteMeeting(meetingId: number): Promise<void> {
+  const service = serviceClient();
+  const { error } = await service.from("advising_meeting").delete().eq("meeting_id", meetingId);
+  if (error) throw new Error(`cleanup meeting ${meetingId}: ${error.message}`);
+}
+
 test.describe("entity lifecycle", () => {
   test.setTimeout(60_000);
 
@@ -311,6 +342,7 @@ test.describe("entity lifecycle", () => {
     const studentId = await seedStudent(name);
     const fellowshipId = await seedFellowship(`${name} Fellowship`);
     const applicationId = await seedApplication(studentId, fellowshipId);
+    const meetingId = await seedAdvisingMeeting(studentId);
     try {
       await setStudentArchived(studentId, true);
 
@@ -334,6 +366,16 @@ test.describe("entity lifecycle", () => {
         page.getByRole("link", { name: `${name} Fellowship — 2024`, exact: true }).filter({ visible: true }).first(),
       ).toBeVisible();
 
+      // R6: the archived student's historical advising meeting still renders,
+      // but it is NOT eligible for the shared Add Correction action while the
+      // student is archived.
+      const archivedAdvisingHistory = page.locator("section", { hasText: "Advising history" });
+      await expect(archivedAdvisingHistory).toBeVisible();
+      await expect(archivedAdvisingHistory.getByText("E2E lifecycle archived meeting")).toBeVisible();
+      await expect(
+        archivedAdvisingHistory.getByRole("button", { name: "Add Correction" }),
+      ).toHaveCount(0);
+
       // Restore from the detail page re-exposes the active workflow actions
       // (the page renders both the header action and the empty/section
       // affordance, so scope to the first visible occurrence).
@@ -341,7 +383,16 @@ test.describe("entity lifecycle", () => {
       await page.getByRole("alertdialog").getByRole("button", { name: "Restore Student" }).click();
       await expect(page.getByRole("link", { name: "Add Application" }).first()).toBeVisible();
       await expect(page.getByText(/Archived since/)).toHaveCount(0);
+
+      // R6: once restored, the same meeting is eligible again and exposes the
+      // shared Add Correction control.
+      await expect(
+        page
+          .locator("section", { hasText: "Advising history" })
+          .getByRole("button", { name: "Add Correction" }),
+      ).toBeVisible();
     } finally {
+      await deleteMeeting(meetingId);
       await deleteApplication(applicationId);
       await deleteFellowship(fellowshipId);
       await deleteStudent(studentId);

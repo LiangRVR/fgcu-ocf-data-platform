@@ -151,6 +151,55 @@ test.describe("application workflow", () => {
     await expect(revertedRowAfterReload.getByText("Yes", { exact: true })).toHaveCount(0);
   });
 
+  test("the stage selector offers Did Not Submit and Withdrawn and each terminal stage persists with cleared flags", async ({ page }) => {
+    await signInAsActive(page);
+
+    await page.goto("/applications");
+    const seededRow = page.locator("table tbody tr", { hasText: STUDENT_NAME });
+    await expect(seededRow).toContainText("Submitted");
+
+    // Both non-finalist terminal stages are offered by the stage select, and
+    // each persists server-side with neither boolean flag set.
+    const setStage = async (stage: string): Promise<void> => {
+      await page
+        .locator("table tbody tr", { hasText: STUDENT_NAME })
+        .getByTitle("Edit application")
+        .click();
+      await page.locator("#app-stage").click();
+      await expect(page.getByRole("option", { name: "Did Not Submit", exact: true })).toBeVisible();
+      await expect(page.getByRole("option", { name: "Withdrawn", exact: true })).toBeVisible();
+      await page.getByRole("option", { name: stage, exact: true }).click();
+      await page.getByRole("dialog").getByRole("button", { name: "Save Changes" }).click();
+      await expect(page.locator("table tbody tr", { hasText: STUDENT_NAME })).toContainText(stage);
+    };
+
+    await setStage("Did Not Submit");
+    await expect(
+      page
+        .locator("table tbody tr", { hasText: STUDENT_NAME })
+        .getByText("Yes", { exact: true }),
+    ).toHaveCount(0);
+    await page.reload();
+    await expect(page.locator("table tbody tr", { hasText: STUDENT_NAME })).toContainText(
+      "Did Not Submit",
+    );
+
+    await setStage("Withdrawn");
+    await expect(
+      page
+        .locator("table tbody tr", { hasText: STUDENT_NAME })
+        .getByText("Yes", { exact: true }),
+    ).toHaveCount(0);
+    await page.reload();
+    await expect(page.locator("table tbody tr", { hasText: STUDENT_NAME })).toContainText(
+      "Withdrawn",
+    );
+
+    // Restore the seed stage so the reports spec's exact stage counts stay
+    // deterministic in either lane order.
+    await setStage("Submitted");
+  });
+
   test("the seeded same-fellowship pair renders distinct cycle labels across different years", async ({ page }) => {
     await signInAsActive(page);
 

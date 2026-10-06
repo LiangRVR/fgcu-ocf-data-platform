@@ -19,7 +19,7 @@
  *     is stored, only a body hash;
  *   - COMPLETE – every documented catalog section is present as an array, and
  *     the key expected local-chain catalog facts hold:
- *       * twenty local migration-ledger rows (the exact Git chain);
+ *       * twenty-two local migration-ledger rows (the exact Git chain);
  *       * RLS enabled on all eight operational tables;
  *       * application foreign keys keep the default NO ACTION semantics;
  *       * the advisor identity/RLS lockdown trigger and policies are present;
@@ -46,8 +46,9 @@
  *         `application`): the authenticated DELETE table grant is revoked and
  *         the FOR ALL / DELETE RLS policies are replaced by explicit
  *         SELECT/INSERT/UPDATE policies, while `fellowship_thursday` /
- *         `scholarship_history` keep authenticated DELETE and
- *         `advising_meeting` / `advising_meeting_amendment` stay append-only;
+ *         `scholarship_history` stayed mutable until migration 20261008000001
+ *         and `advising_meeting` / `advising_meeting_amendment` stay
+ *         append-only;
  *       * migration 20260930000007 (review remediation) replaces the
  *         `lifecycle_transition` RPC to require an ACTIVE bound advisor in
  *         addition to the `ocf_admin` claim, and adds invoker-security
@@ -63,6 +64,18 @@
  *         claim), and adds the invoker-security `guard_advisor_role_display`
  *         trigger/function (EXECUTE pinned to service_role only) that rejects
  *         direct authenticated writes to the protected display role.
+ *       * migration 20261008000001 (historical integrity remediation) adds the
+ *         append-only `fellowship_thursday_amendment` /
+ *         `scholarship_history_amendment` tables (SELECT/INSERT-only for
+ *         authenticated, SECURITY DEFINER creation-metadata triggers, trim-aware
+ *         reason CHECKs, at-least-one-correction / controlled correction-void
+ *         payload CHECKs), locks the base-history rows
+ *         `fellowship_thursday` / `scholarship_history` down to
+ *         SELECT/INSERT-only, adds the SECURITY INVOKER
+ *         `effective_fellowship_thursday` / `effective_scholarship_history`
+ *         views, replaces the seven-stage application vocabulary with the nine
+ *         stage + flag-consistency + year-bound CHECKs, and adds the
+ *         authenticated new-meeting advisor guard trigger;
  *
  * Safety: this test writes no output files, reads no hosted values, and never
  * queries business rows — it only runs the read-only catalog SELECTs inside
@@ -80,7 +93,7 @@ import { getContractEnv } from "./helpers/setup";
 
 const env = getContractEnv();
 
-/** The eight operational tables created by the migration chain. */
+/** The ten operational tables created by the migration chain. */
 const OPERATIONAL_TABLES = [
   "advisor",
   "fellowship",
@@ -89,10 +102,12 @@ const OPERATIONAL_TABLES = [
   "advising_meeting",
   "advising_meeting_amendment",
   "fellowship_thursday",
+  "fellowship_thursday_amendment",
   "scholarship_history",
+  "scholarship_history_amendment",
 ] as const;
 
-/** The exact Git migration chain recorded in the local ledger (twenty rows). */
+/** The exact Git migration chain recorded in the local ledger (twenty-two rows). */
 const EXPECTED_LEDGER = [
   { version: "20260305000000", name: "initial_schema" },
   { version: "20260305000001", name: "allow_anon_read" },
@@ -114,6 +129,8 @@ const EXPECTED_LEDGER = [
   { version: "20261005000001", name: "advisor_role_fenced_read" },
   { version: "20261006000001", name: "advisor_role_display_reconcile" },
   { version: "20261007000001", name: "atomic_advisor_role_change" },
+  { version: "20261008000001", name: "historical_integrity_remediation" },
+  { version: "20261009000001", name: "scholarship_void_serialization" },
 ] as const;
 
 /** One shared capture: read-only catalog queries against the lane database. */
@@ -175,7 +192,7 @@ describe("schema inventory packet shape (local/schema-only/complete)", () => {
 });
 
 describe("migration ledger", () => {
-  it("records exactly the twenty local-chain migrations", () => {
+  it("records exactly the twenty-two local-chain migrations", () => {
     const ledger = packet.catalog.migrationLedger;
     expect(ledger).toHaveLength(EXPECTED_LEDGER.length);
     const byVersion = new Map(ledger.map((record) => [record.fields.version, record.fields.name]));
@@ -485,7 +502,7 @@ describe("core-history DELETE lockdown catalog (migration 20260930000006)", () =
     expect(byTable.get("advisor")?.sort(), "advisor policy commands").toEqual(["SELECT", "UPDATE"]);
   });
 
-  it("keeps authenticated DELETE on the operational rows fellowship_thursday and scholarship_history", () => {
+  it("revokes authenticated DELETE on the base-history rows fellowship_thursday and scholarship_history", () => {
     const deleteGrants = packet.catalog.grants.filter(
       (record) =>
         record.fields.objectType === "TABLE" &&
@@ -493,10 +510,29 @@ describe("core-history DELETE lockdown catalog (migration 20260930000006)", () =
         record.fields.grantee === "authenticated" &&
         record.fields.privilege === "DELETE"
     );
-    expect(deleteGrants.map((record) => record.fields.objectName).sort()).toEqual([
-      "fellowship_thursday",
-      "scholarship_history",
-    ]);
+    // Migration 20261008000001 locks both base tables down to SELECT/INSERT
+    // (append-only style); correction/void flows move to the amendment tables.
+    expect(deleteGrants).toHaveLength(0);
+  });
+
+  it("gives authenticated only SELECT/INSERT on the amendment tables (no UPDATE/DELETE/TRUNCATE, no anon grant)", () => {
+    for (const table of ["fellowship_thursday_amendment", "scholarship_history_amendment"]) {
+      const tableGrants = packet.catalog.grants.filter(
+        (record) => record.fields.objectType === "TABLE" && record.fields.objectName === table
+      );
+      const authenticatedPrivileges = tableGrants
+        .filter((record) => record.fields.grantee === "authenticated")
+        .map((record) => record.fields.privilege);
+      expect(authenticatedPrivileges, `${table} authenticated privileges`).toContain("INSERT");
+      expect(authenticatedPrivileges, `${table} authenticated privileges`).toContain("SELECT");
+      for (const denied of ["UPDATE", "DELETE", "TRUNCATE"]) {
+        expect(authenticatedPrivileges, `${table} authenticated must not hold ${denied}`).not.toContain(denied);
+      }
+      expect(
+        tableGrants.some((record) => record.fields.grantee === "anon"),
+        `anon must hold no grant on ${table}`
+      ).toBe(false);
+    }
   });
 });
 
@@ -666,6 +702,92 @@ describe("explicit admin/advisor permissions catalog (migration 20261001000001)"
     expect(String(record!.fields.definitionHash), "trg_advisor_role_display definitionHash").toMatch(
       /^[0-9a-f]{64}$/
     );
+  });
+});
+
+describe("historical integrity remediation catalog (migration 20261008000001)", () => {
+  it("captures the two append-only amendment tables with their creation-metadata triggers as SECURITY DEFINER", () => {
+    for (const table of ["fellowship_thursday_amendment", "scholarship_history_amendment"] as const) {
+      // RLS is enabled (covered by the generic rls section) and active-advisor
+      // SELECT/INSERT policies only.
+      const policies = packet.catalog.policies
+        .filter((record) => record.fields.table === table)
+        .map((record) => ({ name: record.fields.name, command: record.fields.command, roles: record.fields.roles }))
+        .sort((left, right) => String(left.name).localeCompare(String(right.name)));
+      expect(policies, `${table} policies`).toEqual([
+        { name: `active_advisor_insert_${table}`, command: "INSERT", roles: ["authenticated"] },
+        { name: `active_advisor_select_${table}`, command: "SELECT", roles: ["authenticated"] },
+      ]);
+    }
+
+    const trigger = packet.catalog.triggers.find(
+      (record) => record.fields.name === "trg_fellowship_thursday_amendment_created_metadata"
+    );
+    expect(trigger, "FT amendment metadata trigger").toBeDefined();
+    expect(trigger!.fields.table).toBe("fellowship_thursday_amendment");
+    expect(String(trigger!.fields.function)).toContain("set_fellowship_thursday_amendment_metadata");
+    expect(trigger!.fields.state).toBe("O");
+    expect(String(trigger!.fields.timing)).toBe("ROW");
+    expect(trigger!.fields.events).toContain("INSERT");
+    expect(String(trigger!.fields.definitionHash)).toMatch(/^[0-9a-f]{64}$/);
+
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "set_fellowship_thursday_amendment_metadata"
+    );
+    expect(fn, "FT amendment metadata function").toBeDefined();
+    expect(fn!.fields.securityMode).toBe("DEFINER");
+    expect(fn!.fields.searchPath).toEqual([]);
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "amendment metadata function must carry an effective ACL").toBe(true);
+    const exposed = acl.filter((entry) =>
+      ["=X", "=X*", "anon=X", "anon=X*", "authenticated=X", "authenticated=X*"].includes(entry)
+    );
+    expect(exposed, "no PUBLIC/anon/authenticated EXECUTE on amendment metadata functions").toHaveLength(0);
+    expect(acl, "service_role EXECUTE pins the amendment metadata ACL").toContain("service_role=X");
+  });
+
+  it("captures the effective-value views as SECURITY INVOKER", () => {
+    for (const view of ["effective_fellowship_thursday", "effective_scholarship_history"]) {
+      const record = packet.catalog.views.find((v) => String(v.fields.name) === view);
+      expect(record, `view ${view}`).toBeDefined();
+      expect(String(record!.fields.definitionHash), `${view} definitionHash`).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+
+  it("captures the authenticated new-meeting advisor guard trigger/function as INVOKER", () => {
+    const trigger = packet.catalog.triggers.find(
+      (record) => record.fields.name === "trg_advising_meeting_advisor_required"
+    );
+    expect(trigger, "advisor-required trigger").toBeDefined();
+    expect(trigger!.fields.table).toBe("advising_meeting");
+    expect(String(trigger!.fields.function)).toContain("guard_advising_meeting_advisor_required");
+    expect(trigger!.fields.state).toBe("O");
+    expect(trigger!.fields.events).not.toContain("UPDATE");
+
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "guard_advising_meeting_advisor_required"
+    );
+    expect(fn, "advisor-required guard function").toBeDefined();
+    expect(fn!.fields.securityMode).toBe("INVOKER");
+    expect(fn!.fields.searchPath).toEqual([]);
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "advisor-required guard must carry an effective ACL").toBe(true);
+    const exposed = acl.filter((entry) =>
+      ["=X", "=X*", "anon=X", "anon=X*", "authenticated=X", "authenticated=X*"].includes(entry)
+    );
+    expect(exposed, "no PUBLIC/anon/authenticated EXECUTE on the advisor guard").toHaveLength(0);
+    expect(acl, "service_role EXECUTE pins the advisor guard ACL").toContain("service_role=X");
+  });
+
+  it("captures the production application CHECK constraints (nine stages + flags + year)", () => {
+    const constraints = packet.catalog.constraints;
+    const byName = new Map(constraints.map((record) => [String(record.fields.name), record]));
+    for (const name of ["application_stage_check", "application_stage_flag_consistency_check", "application_year_range_check"]) {
+      const record = byName.get(name);
+      expect(record, `constraint ${name}`).toBeDefined();
+      expect(record!.fields.type, `${name} type`).toBe("CHECK");
+      expect(String(record!.fields.definitionHash), `${name} definitionHash`).toMatch(/^[0-9a-f]{64}$/);
+    }
   });
 });
 

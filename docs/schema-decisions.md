@@ -205,3 +205,73 @@ than one amendment may reference the same meeting.
 only; `UPDATE`/`DELETE` are denied; the creation trigger resolves the
 authenticated active advisor and the database timestamp, rejecting any
 client-supplied creator.
+
+---
+
+## 8. Fellowship Thursday & Scholarship History corrections are amendments, not edits
+
+**Current state (historical-integrity remediation, change
+`2026-10-06-historical-integrity-remediation`):** `fellowship_thursday` and
+`scholarship_history` base rows become immutable for normal authenticated
+sessions, matching the established `advising_meeting` pattern. Corrections are
+recorded in two new append-only child tables — `fellowship_thursday_amendment`
+and `scholarship_history_amendment` — with database-authored creator and
+timestamp. `UPDATE`/`DELETE` grants and policies are removed; active advisors
+get explicit `SELECT`/`INSERT` only.
+
+- `fellowship_thursday_amendment` references one original `attendance_id`. It
+  carries a required non-blank `reason`, optional `details`, a nullable
+  `corrected_attended`, a `corrects_source_info` flag, and a nullable
+  `corrected_source_info`. The flag is what lets an advisor explicitly correct
+  `source_info` to NULL instead of leaving it unchanged. At least one field
+  correction is required per amendment.
+- `scholarship_history_amendment` references one original `history_id`. It
+  carries a controlled `amendment_type` (`Correction` or `Void`), a required
+  non-blank `reason`, optional `details`, and an optional
+  `corrected_fellowship_id` for a factual award correction. A `Void` is
+  terminal for normal operations: the original award remains in the audit
+  history but is excluded from active/operational award counts.
+
+**Why this design:** an attendance or award record is evidence of what
+happened. Editing or deleting it would rewrite history. Recording corrections
+as separate amendments preserves both the original record and the correction
+trail.
+
+**Enforcement:** both amendment tables are append-only (explicit active-advisor
+`SELECT`/`INSERT` RLS policies; no UPDATE/DELETE grants or policies; sequence
+privileges limited to the intended role). Their creation triggers resolve the
+authenticated active advisor and the database timestamp, rejecting any
+client-supplied creator or timestamp and any invalid amendment payload.
+Effective Fellowship Thursday values are resolved deterministically from a
+shared `security_invoker` view/query boundary (newest applicable amendment per
+corrected field, ordered by `(created_at, amendment_id)` descending), so
+correction rows are never counted as independent attendance or award rows in
+reports.
+
+---
+
+## 9. Fellowship Thursday event date & Scholarship award cycle — deferred (OCF decision required)
+
+**Current state:** `fellowship_thursday` records attendance
+(`student_id`, `attended`, `source_info`) against the weekly Thursday meeting
+but has **no event/meeting date column**. `scholarship_history` records awards
+(`student_id`, `fellowship_id`) but has **no award cycle/year column**.
+
+**Why deferred (recorded in the 2026-10-06 historical-integrity
+remediation):** OCF must decide whether weekly Fellowship Thursday needs an
+event date and whether historical awards need an award cycle **before either
+schema is changed**. These values cannot be inferred safely from the existing
+data, and any backfill would fabricate history.
+
+**Decision required from OCF (product owner):**
+
+1. Does Fellowship Thursday need an event/meeting date on each attendance
+   record? If so, at what granularity (e.g. the date of the weekly meeting)?
+2. Does Scholarship History need an award cycle/year? If so, how is an unknown
+   legacy cycle represented?
+
+Until OCF decides, neither field is added, no historical value is inferred or
+backfilled, and displays render unknown context as "date unknown" / "year
+unknown" rather than a guess. Once OCF decides, the field would be added in a
+future forward-only migration together with a matching amendment model — never
+by mutating existing rows.

@@ -6,7 +6,7 @@ All table names are **singular**. All primary keys are **integer sequences** (ne
 
 > For a compact one-page overview see [`supabase/SCHEMA.md`](../supabase/SCHEMA.md).
 > For open design decisions (email uniqueness, stage denormalization, etc.) see [`docs/schema-decisions.md`](./schema-decisions.md).
-> The repository migration chain is **forward-only** and currently contains **twenty migrations** ending with `20261007000001_atomic_advisor_role_change.sql` (see `supabase/SCHEMA.md` for the ordered migration table).
+> The repository migration chain is **forward-only** and currently contains **twenty-two migrations** ending with `20261009000001_scholarship_void_serialization.sql` (see `supabase/SCHEMA.md` for the ordered migration table).
 
 ---
 
@@ -101,6 +101,23 @@ Staff profile and authorization anchor for OCF application users.
   self-scoped policy `advisor_update_own_profile`. Peer rows are invisible for
   UPDATE. Advisor rows are created/managed only through the trusted
   `service_role`/DBA provisioning path and the protected management API.
+- **First effective Admin — trusted out-of-band bootstrap (historical-integrity
+  remediation):** the protected provisioning API (`/api/advisors`) is
+  effective-Admin-only, so a fresh environment has **no way to create its own
+  first effective Admin through the application**. The first effective Admin
+  is bootstrapped out of band by a trusted FGCU IT operator using the service
+  role / Supabase Admin API: (1) after the full migration chain is applied,
+  create the Auth user for a confirmed FGCU email with
+  `app_metadata.ocf_admin = true` and capture the returned `user.id`; (2)
+  pre-bind that exact UUID to the **active** `public.advisor` row's
+  `auth_user_id` (one-time bind) and set the `Admin` display role from the
+  trusted session; (3) verify the first Admin can sign in — the pre-bound UUID
+  resolves the active advisor row and the strict-boolean claim grants effective
+  admin. This is **trusted-operator guidance only**: there is no public
+  bootstrap endpoint, no client-readable path, and the service role / secrets
+  are never exposed, committed, or logged. After the first effective Admin
+  exists, every subsequent advisor is provisioned through the ordinary
+  protected (`/api/advisors`, effective-Admin-only) workflow.
 - Authenticated clients **cannot `DELETE`** advisor rows (migration
   `20260930000006`); deactivation via `lifecycle_transition` is the only
   removal path.
@@ -144,7 +161,7 @@ Tracks a student's application to one fellowship program.
 | `fellowship_id` | integer | NO | | FK → `fellowship.fellowship_id` |
 | `application_year` | smallint | YES | | Application **cycle** (e.g. `2026`) — not a creation year and not a fellowship attribute; NULL for legacy rows whose cycle is unknown |
 | `destination_country` | varchar | YES | | |
-| `stage_of_application` | varchar | NO | | CHECK: `Started`, `Submitted`, `Under Review`, `Semi-Finalist`, `Finalist`, `Awarded`, `Rejected` |
+| `stage_of_application` | varchar | NO | | CHECK — nine stages: `Started`, `Submitted`, `Under Review`, `Semi-Finalist`, `Finalist`, `Awarded`, `Rejected`, `Did Not Submit`, `Withdrawn` |
 | `is_semi_finalist` | boolean | NO | `false` | |
 | `is_finalist` | boolean | NO | `false` | |
 
@@ -152,7 +169,8 @@ Tracks a student's application to one fellowship program.
 
 - `stage_of_application` drives the pipeline view; `is_semi_finalist` and `is_finalist` are denormalized flags for fast filtering.
 - There is no unique constraint on `(student_id, fellowship_id)` — a student may have multiple application attempts to the same fellowship across years. There is also **no** `(student_id, fellowship_id, application_year)` uniqueness rule.
-- `application_year` is the explicit application cycle. It stays `NULL` for legacy rows whose cycle is unknown — the system never infers or backfills a year. New/edited application records require an explicit four-digit year.
+- `application_year` is the explicit application cycle. It stays `NULL` for legacy rows whose cycle is unknown — the system never infers or backfills a year. New/edited application records require an explicit four-digit year. **Bound (historical-integrity remediation):** the database accepts `application_year` only when `NULL` or in `2000–2100`, enforced by CHECK, not trusted to client validation.
+- **Nine stages (historical-integrity remediation):** the database CHECK accepts exactly `Started`, `Submitted`, `Under Review`, `Semi-Finalist`, `Finalist`, `Awarded`, `Rejected`, `Did Not Submit`, `Withdrawn`. `Did Not Submit` and `Withdrawn` are **non-finalist/non-awarded terminal states** (their `is_semi_finalist` and `is_finalist` flags are `false`); they carry no award and are excluded from awarded/finalist reporting. Stage/flag consistency is database-enforced (CHECK), not client-only.
 - `UNIQUE (application_id, student_id)` exists solely as the target for the `advising_meeting` composite FK; it adds no new application uniqueness rule.
 - Application labels use `{fellowship_name} — {application_year}` (e.g. `Fulbright — 2027`). Unknown legacy years render as `{fellowship_name} — year unknown`, never as a guess.
 - Applications are **historical records** (migration `20260930000006`):
@@ -209,6 +227,14 @@ Records each advising session between an advisor and a student.
   `DELETE` are denied, with **no application-admin bypass**. Historic meeting
   records are preserved, so a correction is recorded as a new
   `advising_meeting_amendment` rather than changing or removing one.
+- **Conducting-advisor guard (historical-integrity remediation):** new
+  authenticated advising-meeting writes require a non-NULL conducting
+  `advisor_id` at both the UI and the database boundary. The form defaults to
+  the authenticated advisor, permits another active advisor, and offers no
+  `None` option; the recorder stays separately captured as
+  `created_by_advisor_id`. Legacy/imported rows with `advisor_id IS NULL` are
+  preserved and never backfilled, and trusted technical/service-role import
+  paths remain exempt.
 - **Archive-parent boundary (migration `20260930000007`):** `INSERT` of a
   meeting referencing an archived `student` (or an application of an archived
   student/fellowship) and `UPDATE` re-links to an archived parent are denied
@@ -288,11 +314,54 @@ Tracks student attendance at the weekly Thursday fellowship meeting.
 | `attended` | boolean | NO | | |
 | `source_info` | varchar | YES | | CHECK (nullable): `OCF`, `HC`, `MM` |
 
-`fellowship_thursday` rows are **operational attendance records**, not
-historical entities — authenticated `DELETE` remains available (migration
-`20260930000006` leaves this table untouched). The archive-parent boundary
-(migration `20260930000007`) still denies `INSERT` of a row referencing an
-archived student.
+**Append-only base records (historical-integrity remediation):** base
+attendance rows are immutable for normal authenticated sessions. The database
+replaces the operational UPDATE/DELETE access with explicit active-advisor
+`SELECT`/`INSERT` policies only. A correction is recorded as a new
+`fellowship_thursday_amendment` row referencing the original `attendance_id`,
+never as an edit or delete of the base row. Effective values (which fields to
+show, and `attended`/`source_info` results used by reports) resolve
+deterministically from a shared `security_invoker` boundary — the newest
+applicable amendment per corrected field, ordered by `(created_at, amendment_id)`
+descending — so amendment rows are never counted as independent attendance
+records.
+
+The table has **no event/meeting date column**: whether Fellowship Thursday
+needs an event date is an OCF decision recorded in
+`schema-decisions.md` §9; the schema is **not** changed until OCF decides (no
+date is ever inferred or backfilled).
+
+The archive-parent boundary (migration `20260930000007`) still denies `INSERT`
+of a row referencing an archived student.
+
+---
+
+### `fellowship_thursday_amendment`
+
+Records a correction to one Fellowship Thursday attendance record **without
+mutating or deleting the historic base row**. More than one amendment may
+reference the same attendance record.
+
+| Column | Type | Nullable | Default | Notes |
+| --- | --- | --- | --- | --- |
+| `amendment_id` | integer | NO | nextval | **Primary key** |
+| `attendance_id` | integer | NO | | FK → `fellowship_thursday.attendance_id` |
+| `created_by_advisor_id` | integer | NO | database trigger | FK → `advisor.advisor_id`; the authenticated active advisor who recorded the correction |
+| `created_at` | timestamptz | NO | `now()` | Database-authored entry timestamp |
+| `reason` | text | NO | | Why the correction is needed; CHECK: non-empty after trimming whitespace |
+| `details` | text | YES | | Correction details; does not overwrite the original record |
+| `corrected_attended` | boolean | YES | | Corrected attendance value; NULL = leave unchanged |
+| `corrects_source_info` | boolean | NO | | Explicit flag: `true` corrects `source_info` to the `corrected_source_info` value (including NULL); `false` leaves `source_info` unchanged |
+| `corrected_source_info` | varchar | YES | | CHECK (when non-NULL): `OCF`, `HC`, `MM`; only meaningful when `corrects_source_info = true` |
+
+**Append-only correction design:** database RLS allows active advisors to
+`SELECT` and `INSERT` amendment rows only; `UPDATE` and `DELETE` are denied,
+and a correction is represented by **another amendment row**, never an edit to
+the original attendance or an earlier amendment. The creation trigger replaces
+any client-supplied creator or timestamp with the authenticated **active**
+advisor and the database timestamp. At least one field correction
+(`corrected_attended` non-NULL or `corrects_source_info = true`) is required;
+`reason` is enforced non-empty by a whitespace-trimming CHECK constraint.
 
 ---
 
@@ -306,11 +375,48 @@ Records past scholarships/fellowships that a student has already received.
 | `student_id` | integer | NO | | FK → `student.student_id` |
 | `fellowship_id` | integer | NO | | FK → `fellowship.fellowship_id` |
 
-`scholarship_history` rows are **operational award records**, not historical
-entities — authenticated `DELETE` remains available (migration
-`20260930000006` leaves this table untouched). The archive-parent boundary
-(migration `20260930000007`) still denies `INSERT` of a row referencing an
-archived student or fellowship.
+**Append-only base records (historical-integrity remediation):** base award
+rows are immutable for normal authenticated sessions. The database replaces the
+operational UPDATE/DELETE access with explicit active-advisor
+`SELECT`/`INSERT` policies only. A correction or void is recorded as a new
+`scholarship_history_amendment` row referencing the original `history_id`,
+never as an edit or delete of the base row.
+
+The table has **no award cycle/year column**: whether historical awards need
+an award cycle is an OCF decision recorded in `schema-decisions.md` §9; the
+schema is **not** changed until OCF decides (no cycle is ever inferred or
+backfilled).
+
+The archive-parent boundary (migration `20260930000007`) still denies `INSERT`
+of a row referencing an archived student or fellowship.
+
+---
+
+### `scholarship_history_amendment`
+
+Records a correction or void of one Scholarship History award **without
+mutating or deleting the historic base row**. More than one amendment may
+reference the same award record.
+
+| Column | Type | Nullable | Default | Notes |
+| --- | --- | --- | --- | --- |
+| `amendment_id` | integer | NO | nextval | **Primary key** |
+| `history_id` | integer | NO | | FK → `scholarship_history.history_id` |
+| `amendment_type` | varchar | NO | | CHECK: `Correction` or `Void` |
+| `created_by_advisor_id` | integer | NO | database trigger | FK → `advisor.advisor_id`; the authenticated active advisor who recorded the amendment |
+| `created_at` | timestamptz | NO | `now()` | Database-authored entry timestamp |
+| `reason` | text | NO | | Why the amendment is needed; CHECK: non-empty after trimming whitespace (every `Correction` and `Void` requires a reason) |
+| `details` | text | YES | | Amendment details; does not overwrite the original award |
+| `corrected_fellowship_id` | integer | YES | | FK → `fellowship.fellowship_id`; factual award correction (nullable — not every correction changes the fellowship) |
+
+**Append-only correction/void design:** database RLS allows active advisors to
+`SELECT` and `INSERT` amendment rows only; `UPDATE` and `DELETE` are denied,
+and a further change is represented by **another amendment row**. The creation
+trigger replaces any client-supplied creator or timestamp with the
+authenticated **active** advisor and the database timestamp. A **`Void`** is
+terminal for normal operations: the original award remains in the audit history
+but is excluded from active/operational award counts. A **`Correction`** never
+mutates the base row.
 
 ---
 
@@ -362,9 +468,11 @@ every historical relationship is preserved.
   or cascades applications, meetings, amendments, attendance, or award history.
 - **DELETE lockdown (migration `20260930000006`):** authenticated clients
   cannot `DELETE` the core historical entities `advisor`, `student`,
-  `fellowship`, or `application` (grant and RLS layers). Authenticated `DELETE`
-  intentionally remains only on the non-historical operational rows
-  `fellowship_thursday` and `scholarship_history`.
+  `fellowship`, or `application` (grant and RLS layers). After the
+  historical-integrity remediation, authenticated `DELETE` is revoked from
+  `fellowship_thursday` and `scholarship_history` as well — those base rows
+  become immutable for normal authenticated sessions and follow the same
+  append-only amendment model as advising meetings.
 
 ## Relationship Diagram
 
@@ -381,12 +489,15 @@ student (1) ──────────────────────�
    │              NULL = General Advising; composite FK
    │              (application_id, student_id) forces the application
    │              to belong to the meeting's student
-   ├── (N) fellowship_thursday
+   ├── (N) fellowship_thursday ── (N) fellowship_thursday_amendment (append-only corrections)
    │
-   └── (N) scholarship_history
+   └── (N) scholarship_history ── (N) scholarship_history_amendment
+        (append-only Correction / Void)
 
 advisor (1) ─── created_by_advisor_id (nullable, the record creator) ─── (N) advising_meeting
 advisor (1) ─── created_by_advisor_id (authenticated active creator) ─── (N) advising_meeting_amendment
+advisor (1) ─── created_by_advisor_id (authenticated active creator) ─── (N) fellowship_thursday_amendment
+advisor (1) ─── created_by_advisor_id (authenticated active creator) ─── (N) scholarship_history_amendment
 advisor (1) ─── advisor_id (FK, server-only lock) ─── (1) advisor_role_lock
 
 archive/deactivate lifecycle: student.archived_at, fellowship.archived_at,

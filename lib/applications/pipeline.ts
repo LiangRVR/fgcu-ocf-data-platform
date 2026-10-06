@@ -1,4 +1,7 @@
-// Valid stages from the schema CHECK constraint
+// Valid stages from the schema CHECK constraint. The pipeline order keeps the
+// positive progression first (Started → … → Awarded), then the non-finalist
+// terminal states: Did Not Submit (cut off before submission), Rejected, and
+// Withdrawn (may occur at any point).
 const STAGES = [
   "Started",
   "Submitted",
@@ -6,10 +9,24 @@ const STAGES = [
   "Semi-Finalist",
   "Finalist",
   "Awarded",
+  "Did Not Submit",
   "Rejected",
+  "Withdrawn",
 ] as const;
 
 type Stage = (typeof STAGES)[number];
+
+// Stages that are neither semi-finalist nor finalist: early stages and the
+// non-award terminal states (Did Not Submit / Rejected / Withdrawn). They must
+// carry neither boolean flag.
+const NON_FINALIST_STAGES: readonly Stage[] = [
+  "Started",
+  "Submitted",
+  "Under Review",
+  "Did Not Submit",
+  "Rejected",
+  "Withdrawn",
+];
 
 // Derive which boolean flags are consistent with a given stage
 function deriveFlags(stage: Stage): { is_semi_finalist: boolean; is_finalist: boolean } {
@@ -29,15 +46,13 @@ function validateConsistency(
   is_semi_finalist: boolean,
   is_finalist: boolean
 ): string | null {
-  const earlyStages = ["Started", "Submitted", "Under Review", "Rejected"];
-
   if (is_finalist && !is_semi_finalist) {
     return "A finalist must also be marked as a semi-finalist.";
   }
-  if (is_finalist && earlyStages.includes(stage)) {
+  if (is_finalist && NON_FINALIST_STAGES.includes(stage as Stage)) {
     return `Stage "${stage}" conflicts with Finalist status. A finalist must have a stage of Finalist or Awarded.`;
   }
-  if (is_semi_finalist && earlyStages.includes(stage)) {
+  if (is_semi_finalist && NON_FINALIST_STAGES.includes(stage as Stage)) {
     return `Stage "${stage}" conflicts with Semi-Finalist status. A semi-finalist must have a stage of Semi-Finalist, Finalist, or Awarded.`;
   }
   if (stage === "Semi-Finalist" && is_finalist) {
@@ -55,7 +70,7 @@ function validateConsistency(
   return null;
 }
 
-export { STAGES, type Stage, deriveFlags, validateConsistency };
+export { STAGES, type Stage, NON_FINALIST_STAGES, deriveFlags, validateConsistency };
 
 /**
  * Format a fellowship/application-cycle label.

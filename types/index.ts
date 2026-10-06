@@ -13,7 +13,9 @@ export type ApplicationStage =
   | "Started"
   | "Submitted"
   | "Under Review"
+  | "Did Not Submit"
   | "Semi-Finalist"
   | "Finalist"
   | "Awarded"
-  | "Rejected";
+  | "Rejected"
+  | "Withdrawn";

@@ -86,7 +86,15 @@ async function getApplicationsCount(): Promise<number> {
   }
 }
 
-async function getExceptionIds(): Promise<{
+/**
+ * Exception-view membership ids.
+ *
+ * The "prior-award" exception is an operational count: it must read the shared
+ * `effective_scholarship_history` view and exclude voided awards, so a voided
+ * award does not keep a student in (or out of) the operational prior-award
+ * queue. The base award stays auditable on the Scholarship History surface.
+ */
+export async function getExceptionIds(): Promise<{
   withApps: Set<number>;
   withMeetings: Set<number>;
   withHistory: Set<number>;
@@ -96,12 +104,16 @@ async function getExceptionIds(): Promise<{
     const [appsRes, meetingsRes, historyRes] = await Promise.all([
       supabase.from("application").select("student_id"),
       supabase.from("advising_meeting").select("student_id"),
-      supabase.from("scholarship_history").select("student_id"),
+      supabase.from("effective_scholarship_history").select("student_id, is_voided"),
     ]);
     return {
       withApps:     new Set((appsRes.data     ?? []).map((r) => r.student_id)),
       withMeetings: new Set((meetingsRes.data ?? []).map((r) => r.student_id)),
-      withHistory:  new Set((historyRes.data  ?? []).map((r) => r.student_id)),
+      withHistory:  new Set(
+        (historyRes.data ?? [])
+          .filter((r) => !r.is_voided)
+          .map((r) => r.student_id),
+      ),
     };
   } catch {
     return { withApps: new Set(), withMeetings: new Set(), withHistory: new Set() };

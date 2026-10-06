@@ -22,7 +22,9 @@
 - [x] Explicit Admin/Advisor permissions migration (`supabase/migrations/20261001000001_explicit_admin_advisor_permissions.sql`) — normalizes `advisor.role` to exactly `Admin`/`Advisor`, hardens `is_ocf_admin()` to a strict JSON-boolean claim, adds `is_effective_admin()`, denies direct authenticated role writes
 - [x] Advisor self-service role reconciliation migration (`supabase/migrations/20261002000001_advisor_self_service_role_reconciliation.sql`) — self-scoped `advisor_update_own_profile` UPDATE only, no authenticated advisor-row creation, display role reconciled to the Auth claim
 - [x] Role-change lease migrations (`supabase/migrations/20261003000001_advisor_role_change_lock.sql`, `20261004000001_advisor_role_fenced_write.sql`, `20261005000001_advisor_role_fenced_read.sql`, `20261006000001_advisor_role_display_reconcile.sql`) — server-only per-advisor role-change lease + fenced write/read (legacy primitives retained)
-- [x] Atomic role change migration (`supabase/migrations/20261007000001_atomic_advisor_role_change.sql`) — `set_advisor_role` RPC (service-role-only SECURITY DEFINER) updates the Auth claim and the display role in one transaction; final migration of the chain
+- [x] Atomic role change migration (`supabase/migrations/20261007000001_atomic_advisor_role_change.sql`) — `set_advisor_role` RPC (service-role-only SECURITY DEFINER) updates the Auth claim and the display role in one transaction
+- [x] Historical integrity remediation migration (`supabase/migrations/20261008000001_historical_integrity_remediation.sql`) — append-only `fellowship_thursday`/`scholarship_history` base rows + `fellowship_thursday_amendment`/`scholarship_history_amendment` tables, `effective_fellowship_thursday`/`effective_scholarship_history` views (terminal scholarship `Void`), the nine-stage application pipeline with stage/flag consistency and `application_year` bounds, and a required conducting `advisor_id` on new authenticated advising meetings
+- [x] Scholarship terminal-Void serialization migration (`supabase/migrations/20261009000001_scholarship_void_serialization.sql`) — closes the terminal-`Void` race by taking an exclusive lock on the parent `scholarship_history` row before the `EXISTS` guard (concurrent amendments for one award serialize) and adds a partial unique index enforcing at most one `Void` per award; final migration of the chain
 - [x] Schema documentation (`docs/schema-reference.md`, `supabase/SCHEMA.md`)
 - [x] Auto-generated TypeScript types (`types/database.ts`)
 - [x] Application-level types (`types/index.ts`)
@@ -50,8 +52,8 @@
    - ⚠️ Do **not** run these migrations against the hosted production database.
      Production is the physical-schema authority; its migration ledger records
      only `20260924065221_advisor_self_activation_lockdown` while the repository
-     tracks **twenty** forward-only migrations ending with
-     `20261007000001_atomic_advisor_role_change.sql`, and the deployed schema
+     tracks **twenty-two** forward-only migrations ending with
+     `20261009000001_scholarship_void_serialization.sql`, and the deployed schema
      differs materially. See
      [`supabase/SCHEMA.md`](../supabase/SCHEMA.md#migration-deployment-freeze)
      and the approval-gated
@@ -67,8 +69,8 @@
 
 ## Schema Mapping
 
-The **twenty-migration** repository chain ends with
-`20261007000001_atomic_advisor_role_change.sql`. The full chain enforces, at
+The **twenty-two-migration** repository chain ends with
+`20261009000001_scholarship_void_serialization.sql`. The full chain enforces, at
 the database boundary: append-only advising meetings and amendments; archive /
 deactivate lifecycle for students, fellowships, and advisors; a DELETE lockdown
 on the core historical entities; an explicit `Admin`/`Advisor` role model
@@ -177,8 +179,12 @@ Before using the application with real data:
 - [ ] Explicit Admin/Advisor permissions migration applied (`20261001000001_explicit_admin_advisor_permissions.sql`)
 - [ ] Advisor self-service role reconciliation migration applied (`20261002000001_advisor_self_service_role_reconciliation.sql`)
 - [ ] Role-change lease/fencing migrations applied (`20261003000001`–`20261006000001`)
-- [ ] Atomic role change migration applied last (`20261007000001_atomic_advisor_role_change.sql`)
+- [ ] Atomic role change migration applied (`20261007000001_atomic_advisor_role_change.sql`)
+- [ ] Historical integrity remediation migration applied (`20261008000001_historical_integrity_remediation.sql`)
+- [ ] Scholarship terminal-Void serialization migration applied last (`20261009000001_scholarship_void_serialization.sql`)
 - [ ] Advisors provisioned via the admin pre-binding path: each auth account's exact UUID bound to its `advisor.auth_user_id` while unbound, before first sign-in (no email self-link, no sign-in auto-linking)
+- [ ] First effective Admin bootstrapped out of band via the service role / Supabase Admin API (`app_metadata.ocf_admin = true` + a pre-bound active advisor row); no public bootstrap endpoint exists and service credentials are never exposed
+- [ ] After the first Admin exists, provisioning a new advisor through the protected `/api/advisors` (effective-Admin-only) path succeeds
 - [ ] TypeScript types regenerated if schema was modified: `pnpm run db:types`
 - [ ] Connection test passes: `pnpm run test:connection`
 - [ ] Dev server starts: `pnpm dev`
@@ -191,7 +197,10 @@ Before using the application with real data:
 - [ ] Active advisor can INSERT an amendment and receives a denial for amendment UPDATE and DELETE attempts
 - [ ] Archive/restore of a student or fellowship and deactivate/reactivate of an advisor succeed for an effective admin only
 - [ ] A new child record (application/meeting/attendance/history) referencing an archived student or fellowship is denied at the database boundary
-- [ ] Authenticated DELETE of `advisor`/`student`/`fellowship`/`application` is denied; DELETE of `fellowship_thursday`/`scholarship_history` remains available
+- [ ] Authenticated DELETE of `advisor`/`student`/`fellowship`/`application` is denied; `fellowship_thursday`/`scholarship_history` base rows are also append-only (no authenticated UPDATE/DELETE), with corrections/voids recorded via amendments
+- [ ] Fellowship Thursday and Scholarship History base rows cannot be updated or deleted by an active advisor; an appended amendment (attendance correction; scholarship `Correction`/`Void`) succeeds, is rejected with forged creator/timestamp, and a `Void` is excluded from operational counts while staying in the audit history
+- [ ] Application stages include `Did Not Submit` and `Withdrawn` (non-finalist/non-awarded terminal states) and `application_year` is rejected outside `NULL` or `2000–2100` at the database boundary
+- [ ] A new authenticated advising meeting without a conducting `advisor_id` is rejected at the database boundary; legacy `advisor_id IS NULL` rows remain readable
 
 ### Auth Flow Smoke Test
 
