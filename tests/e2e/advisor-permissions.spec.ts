@@ -359,8 +359,10 @@ test.describe("advisor permissions", () => {
       await page.goto("/advising");
       await page.getByRole("button", { name: "Log Meeting" }).click();
       const dialog = page.getByRole("dialog");
-      await dialog.locator("#student_id").click();
-      await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
+      // The student field is a lazy bounded typeahead: type at least two
+      // characters, then choose the bounded option.
+      await dialog.locator("#student-search").fill(STUDENT_NAME);
+      await dialog.getByRole("button", { name: STUDENT_NAME, exact: true }).click();
       await dialog.locator("#meeting_date").fill("2026-09-15");
       await dialog.locator("#notes").fill(notesMarker);
       await dialog.getByRole("button", { name: "Log Meeting" }).click();

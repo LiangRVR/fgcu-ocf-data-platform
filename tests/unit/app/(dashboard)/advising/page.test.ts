@@ -29,8 +29,8 @@ vi.mock("@/lib/auth/session", () => ({
 //   - attached corrections: amendments arrive as a chronological collection
 //     with their creator attribution intact, and the server payload never
 //     carries a meeting ID, creator, or timestamp input;
-//   - application options: every student-scoped option renders its cycle label;
-//   - students/advisors: the page's option lists flow through unchanged.
+//   - selector options are loaded lazily by the client table when a selector
+//     is opened, rather than supplied during the page render.
 // The mock mirrors exactly what the production table renders (the interaction
 // half — student-change refresh, option filtering, stale-selection clearing,
 // correction form submission — is exercised by the E2E lane). The label
@@ -51,9 +51,6 @@ vi.mock("@/components/advising/advising-table", async () => {
   return {
     AdvisingTable: ({
       initialMeetings,
-      students,
-      advisors,
-      applications,
     }: {
       initialMeetings: Array<{
         student_id: number;
@@ -73,14 +70,6 @@ vi.mock("@/components/advising/advising-table", async () => {
           created_by_advisor_id: number;
           created_by?: { advisor_name: string } | null;
         }>;
-      }>;
-      students: Array<{ student_id: number; full_name: string }>;
-      advisors: Array<{ advisor_id: number; advisor_name: string }>;
-      applications: Array<{
-        application_id: number;
-        student_id: number;
-        application_year: number | null;
-        fellowship: { fellowship_name: string } | null;
       }>;
     }) =>
       ce(
@@ -129,27 +118,6 @@ vi.mock("@/components/advising/advising-table", async () => {
             )
           )
         ),
-        ce(
-          "ul",
-          { className: "application-options" },
-          applications.map((a) =>
-            ce(
-              "li",
-              { key: a.application_id, className: "application-option" },
-              cycleLabel(a.fellowship?.fellowship_name, a.application_year)
-            )
-          )
-        ),
-        ce(
-          "ul",
-          { className: "student-options" },
-          students.map((s) => ce("li", { key: s.student_id }, s.full_name))
-        ),
-        ce(
-          "ul",
-          { className: "advisor-options" },
-          advisors.map((a) => ce("li", { key: a.advisor_id }, a.advisor_name))
-        )
       ),
   };
 });
@@ -185,33 +153,46 @@ function normalizeSsr(html: string): string {
 }
 
 /**
- * The advising page's loaders chain `select → (advisor: eq) → order`, and the
- * amendment embed adds two more `order(..., { foreignTable })` calls so the
- * chain must remain awaitable across any number of `order()` calls. The mock
- * keeps the same chain object for every fluent call AND makes it thenable,
- * so `await chain` resolves to the per-table response regardless of how many
- * intermediate `.order()` / `.eq()` calls the page issued.
+ * The advising page's list loader chains every PostgREST builder method the
+ * production client exposes for this surface — `select`, `or`, `eq`, `order`,
+ * `in`, and the inclusive `range` — then awaits the chain for `{data, error,
+ * count}`. The mock keeps the same chain object for every fluent call AND makes
+ * it thenable, so `await chain` resolves to the per-table response regardless of
+ * how many intermediate calls the page issued. `count` is threaded through so
+ * the exact-count/pagination contract is exercised, not stubbed to zero.
  */
 function createMockClient(
-  responses: Record<string, { data?: unknown; error?: { message: string } | null }>
+  responses: Record<
+    string,
+    { data?: unknown; error?: { message: string } | null; count?: number }
+  >
 ) {
   return {
     from: vi.fn((table: string) => {
-      const response = responses[table] ?? { data: [], error: null };
+      const response = responses[table] ?? { data: [], error: null, count: 0 };
       const chain: {
         select: ReturnType<typeof vi.fn>;
+        or: ReturnType<typeof vi.fn>;
         eq: ReturnType<typeof vi.fn>;
+        in: ReturnType<typeof vi.fn>;
         order: ReturnType<typeof vi.fn>;
+        range: ReturnType<typeof vi.fn>;
         then: (resolve: (value: unknown) => void) => void;
       } = {
         select: vi.fn(),
+        or: vi.fn(),
         eq: vi.fn(),
+        in: vi.fn(),
         order: vi.fn(),
+        range: vi.fn(),
         then: (resolve) => resolve(response),
       };
       chain.select.mockReturnValue(chain);
+      chain.or.mockReturnValue(chain);
       chain.eq.mockReturnValue(chain);
+      chain.in.mockReturnValue(chain);
       chain.order.mockReturnValue(chain);
+      chain.range.mockReturnValue(chain);
       return chain;
     }),
   } as never;
@@ -225,17 +206,36 @@ beforeEach(() => {
 // ── AdvisingPage (page-level rendering) ─────────────────────────────────────
 
 describe("AdvisingPage", () => {
+  it("loads the normal meeting list without querying selector tables", async () => {
+    const client = createMockClient({
+      advising_meeting_list: { data: [], count: 0, error: null },
+    }) as unknown as { from: ReturnType<typeof vi.fn> };
+    createServerClient.mockReturnValue(client);
+
+    await renderPage(
+      createElement(AdvisingPage, {
+        searchParams: Promise.resolve({ page: "1", pageSize: "25" }),
+      })
+    );
+
+    const queriedTables = client.from.mock.calls.map((call) => call[0]);
+    expect(queriedTables).toContain("advising_meeting_list");
+    expect(queriedTables).not.toContain("student");
+    expect(queriedTables).not.toContain("advisor");
+    expect(queriedTables).not.toContain("application");
+    // No meeting rows means there is no amendments query either. Selector
+    // options remain the table's existing typeahead flow, not page-load data.
+    expect(queriedTables).toEqual(["advising_meeting_list"]);
+  });
+
   it("renders General Advising for a null-application meeting and the cycle label for an application-bound meeting", async () => {
     createServerClient.mockReturnValue(
       createMockClient({
-        advising_meeting: {
+        // The list loader reads the flattened SECURITY INVOKER view, not the
+        // base table with embedded relations.
+        advising_meeting_list: {
           data: [
-            // General Advising: application_id NULL. Carries three attached
-            // corrections in the chronological order the loader is expected to
-            // return them (created_at ASC, amendment_id ASC as tie-breaker).
-            // The mock fixture deliberately mixes earlier / later created_at
-            // values to prove the page renders whatever ordering the loader
-            // produced, never a fresh-row insertion order.
+            // General Advising: application_id NULL → NULL application context.
             {
               meeting_id: 1,
               student_id: 10,
@@ -246,39 +246,15 @@ describe("AdvisingPage", () => {
               no_show: false,
               notes: "Intro session",
               created_at: "2026-09-01T12:00:00.000Z",
-              recorded_by: null,
-              application: null,
-              amendments: [
-                {
-                  amendment_id: 9003,
-                  meeting_id: 1,
-                  reason: "Earliest correction",
-                  details: "Correction recorded before the others on this meeting.",
-                  created_at: "2026-09-02T08:00:00.000Z",
-                  created_by_advisor_id: 3,
-                  created_by: { advisor_name: "Margaret Hamilton" },
-                },
-                {
-                  amendment_id: 9001,
-                  meeting_id: 1,
-                  reason: "Same timestamp — lower id",
-                  details: "Tie-broken by amendment_id ascending.",
-                  created_at: "2026-09-02T09:30:00.000Z",
-                  created_by_advisor_id: 2,
-                  created_by: { advisor_name: "Alan Turing" },
-                },
-                {
-                  amendment_id: 9002,
-                  meeting_id: 1,
-                  reason: "Same timestamp — higher id",
-                  details: "Same created_at as 9001; amendment_id sorts it last.",
-                  created_at: "2026-09-02T09:30:00.000Z",
-                  created_by_advisor_id: 2,
-                  created_by: { advisor_name: "Alan Turing" },
-                },
-              ],
+              created_by_advisor_id: null,
+              student_name: "Ada Lovelace",
+              advisor_name: "Grace Hopper",
+              recorded_by_advisor_name: null,
+              application_year: null,
+              fellowship_id: null,
+              fellowship_name: null,
             },
-            // Application-bound advising: the join resolves the cycle label.
+            // Application-bound advising: the flattened view resolves the cycle.
             {
               meeting_id: 2,
               student_id: 10,
@@ -289,14 +265,49 @@ describe("AdvisingPage", () => {
               no_show: false,
               notes: null,
               created_at: "2026-09-15T12:00:00.000Z",
-              recorded_by: { advisor_name: "Grace Hopper" },
-              application: {
-                application_id: 7,
-                application_year: 2026,
-                fellowship_id: 3,
-                fellowship: { fellowship_name: "Fulbright" },
-              },
-              amendments: [],
+              created_by_advisor_id: 3,
+              student_name: "Ada Lovelace",
+              advisor_name: "Grace Hopper",
+              recorded_by_advisor_name: "Grace Hopper",
+              application_year: 2026,
+              fellowship_id: 3,
+              fellowship_name: "Fulbright",
+            },
+          ],
+          count: 2,
+          error: null,
+        },
+        // Amendments arrive in a deliberately scrambled order from the second,
+        // bounded query: the loader must group by meeting and restore
+        // chronological (created_at ASC, amendment_id ASC) order.
+        advising_meeting_amendment: {
+          data: [
+            {
+              amendment_id: 9002,
+              meeting_id: 1,
+              reason: "Same timestamp — higher id",
+              details: "Same created_at as 9001; amendment_id sorts it last.",
+              created_at: "2026-09-02T09:30:00.000Z",
+              created_by_advisor_id: 2,
+              created_by: { advisor_name: "Alan Turing" },
+            },
+            {
+              amendment_id: 9003,
+              meeting_id: 1,
+              reason: "Earliest correction",
+              details: "Correction recorded before the others on this meeting.",
+              created_at: "2026-09-02T08:00:00.000Z",
+              created_by_advisor_id: 3,
+              created_by: { advisor_name: "Margaret Hamilton" },
+            },
+            {
+              amendment_id: 9001,
+              meeting_id: 1,
+              reason: "Same timestamp — lower id",
+              details: "Tie-broken by amendment_id ascending.",
+              created_at: "2026-09-02T09:30:00.000Z",
+              created_by_advisor_id: 2,
+              created_by: { advisor_name: "Alan Turing" },
             },
           ],
           error: null,
@@ -334,12 +345,8 @@ describe("AdvisingPage", () => {
     expect(html).toContain("General Advising");
     // Application-bound meeting renders the cycle-aware label.
     expect(html).toContain("Fulbright — 2026");
-    // Both same-fellowship cycles are offered as distinct application options.
-    expect(html).toContain("Fulbright — 2026");
-    expect(html).toContain("Fulbright — 2025");
-    // The student and advisor option lists flow through to the table.
-    expect(html).toContain("Ada Lovelace");
-    expect(html).toContain("Grace Hopper");
+    // Selector options are lazily loaded by the client table, not server-rendered.
+    expect(html).not.toContain("application-options");
     // The page passes provenance through for new records and makes legacy
     // records without a creator explicit rather than inventing one.
     expect(html).toContain("Recorded by Grace Hopper");
@@ -352,11 +359,10 @@ describe("AdvisingPage", () => {
     expect(html).toContain("Added by Alan Turing");
     expect(html).toContain("2026-09-02T08:00:00.000Z");
     expect(html).toContain("2026-09-02T09:30:00.000Z");
-    // Multiple amendments are preserved in the chronological order the loader
-    // produced: 9003 (earliest created_at) appears before 9001 (same
-    // created_at as 9002, sorted first by amendment_id), which appears
-    // before 9002. The mock renders the array in array order, so this proves
-    // the page does not re-sort or de-duplicate the embedded collection.
+    // Multiple amendments are restored to chronological order by the bounded
+    // loader query even though the mock returned them scrambled: 9003 (earliest
+    // created_at) appears before 9001 (same created_at as 9002, sorted first by
+    // amendment_id), which appears before 9002.
     const earliest = html.indexOf("Earliest correction");
     const lowerId = html.indexOf("Same timestamp — lower id");
     const higherId = html.indexOf("Same timestamp — higher id");
@@ -373,10 +379,52 @@ describe("AdvisingPage", () => {
     expect(normalizeSsr(html)).toContain("2 meetings");
   });
 
+  it("searches only allowlisted list-view columns and pages with an inclusive range", async () => {
+    const client = createMockClient({
+      // 60 rows → 3 pages at the default page size, so page 2 is in range and
+      // the loader does not canonicalize-redirect.
+      advising_meeting_list: { data: [], count: 60, error: null },
+    }) as unknown as { from: ReturnType<typeof vi.fn> };
+    createServerClient.mockReturnValue(client);
+
+    await renderPage(
+      createElement(AdvisingPage, {
+        searchParams: Promise.resolve({ search: "Ada Turing", page: "2", pageSize: "25" }),
+      })
+    );
+
+    // The loader must read the flattened list view, never the base table or a
+    // non-existent `search_document` field, and never PostgREST `textSearch`.
+    const fromCalls = client.from.mock.calls.map((call) => call[0]);
+    expect(fromCalls[0]).toBe("advising_meeting_list");
+    expect(fromCalls).not.toContain("advising_meeting");
+
+    // The mock chain intentionally exposes no `textSearch`, so a regression to
+    // the non-existent full-text column would throw here rather than pass.
+    const listChain = client.from.mock.results[0].value as {
+      or: ReturnType<typeof vi.fn>;
+      range: ReturnType<typeof vi.fn>;
+    };
+    expect(listChain.or).toHaveBeenCalledTimes(1);
+    const orExpression = listChain.or.mock.calls[0][0] as string;
+    for (const field of [
+      "student_name",
+      "advisor_name",
+      "notes",
+      "meeting_mode",
+      "fellowship_name",
+    ]) {
+      expect(orExpression).toContain(`${field}.ilike.*Ada Turing*`);
+    }
+    expect(orExpression).not.toContain("search_document");
+    // Page 2 of 25 → inclusive [25, 49].
+    expect(listChain.range).toHaveBeenCalledWith(25, 49);
+  });
+
   it("renders the page shell (zero counts) when a query fails instead of crashing", async () => {
     createServerClient.mockReturnValue(
       createMockClient({
-        advising_meeting: { data: null, error: { message: "db timeout" } },
+        advising_meeting_list: { data: null, error: { message: "db timeout" } },
         student: {
           data: [{ student_id: 10, full_name: "Ada Lovelace" }],
           error: null,
@@ -394,6 +442,6 @@ describe("AdvisingPage", () => {
     // No meetings → no meeting contexts, and the coverage section still renders.
     expect(html).not.toContain("General Advising");
     expect(normalizeSsr(html)).toContain("0 meetings");
-    expect(html).toContain("Meetings Logged");
+    expect(html).toContain("Advising Coverage");
   });
 });

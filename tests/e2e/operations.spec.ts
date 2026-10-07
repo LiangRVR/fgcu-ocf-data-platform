@@ -185,6 +185,18 @@ async function signInAsActive(page: Page): Promise<void> {
 }
 
 /**
+ * The advising Log Meeting dialog resolves students with a lazy bounded
+ * typeahead: options are only queried once at least two characters are typed,
+ * and each bounded option is a plain button whose accessible name is the full
+ * student name. Typing the full name keeps the search deterministic.
+ */
+async function selectAdvisingStudent(page: Page, name: string): Promise<void> {
+  const dialog = page.getByRole("dialog");
+  await dialog.locator("#student-search").fill(name);
+  await dialog.getByRole("button", { name, exact: true }).click();
+}
+
+/**
  * The seeded student name renders in both the desktop table and the hidden
  * mobile card list; restrict to a visible occurrence so the assertion is
  * layout-independent.
@@ -286,6 +298,11 @@ async function restoreSeededApplicationStage(page: Page): Promise<void> {
  */
 async function assertReportsTotals(page: Page, expectedStudents: number): Promise<void> {
   await expect(page.getByRole("heading", { name: "Reports" })).toBeVisible();
+
+  // Reports are a full-dataset surface, not a paginated operational list: the
+  // shared pagination control (aria-label="Pagination") must never render, so
+  // report totals can never be mistaken for a single page of rows.
+  await expect(page.getByRole("navigation", { name: "Pagination" })).toHaveCount(0);
 
   await expect(statCardValue(page, "Total Students")).toHaveText(String(expectedStudents));
   await expect(statCardValue(page, "Applications")).toHaveText(
@@ -390,8 +407,7 @@ test.describe("operational surfaces", () => {
     await page.goto("/advising");
     await page.getByRole("button", { name: "Log Meeting" }).click();
 
-    await page.locator("#student_id").click();
-    await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
+    await selectAdvisingStudent(page, STUDENT_NAME);
     await page.locator("#meeting_date").fill("2026-09-15");
     await page.locator("#meeting_mode").click();
     await page.getByRole("option", { name: "In-Person", exact: true }).click();
@@ -578,8 +594,7 @@ test.describe("operational surfaces", () => {
     await page.goto("/advising");
     await page.getByRole("button", { name: "Log Meeting" }).click();
 
-    await page.locator("#student_id").click();
-    await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
+    await selectAdvisingStudent(page, STUDENT_NAME);
 
     // With no application selected the form defaults to General Advising (null
     // application_id) — the trigger must show it, not a stale application.
@@ -618,8 +633,7 @@ test.describe("operational surfaces", () => {
     await page.goto("/advising");
     await page.getByRole("button", { name: "Log Meeting" }).click();
 
-    await page.locator("#student_id").click();
-    await page.getByRole("option", { name: STUDENT_TWO_NAME, exact: true }).click();
+    await selectAdvisingStudent(page, STUDENT_TWO_NAME);
 
     // The same-fellowship pair is offered cycle-aware and distinguishable.
     await page.locator("#application_id").click();
@@ -665,12 +679,14 @@ test.describe("operational surfaces", () => {
 
     // The shared meeting form declares the approved field order. Compare DOM
     // positions of each field's id inside the dialog HTML so the assertion is
-    // layout-independent and immune to viewport-specific reordering.
+    // layout-independent and immune to viewport-specific reordering. Student
+    // and Advisor are lazy bounded typeahead inputs (`*-search`), so their
+    // input ids stand in for the former Select triggers.
     const html = await dialog.innerHTML();
     const fieldIds = [
-      'id="student_id"',
+      'id="student-search"',
       'id="application_id"',
-      'id="advisor_id"',
+      'id="advisor-search"',
       'id="meeting_date"',
       'id="meeting_mode"',
       'id="no_show"',
@@ -696,16 +712,14 @@ test.describe("operational surfaces", () => {
     const staleNote = `E2E stale-student switch ${Date.now()}`;
 
     // Select the seeded student and pick one of their applications.
-    await dialog.locator("#student_id").click();
-    await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
+    await selectAdvisingStudent(page, STUDENT_NAME);
     await dialog.locator("#application_id").click();
     await page.getByRole("option", { name: firstStudentLabel, exact: true }).click();
     await expect(dialog.locator("#application_id")).toContainText(firstStudentLabel);
 
     // Switch to the second student → the stale application selection must clear
     // back to General Advising (never carry another student's application over).
-    await dialog.locator("#student_id").click();
-    await page.getByRole("option", { name: STUDENT_TWO_NAME, exact: true }).click();
+    await selectAdvisingStudent(page, STUDENT_TWO_NAME);
     await expect(dialog.locator("#application_id")).toContainText("General Advising");
     await expect(dialog.locator("#application_id")).not.toContainText(firstStudentLabel);
 
@@ -760,8 +774,7 @@ test.describe("operational surfaces", () => {
     const dialog = page.getByRole("dialog");
 
     // Select the seeded student and the freshly-created application.
-    await dialog.locator("#student_id").click();
-    await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
+    await selectAdvisingStudent(page, STUDENT_NAME);
     await dialog.locator("#application_id").click();
     await page.getByRole("option", { name: staleApplicationLabel, exact: true }).click();
     await expect(dialog.locator("#application_id")).toContainText(staleApplicationLabel);
@@ -804,8 +817,7 @@ test.describe("operational surfaces", () => {
     await expect(rowAfterReload).toContainText("General Advising");
 
     await page.getByRole("button", { name: "Log Meeting" }).click();
-    await dialog.locator("#student_id").click();
-    await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
+    await selectAdvisingStudent(page, STUDENT_NAME);
     await dialog.locator("#application_id").click();
     await expect(
       page.getByRole("option", { name: staleApplicationLabel, exact: true }),
@@ -828,8 +840,7 @@ test.describe("operational surfaces", () => {
 
     // For the second student, only their own applications (+ General Advising)
     // are offered — the first student's application must not appear at all.
-    await dialog.locator("#student_id").click();
-    await page.getByRole("option", { name: STUDENT_TWO_NAME, exact: true }).click();
+    await selectAdvisingStudent(page, STUDENT_TWO_NAME);
     await dialog.locator("#application_id").click();
     await expect(page.getByRole("option", { name: "General Advising", exact: true })).toBeVisible();
     await expect(page.getByRole("option", { name: secondStudentLabel, exact: true })).toBeVisible();
@@ -838,8 +849,7 @@ test.describe("operational surfaces", () => {
     // Close the application dropdown, then check the reverse direction: the
     // first student's options never include the second student's applications.
     await page.keyboard.press("Escape");
-    await dialog.locator("#student_id").click();
-    await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
+    await selectAdvisingStudent(page, STUDENT_NAME);
     await dialog.locator("#application_id").click();
     await expect(page.getByRole("option", { name: firstStudentLabel, exact: true })).toBeVisible();
     await expect(page.getByRole("option", { name: secondStudentLabel, exact: true })).toHaveCount(0);
@@ -859,7 +869,9 @@ test.describe("operational surfaces", () => {
     await page.goto("/fellowship-thursday");
     await page.getByRole("button", { name: "Add Record" }).click();
 
-    await page.locator("#ft_student_id").click();
+    // Fellowship Thursday resolves students with the same lazy bounded
+    // typeahead: type at least two characters, then choose the bounded option.
+    await page.locator("#ft_student_id").fill(STUDENT_NAME);
     await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
 
     // Explicitly set the attendance state to "not attended" so the created
@@ -972,9 +984,11 @@ test.describe("operational surfaces", () => {
     await page.goto("/scholarship-history");
     await page.getByRole("button", { name: "Add Record" }).click();
 
-    await page.locator("#sh_student_id").click();
+    // Scholarship History uses lazy bounded typeaheads for both lookups: type
+    // at least two characters, then choose the bounded option.
+    await page.locator("#sh_student_id").fill(STUDENT_NAME);
     await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
-    await page.locator("#sh_fellowship_id").click();
+    await page.locator("#sh_fellowship_id").fill(FELLOWSHIP_NAME);
     await page.getByRole("option", { name: FELLOWSHIP_NAME, exact: true }).click();
 
     await page.getByRole("dialog").getByRole("button", { name: "Add Record" }).click();
@@ -1041,7 +1055,7 @@ test.describe("operational surfaces", () => {
       await dialog.getByRole("button", { name: "Add Correction" }).click();
       await expect(dialog.getByText("A reason is required.")).toBeVisible();
       await dialog.locator("#amendment_reason").fill(correctionReason);
-      await dialog.locator("#corrected_fellowship").click();
+      await dialog.locator("#corrected_fellowship").fill(correctedFellowshipName);
       await page.getByRole("option", { name: correctedFellowshipName, exact: true }).click();
       await dialog.getByRole("button", { name: "Add Correction" }).click();
       await expect(dialog).toBeHidden();

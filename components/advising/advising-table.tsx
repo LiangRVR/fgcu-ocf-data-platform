@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useState, useMemo, useEffect } from "react";
+import { Fragment, useState, useEffect } from "react";
 import { AppCard, AppCardContent } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
 import { DataToolbar } from "@/components/ui/data-toolbar";
@@ -25,7 +25,9 @@ import {
 } from "@/components/ui/dialog";
 import { Search, CalendarPlus, Calendar, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Pagination } from "@/components/pagination/pagination";
+import { updateListSearchParams } from "@/lib/utils/pagination";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
 import type { Database } from "@/types/database";
@@ -50,22 +52,9 @@ type AdvisingAmendment = Database["public"]["Tables"]["advising_meeting_amendmen
   created_by: { advisor_name: string } | null;
 };
 
-type StudentRow = Pick<
-  Database["public"]["Tables"]["student"]["Row"],
-  "student_id" | "full_name"
->;
-
-type AdvisorRow = Pick<
-  Database["public"]["Tables"]["advisor"]["Row"],
-  "advisor_id" | "advisor_name"
->;
-
-type ApplicationOption = {
-  application_id: number;
-  student_id: number;
-  application_year: number | null;
-  fellowship: { fellowship_name: string } | null;
-};
+type StudentRow = { student_id: number; full_name: string };
+type AdvisorRow = { advisor_id: number; advisor_name: string };
+type ApplicationOption = { application_id: number; student_id: number; application_year: number | null; fellowship: { fellowship_name: string } | null };
 
 const MEETING_MODES = ["In-Person", "Virtual"] as const;
 type MeetingMode = (typeof MEETING_MODES)[number];
@@ -85,17 +74,20 @@ function isApplicationForeignKeyViolation(err: unknown): boolean {
 
 interface AdvisingTableProps {
   initialMeetings: AdvisingMeeting[];
-  students: StudentRow[];
-  advisors: AdvisorRow[];
-  applications: ApplicationOption[];
   currentAdvisorId: number;
   defaultStudentId?: string;
   defaultAdvisorId?: string;
   autoOpenAdd?: boolean;
   initialNoShowFilter?: string;
+  initialModeFilter?: string;
+  initialSearchQuery?: string;
+  page: number;
+  pageSize: number;
+  totalCount: number;
+  totalPages: number;
 }
 
-const GENERAL_ADVISING_VALUE = "general";
+export const GENERAL_ADVISING_VALUE = "general";
 
 function formatRecordedAt(createdAt: string | null | undefined): string {
   if (!createdAt) return "date unavailable";
@@ -120,23 +112,59 @@ const EMPTY_FORM = {
   notes: "",
 };
 
+/**
+ * Recovery transition for a rejected insert whose application FK no longer
+ * resolves (stale application). Recovery has two inseparable halves while the
+ * Log Meeting dialog stays open:
+ *   1. reset the selection to General Advising, and
+ *   2. invalidate the cached option list so the dialog refetches it and drops
+ *      the stale option (otherwise the deleted application remains selectable).
+ * Returning both keeps the invariant in one pure, unit-testable place; a
+ * regression that drops the reload bump fails the focused unit test.
+ */
+export function recoverStaleApplication(
+  form: typeof EMPTY_FORM,
+  applicationsReloadKey: number,
+): { form: typeof EMPTY_FORM; applicationsReloadKey: number } {
+  return {
+    form: { ...form, application_id: GENERAL_ADVISING_VALUE },
+    applicationsReloadKey: applicationsReloadKey + 1,
+  };
+}
+
 export function AdvisingTable({
   initialMeetings,
-  students,
-  advisors,
-  applications,
   currentAdvisorId,
   defaultStudentId,
   defaultAdvisorId,
   autoOpenAdd,
   initialNoShowFilter,
+  initialModeFilter,
+  initialSearchQuery,
+  page,
+  pageSize,
+  totalCount,
+  totalPages,
 }: AdvisingTableProps) {
   const router = useRouter();
-  const [meetings, setMeetings] = useState<AdvisingMeeting[]>(initialMeetings);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [modeFilter, setModeFilter] = useState<string>("all");
+  const searchParams = useSearchParams();
+  // The server already filtered and paginated: the page of rows is the source
+  // of truth. UI controls only commit their state to the canonical URL.
+  const meetings = initialMeetings;
+  const [searchQuery, setSearchQuery] = useState(initialSearchQuery ?? "");
+  const [debouncedSearch, setDebouncedSearch] = useState(initialSearchQuery ?? "");
+  const [modeFilter, setModeFilter] = useState<string>(
+    initialModeFilter === "In-Person" || initialModeFilter === "Virtual"
+      ? initialModeFilter
+      : "all",
+  );
   const [noShowFilter, setNoShowFilter] = useState<string>(initialNoShowFilter ?? "all");
+
+  const navigate = (mutate: (next: URLSearchParams) => void) => {
+    const next = new URLSearchParams(searchParams.toString());
+    mutate(next);
+    router.push(`/advising?${next.toString()}`);
+  };
 
   const [addOpen, setAddOpen] = useState(false);
 
@@ -144,6 +172,9 @@ export function AdvisingTable({
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  // Bumped on stale-application recovery so the still-open dialog refetches the
+  // selected student's application options and drops the stale one.
+  const [applicationsReloadKey, setApplicationsReloadKey] = useState(0);
 
   // Pre-fill and auto-open add dialog when arriving from a contextual link
   useEffect(() => {
@@ -157,45 +188,38 @@ export function AdvisingTable({
     }
   }, [autoOpenAdd, currentAdvisorId, defaultAdvisorId, defaultStudentId]);
 
-  // Debounce search
+  // Keep the controls in sync when the URL changes underneath the table (pill
+  // bar navigation, back/forward), without clobbering in-flight typing.
   useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
+    setSearchQuery(initialSearchQuery ?? "");
+    setDebouncedSearch(initialSearchQuery ?? "");
+    setModeFilter(
+      initialModeFilter === "In-Person" || initialModeFilter === "Virtual"
+        ? initialModeFilter
+        : "all",
+    );
+    setNoShowFilter(initialNoShowFilter ?? "all");
+  }, [initialSearchQuery, initialModeFilter, initialNoShowFilter]);
+
+  // Debounce search and commit it to canonical URL state. When the committed
+  // prop already matches the typed value (initial mount, or the server echo
+  // after navigation) nothing is pushed, so loading a filtered/paginated URL
+  // never rewrites it and spuriously drops the current page.
+  useEffect(() => {
+    if (searchQuery === (initialSearchQuery ?? "")) return;
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+      const next = updateListSearchParams(searchParams.toString(), {
+        search: searchQuery || null,
+      });
+      router.push(`/advising?${next.toString()}`);
+    }, 300);
     return () => clearTimeout(timer);
-  }, [searchQuery]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery, initialSearchQuery]);
 
-  const filteredMeetings = useMemo(() => {
-    let list = meetings;
-
-    if (debouncedSearch) {
-      const q = debouncedSearch.toLowerCase();
-      list = list.filter(
-        (m) =>
-          (m.student?.full_name ?? "").toLowerCase().includes(q) ||
-          (m.advisor?.advisor_name ?? "").toLowerCase().includes(q) ||
-          (m.notes ?? "").toLowerCase().includes(q) ||
-          m.meeting_mode.toLowerCase().includes(q) ||
-          (m.application_id == null
-            ? "general advising"
-            : formatApplicationLabel(
-                m.application?.fellowship?.fellowship_name,
-                m.application?.application_year
-              )
-          ).toLowerCase().includes(q)
-      );
-    }
-
-    if (modeFilter !== "all") {
-      list = list.filter((m) => m.meeting_mode === modeFilter);
-    }
-
-    if (noShowFilter === "yes") {
-      list = list.filter((m) => m.no_show);
-    } else if (noShowFilter === "no") {
-      list = list.filter((m) => !m.no_show);
-    }
-
-    return list;
-  }, [meetings, debouncedSearch, modeFilter, noShowFilter]);
+  // The server performs search/filter/pagination; the returned page is final.
+  const filteredMeetings = meetings;
 
   const validateForm = (f: typeof form): Record<string, string> => {
     const errors: Record<string, string> = {};
@@ -205,12 +229,7 @@ export function AdvisingTable({
     if (!f.meeting_mode) errors.meeting_mode = "Meeting mode is required.";
 
     if (f.student_id && f.application_id !== GENERAL_ADVISING_VALUE) {
-      const allowed = applications
-        .filter((a) => String(a.student_id) === f.student_id)
-        .map((a) => String(a.application_id));
-      if (!allowed.includes(f.application_id)) {
-        errors.application_id = "Selected application is not valid for this student.";
-      }
+      if (!/^\d+$/.test(f.application_id)) errors.application_id = "Select an application from the list.";
     }
     return errors;
   };
@@ -227,7 +246,7 @@ export function AdvisingTable({
 
     setIsLoading(true);
     try {
-      const { data, error } = await supabaseBrowserClient
+      const { error } = await supabaseBrowserClient
         .from("advising_meeting")
         .insert({
           student_id: Number(form.student_id),
@@ -237,22 +256,25 @@ export function AdvisingTable({
           meeting_mode: form.meeting_mode,
           no_show: form.no_show,
           notes: form.notes || null,
-        } as Database["public"]["Tables"]["advising_meeting"]["Insert"])
-        .select(`*, student(full_name), advisor!advising_meeting_advisor_id_fkey(advisor_name), recorded_by:advisor!advising_meeting_created_by_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))`)
-        .single();
+        } as Database["public"]["Tables"]["advising_meeting"]["Insert"]);
 
       if (error) throw error;
 
-      setMeetings((prev) => [data as AdvisingMeeting, ...prev]);
+      // Re-run the server loader so the bounded, paginated list is authoritative.
       toast.success("Meeting recorded successfully.");
+      router.refresh();
       setAddOpen(false);
       setForm({ ...EMPTY_FORM, advisor_id: String(currentAdvisorId) });
       setFormErrors({});
     } catch (err) {
       console.error(err);
       if (isApplicationForeignKeyViolation(err)) {
+        const recovery = recoverStaleApplication(form, applicationsReloadKey);
+        // Functional update keeps any field the user edited while the insert
+        // was in flight; only the invalid application selection is replaced.
+        setForm((prev) => ({ ...prev, application_id: recovery.form.application_id }));
+        setApplicationsReloadKey(recovery.applicationsReloadKey);
         toast.error("Selected application is no longer valid for this student. Reset to General Advising.");
-        setForm((prev) => ({ ...prev, application_id: GENERAL_ADVISING_VALUE }));
         router.refresh();
       } else {
         toast.error("Failed to create meeting.");
@@ -301,7 +323,17 @@ export function AdvisingTable({
               </Button>
             </div>
             <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
-              <Select value={modeFilter} onValueChange={setModeFilter}>
+              <Select
+                value={modeFilter}
+                onValueChange={(value) => {
+                  setModeFilter(value);
+                  navigate((next) => {
+                    if (value === "all") next.delete("mode");
+                    else next.set("mode", value);
+                    next.set("page", "1");
+                  });
+                }}
+              >
                 <SelectTrigger className="w-full sm:w-36">
                   <SelectValue placeholder="All modes" />
                 </SelectTrigger>
@@ -314,7 +346,17 @@ export function AdvisingTable({
                   ))}
                 </SelectContent>
               </Select>
-              <Select value={noShowFilter} onValueChange={setNoShowFilter}>
+              <Select
+                value={noShowFilter}
+                onValueChange={(value) => {
+                  setNoShowFilter(value);
+                  navigate((next) => {
+                    if (value === "all") next.delete("no_show");
+                    else next.set("no_show", value);
+                    next.set("page", "1");
+                  });
+                }}
+              >
                 <SelectTrigger className="w-full sm:w-36">
                   <SelectValue placeholder="All attendance" />
                 </SelectTrigger>
@@ -436,7 +478,7 @@ export function AdvisingTable({
                             </MetricBadge>
                           )}
                         </div>
-                        <div className="mt-3"><AddCorrection meetingId={meeting.meeting_id} onSaved={(amendment) => setMeetings((previous) => previous.map((item) => item.meeting_id !== meeting.meeting_id ? item : { ...item, amendments: [...(item.amendments ?? []), amendment].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.amendment_id - b.amendment_id) }))} /></div>
+                        <div className="mt-3"><AddCorrection meetingId={meeting.meeting_id} onSaved={() => router.refresh()} /></div>
                         <AmendmentHistory amendments={meeting.amendments ?? []} />
                       </div>
                     </div>
@@ -544,7 +586,7 @@ export function AdvisingTable({
                         </div>
                       </td>
                       <td className="px-3 py-3 text-right sm:px-6 sm:py-4">
-                        <AddCorrection meetingId={meeting.meeting_id} onSaved={(amendment) => setMeetings((previous) => previous.map((item) => item.meeting_id !== meeting.meeting_id ? item : { ...item, amendments: [...(item.amendments ?? []), amendment].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.amendment_id - b.amendment_id) }))} />
+                        <AddCorrection meetingId={meeting.meeting_id} onSaved={() => router.refresh()} />
                       </td>
                     </tr>
                     {meeting.amendments?.length > 0 ? (
@@ -564,13 +606,20 @@ export function AdvisingTable({
         </AppCardContent>
       </AppCard>
 
-      {/* Record count */}
-      {filteredMeetings.length > 0 && (
-        <div className="mt-4 text-sm text-slate-500">
-          Showing <span className="font-medium">{filteredMeetings.length}</span>{" "}
-          of <span className="font-medium">{meetings.length}</span> meetings
-        </div>
-      )}
+      {/* Pagination summary */}
+      <Pagination
+        page={page}
+        pageSize={pageSize}
+        totalCount={totalCount}
+        totalPages={totalPages}
+        getPageHref={(nextPage) =>
+          `/advising?${updateListSearchParams(searchParams.toString(), { page: nextPage }).toString()}`
+        }
+        getPageSizeHref={(nextPageSize) =>
+          `/advising?${updateListSearchParams(searchParams.toString(), { pageSize: nextPageSize }).toString()}`
+        }
+        className="mt-4"
+      />
 
       {/* ── Add Meeting Dialog ─────────────────────────────── */}
       <Dialog open={addOpen} onOpenChange={(o) => !o && resetAndCloseAdd()}>
@@ -586,9 +635,7 @@ export function AdvisingTable({
             form={form}
             setForm={setForm}
             formErrors={formErrors}
-            students={students}
-            advisors={advisors}
-            applications={applications}
+            applicationsReloadKey={applicationsReloadKey}
           />
 
           <DialogFooter>
@@ -659,12 +706,46 @@ interface MeetingFormProps {
   form: typeof EMPTY_FORM;
   setForm: React.Dispatch<React.SetStateAction<typeof EMPTY_FORM>>;
   formErrors: Record<string, string>;
-  students: StudentRow[];
-  advisors: AdvisorRow[];
-  applications: ApplicationOption[];
+  /**
+   * Increments on stale-application recovery. Included in the application
+   * option refetch deps so the open dialog reloads the selected student's
+   * options and removes an option the server no longer returns.
+   */
+  applicationsReloadKey: number;
 }
 
-function MeetingForm({ form, setForm, formErrors, students, advisors, applications }: MeetingFormProps) {
+function MeetingForm({ form, setForm, formErrors, applicationsReloadKey }: MeetingFormProps) {
+  const [studentSearch, setStudentSearch] = useState("");
+  const [advisorSearch, setAdvisorSearch] = useState("");
+  const [students, setStudents] = useState<StudentRow[]>([]);
+  const [advisors, setAdvisors] = useState<AdvisorRow[]>([]);
+  const [applications, setApplications] = useState<ApplicationOption[]>([]);
+  // Derive the visible option lists so a short query hides stale results
+  // without a synchronous setState inside an effect.
+  const visibleStudents = studentSearch.trim().length < 2 ? [] : students;
+  const visibleAdvisors = advisorSearch.trim().length < 2 ? [] : advisors;
+  useEffect(() => {
+    if (studentSearch.trim().length < 2) return;
+    const timer = setTimeout(async () => {
+      const { data } = await supabaseBrowserClient.from("student").select("student_id, full_name").is("archived_at", null).ilike("full_name", `%${studentSearch.trim()}%`).order("full_name").limit(20);
+      setStudents((data ?? []) as StudentRow[]);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [studentSearch]);
+  useEffect(() => {
+    if (advisorSearch.trim().length < 2) return;
+    const timer = setTimeout(async () => {
+      const { data } = await supabaseBrowserClient.from("advisor").select("advisor_id, advisor_name").eq("is_active", true).ilike("advisor_name", `%${advisorSearch.trim()}%`).order("advisor_name").limit(20);
+      setAdvisors((data ?? []) as AdvisorRow[]);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [advisorSearch]);
+  useEffect(() => {
+    if (!form.student_id) return;
+    let active = true;
+    void supabaseBrowserClient.from("application").select("application_id, student_id, application_year, fellowship(fellowship_name)").eq("student_id", Number(form.student_id)).order("application_id", { ascending: false }).limit(50).then(({ data }) => { if (active) setApplications((data ?? []) as unknown as ApplicationOption[]); });
+    return () => { active = false; };
+  }, [form.student_id, applicationsReloadKey]);
   return (
     <div className="grid gap-4 py-2">
       {/* Student */}
@@ -672,27 +753,9 @@ function MeetingForm({ form, setForm, formErrors, students, advisors, applicatio
         <Label htmlFor="student_id">
           Student <span className="text-red-500">*</span>
         </Label>
-        <Select
-          value={form.student_id}
-          onValueChange={(v) =>
-            setForm((prev) => ({
-              ...prev,
-              student_id: v,
-              application_id: GENERAL_ADVISING_VALUE,
-            }))
-          }
-        >
-          <SelectTrigger id="student_id" className={formErrors.student_id ? "border-red-500" : ""}>
-            <SelectValue placeholder="Select a student…" />
-          </SelectTrigger>
-          <SelectContent>
-            {students.map((s) => (
-              <SelectItem key={s.student_id} value={String(s.student_id)}>
-                {s.full_name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <Input id="student-search" placeholder="Type at least 2 letters to search…" value={studentSearch} onChange={(e) => setStudentSearch(e.target.value)} />
+        <div className="max-h-36 overflow-y-auto">{visibleStudents.map((s) => <button type="button" key={s.student_id} className="block w-full p-2 text-left text-sm hover:bg-slate-50" onClick={() => { setForm((prev) => ({ ...prev, student_id: String(s.student_id), application_id: GENERAL_ADVISING_VALUE })); setStudentSearch(s.full_name); }}>{s.full_name}</button>)}</div>
+        {form.student_id && <p className="text-sm text-slate-600">Selected student #{form.student_id}</p>}
         {formErrors.student_id && (
           <p className="text-xs text-red-500">{formErrors.student_id}</p>
         )}
@@ -731,21 +794,9 @@ function MeetingForm({ form, setForm, formErrors, students, advisors, applicatio
       {/* Advisor */}
       <div className="grid gap-1.5">
         <Label htmlFor="advisor_id">Advisor <span className="text-red-500">*</span></Label>
-        <Select
-          value={form.advisor_id}
-          onValueChange={(v) => setForm((prev) => ({ ...prev, advisor_id: v }))}
-        >
-          <SelectTrigger id="advisor_id">
-            <SelectValue placeholder="Select an advisor…" />
-          </SelectTrigger>
-          <SelectContent>
-            {advisors.map((a) => (
-              <SelectItem key={a.advisor_id} value={String(a.advisor_id)}>
-                {a.advisor_name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <Input id="advisor-search" placeholder="Type at least 2 letters to search…" value={advisorSearch} onChange={(e) => setAdvisorSearch(e.target.value)} />
+        <div className="max-h-36 overflow-y-auto">{visibleAdvisors.map((a) => <button type="button" key={a.advisor_id} className="block w-full p-2 text-left text-sm hover:bg-slate-50" onClick={() => { setForm((prev) => ({ ...prev, advisor_id: String(a.advisor_id) })); setAdvisorSearch(a.advisor_name); }}>{a.advisor_name}</button>)}</div>
+        {form.advisor_id && <p className="text-sm text-slate-600">Selected advisor #{form.advisor_id}</p>}
         {formErrors.advisor_id && <p className="text-xs text-red-500">{formErrors.advisor_id}</p>}
       </div>
 

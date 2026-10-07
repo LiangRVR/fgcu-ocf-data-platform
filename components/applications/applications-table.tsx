@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AppCard, AppCardContent } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
 import { DataToolbar } from "@/components/ui/data-toolbar";
@@ -48,11 +49,12 @@ import {
   formatApplicationLabel,
 } from "@/lib/applications/pipeline";
 import type { Database } from "@/types/database";
+import { Pagination } from "@/components/pagination/pagination";
+import { updateListSearchParams } from "@/lib/utils/pagination";
 
-type Application = Database["public"]["Tables"]["application"]["Row"] & {
+type Application = Database["public"]["Views"]["application_list"]["Row"] & {
   student: { full_name: string } | null;
   fellowship: { fellowship_name: string } | null;
-  application_year: number | null;
 };
 
 type StudentRow = Pick<
@@ -93,13 +95,15 @@ function stageBadgeClass(stage: string): string {
 
 interface ApplicationsTableProps {
   initialApplications: Application[];
-  students: StudentRow[];
-  fellowships: FellowshipRow[];
   defaultStudentId?: string;
   defaultFellowshipId?: string;
   autoOpenAdd?: boolean;
   initialStageFilter?: string;
   initialSearchQuery?: string;
+  totalCount: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
 }
 
 const EMPTY_FORM = {
@@ -114,16 +118,16 @@ const EMPTY_FORM = {
 
 export function ApplicationsTable({
   initialApplications,
-  students,
-  fellowships,
   defaultStudentId,
   defaultFellowshipId,
   autoOpenAdd,
   initialStageFilter,
   initialSearchQuery,
+  totalCount, page, pageSize, totalPages,
 }: ApplicationsTableProps) {
-  const [applications, setApplications] =
-    useState<Application[]>(initialApplications);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const navigate = (patch: Record<string, string | number | null>) => { const next = updateListSearchParams(searchParams.toString(), patch); const query = next.toString(); router.push(query ? `/applications?${query}` : "/applications"); };
   const [searchQuery, setSearchQuery] = useState(initialSearchQuery ?? "");
   const [debouncedSearch, setDebouncedSearch] = useState(initialSearchQuery ?? "");
   const [stageFilter, setStageFilter] = useState<string>(initialStageFilter ?? "all");
@@ -136,6 +140,28 @@ export function ApplicationsTable({
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [students, setStudents] = useState<StudentRow[]>([]);
+  const [fellowships, setFellowships] = useState<FellowshipRow[]>([]);
+  const [selectorSearch, setSelectorSearch] = useState("");
+
+  useEffect(() => {
+    if (!addOpen && !editOpen) return;
+    let cancelled = false;
+    const load = async () => {
+      const term = selectorSearch.trim();
+      const studentQuery = supabaseBrowserClient.from("student").select("student_id, full_name").is("archived_at", null).order("full_name").limit(50);
+      const fellowshipQuery = supabaseBrowserClient.from("fellowship").select("fellowship_id, fellowship_name").is("archived_at", null).order("fellowship_name").limit(50);
+      const [studentResult, fellowshipResult] = await Promise.all([
+        term ? studentQuery.ilike("full_name", `%${term.replace(/[\\%_]/g, "\\$&")}%`) : studentQuery,
+        term ? fellowshipQuery.ilike("fellowship_name", `%${term.replace(/[\\%_]/g, "\\$&")}%`) : fellowshipQuery,
+      ]);
+      if (cancelled) return;
+      if (!studentResult.error) setStudents(studentResult.data ?? []);
+      if (!fellowshipResult.error) setFellowships(fellowshipResult.data ?? []);
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [addOpen, editOpen, selectorSearch]);
 
   // Pre-fill and auto-open add dialog when arriving from a contextual link
   useEffect(() => {
@@ -150,11 +176,23 @@ export function ApplicationsTable({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Debounce search
+  // Debounce search and commit it to canonical URL state.
+  // On mount the URL already reflects the server-provided search, so skip the
+  // redundant navigation that would otherwise reset the current page. Only
+  // navigate once the user's input actually diverges from the URL-backed value.
   useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+      const nextSearch = searchQuery || null;
+      const urlSearch = searchParams.get("search") || null;
+      if (nextSearch === urlSearch) return;
+      navigate({ search: nextSearch });
+    }, 300);
     return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchQuery]);
+
+  useEffect(() => { setSearchQuery(initialSearchQuery ?? ""); setStageFilter(initialStageFilter ?? "all"); }, [initialSearchQuery, initialStageFilter]);
 
   // When stage changes in the form, auto-sync the boolean flags
   const handleStageChange = (stage: Stage) => {
@@ -189,27 +227,7 @@ export function ApplicationsTable({
     });
   };
 
-  const filteredApplications = useMemo(() => {
-    let list = applications;
-
-    if (debouncedSearch) {
-      const q = debouncedSearch.toLowerCase();
-      list = list.filter(
-        (a) =>
-          (a.student?.full_name ?? "").toLowerCase().includes(q) ||
-          (a.fellowship?.fellowship_name ?? "").toLowerCase().includes(q) ||
-          String(a.application_year ?? "").includes(q) ||
-          (a.destination_country ?? "").toLowerCase().includes(q) ||
-          a.stage_of_application.toLowerCase().includes(q)
-      );
-    }
-
-    if (stageFilter !== "all") {
-      list = list.filter((a) => a.stage_of_application === stageFilter);
-    }
-
-    return list;
-  }, [applications, debouncedSearch, stageFilter]);
+  const filteredApplications = initialApplications;
 
   const validateForm = (f: typeof form): Record<string, string> => {
     const errors: Record<string, string> = {};
@@ -239,7 +257,7 @@ export function ApplicationsTable({
 
     setIsLoading(true);
     try {
-      const { data, error } = await supabaseBrowserClient
+      const { error } = await supabaseBrowserClient
         .from("application")
         .insert({
           student_id: Number(form.student_id),
@@ -257,7 +275,7 @@ export function ApplicationsTable({
 
       if (error) throw error;
 
-      setApplications((prev) => [data as Application, ...prev]);
+      router.refresh();
       toast.success("Application created successfully.");
       setAddOpen(false);
       setForm(EMPTY_FORM);
@@ -293,7 +311,7 @@ export function ApplicationsTable({
 
     setIsLoading(true);
     try {
-      const { data, error } = await supabaseBrowserClient
+      const { error } = await supabaseBrowserClient
         .from("application")
         .update({
           student_id: Number(form.student_id),
@@ -310,13 +328,7 @@ export function ApplicationsTable({
 
       if (error) throw error;
 
-      setApplications((prev) =>
-        prev.map((a) =>
-          a.application_id === editingApp.application_id
-            ? (data as Application)
-            : a
-        )
-      );
+      router.refresh();
       toast.success("Application updated successfully.");
       setEditOpen(false);
       setEditingApp(null);
@@ -376,7 +388,7 @@ export function ApplicationsTable({
               </Button>
             </div>
             <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
-              <Select value={stageFilter} onValueChange={setStageFilter}>
+              <Select value={stageFilter} onValueChange={(v) => { setStageFilter(v); navigate({ filter: v === "all" ? null : v }); }}>
                 <SelectTrigger className="w-full sm:w-44">
                   <SelectValue placeholder="All stages" />
                 </SelectTrigger>
@@ -569,12 +581,7 @@ export function ApplicationsTable({
       </AppCard>
 
       {/* Pagination summary */}
-      {filteredApplications.length > 0 && (
-        <div className="mt-4 text-sm text-slate-500">
-          Showing <span className="font-medium">{filteredApplications.length}</span>{" "}
-          of <span className="font-medium">{applications.length}</span> applications
-        </div>
-      )}
+      <Pagination page={page} pageSize={pageSize} totalCount={totalCount} totalPages={totalPages} getPageHref={(p) => { const next = updateListSearchParams(searchParams.toString(), { page: p }); return `/applications?${next.toString()}`; }} getPageSizeHref={(s) => { const next = updateListSearchParams(searchParams.toString(), { pageSize: s }); return `/applications?${next.toString()}`; }} className="mt-4" />
 
       {/* ── Add Application Dialog ─────────────────────────────── */}
       <Dialog open={addOpen} onOpenChange={(o) => !o && resetAndCloseAdd()}>
@@ -586,6 +593,7 @@ export function ApplicationsTable({
             </DialogDescription>
           </DialogHeader>
 
+          <Input aria-label="Search students and fellowships" placeholder="Search students or fellowships…" value={selectorSearch} onChange={(e) => setSelectorSearch(e.target.value)} />
           <ApplicationForm
             form={form}
             setForm={setForm}
@@ -621,6 +629,7 @@ export function ApplicationsTable({
             </DialogDescription>
           </DialogHeader>
 
+          <Input aria-label="Search students and fellowships" placeholder="Search students or fellowships…" value={selectorSearch} onChange={(e) => setSelectorSearch(e.target.value)} />
           <ApplicationForm
             form={form}
             setForm={setForm}

@@ -19,7 +19,7 @@
  *     is stored, only a body hash;
  *   - COMPLETE – every documented catalog section is present as an array, and
  *     the key expected local-chain catalog facts hold:
- *       * twenty-two local migration-ledger rows (the exact Git chain);
+ *       * twenty-four local migration-ledger rows (the exact Git chain);
  *       * RLS enabled on all eight operational tables;
  *       * application foreign keys keep the default NO ACTION semantics;
  *       * the advisor identity/RLS lockdown trigger and policies are present;
@@ -76,6 +76,21 @@
  *         views, replaces the seven-stage application vocabulary with the nine
  *         stage + flag-consistency + year-bound CHECKs, and adds the
  *         authenticated new-meeting advisor guard trigger;
+ *       * migration 20261010000001 (server-side pagination list views) adds the
+ *         six explicit-column, read-only, SECURITY INVOKER list views
+ *         (`student_list`, `application_list`, `advising_meeting_list`,
+ *         `fellowship_thursday_list`, `scholarship_history_list`,
+ *         `fellowship_list`) granted SELECT to `authenticated` only (anon
+ *         revoked); no base-table policy, grant, write path, sequence, or index
+ *         is changed.
+ *       * migration 20261011000001 (scholarship history operational summary)
+ *         adds the STABLE SECURITY INVOKER aggregate
+ *         `scholarship_history_operational_summary(text, integer)` that returns
+ *         the non-void award count and distinct-student count over
+ *         `scholarship_history_list` under the same search/effective-fellowship
+ *         filters, with EXECUTE granted to `authenticated` only (PUBLIC/anon
+ *         revoked); it replaces the client-side unbounded `student_id`
+ *         projection and never bypasses RLS.
  *
  * Safety: this test writes no output files, reads no hosted values, and never
  * queries business rows — it only runs the read-only catalog SELECTs inside
@@ -107,7 +122,7 @@ const OPERATIONAL_TABLES = [
   "scholarship_history_amendment",
 ] as const;
 
-/** The exact Git migration chain recorded in the local ledger (twenty-two rows). */
+/** The exact Git migration chain recorded in the local ledger (twenty-four rows). */
 const EXPECTED_LEDGER = [
   { version: "20260305000000", name: "initial_schema" },
   { version: "20260305000001", name: "allow_anon_read" },
@@ -131,6 +146,8 @@ const EXPECTED_LEDGER = [
   { version: "20261007000001", name: "atomic_advisor_role_change" },
   { version: "20261008000001", name: "historical_integrity_remediation" },
   { version: "20261009000001", name: "scholarship_void_serialization" },
+  { version: "20261010000001", name: "security_invoker_list_views" },
+  { version: "20261011000001", name: "scholarship_history_operational_summary" },
 ] as const;
 
 /** One shared capture: read-only catalog queries against the lane database. */
@@ -192,7 +209,7 @@ describe("schema inventory packet shape (local/schema-only/complete)", () => {
 });
 
 describe("migration ledger", () => {
-  it("records exactly the twenty-two local-chain migrations", () => {
+  it("records exactly the twenty-four local-chain migrations", () => {
     const ledger = packet.catalog.migrationLedger;
     expect(ledger).toHaveLength(EXPECTED_LEDGER.length);
     const byVersion = new Map(ledger.map((record) => [record.fields.version, record.fields.name]));

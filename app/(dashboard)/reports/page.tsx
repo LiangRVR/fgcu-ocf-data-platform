@@ -70,6 +70,31 @@ function formatMonth(yyyyMM: string): string {
 }
 
 // ── data fetching ─────────────────────────────────────────────────────────────
+//
+// FULL-DATASET GUARD — Reports must never consume a paginated list page.
+//
+// Every query in `getReportsData` intentionally reads the COMPLETE authorized
+// source set for its own aggregation:
+//   * no `.range(...)`, no `.limit(...)`, and no `page`/`pageSize` state;
+//   * no `count: "exact"` list contract — the metrics are computed in
+//     `computeReportMetrics` from whole arrays, then rendered directly;
+//   * no import or reuse of a list loader, `lib/utils/pagination`, or the
+//     shared pagination component.
+//
+// RLS still scopes every row to the authenticated session (via the cookie-
+// backed server client), so "complete" means complete within the caller's
+// authorization — never an unauthenticated or service-role read. Making report
+// input depend on a list page would silently produce page-dependent,
+// incomplete totals; `tests/unit/app/(dashboard)/reports/page.test.ts` asserts
+// the no-range/no-limit query shape and full-dataset completeness beyond a
+// page size so a regression fails the unit lane.
+//
+// PERFORMANCE FOLLOW-UP (deliberately deferred, see
+// `aidlc-docs/project/architecture.md`): if profiling later shows report
+// transfer is a concern, introduce small `security_invoker` database
+// aggregates incrementally with parity tests against the existing pure metric
+// oracle in `lib/reports/metrics.ts`. Never paginate report inputs, and never
+// introduce a service-role report path or materialized view.
 
 type ReportsDataResult =
   | { ok: true; metrics: ReportMetrics }
@@ -81,6 +106,7 @@ export async function getReportsData(): Promise<ReportsDataResult> {
     // construction/request-context error also yields { ok: false } so the page
     // renders the explicit unavailable state.
     const supabase = createServerClient();
+    // Full authorized source sets: no `.range`/`.limit`/count is applied here.
     const [
       applicationsRes,
       meetingsRes,

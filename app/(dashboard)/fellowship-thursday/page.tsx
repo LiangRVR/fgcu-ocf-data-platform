@@ -7,6 +7,8 @@ import { createServerClient } from "@/lib/supabase/server";
 import { FellowshipThursdayTable } from "@/components/fellowship-thursday/fellowship-thursday-table";
 import type { Database } from "@/types/database";
 import { CalendarDays, CircleCheckBig, Tags, Users } from "lucide-react";
+import { redirect } from "next/navigation";
+import { resolvePagination, totalPages } from "@/lib/utils/pagination";
 
 export const metadata: Metadata = { title: "Fellowship Thursday" };
 
@@ -14,91 +16,58 @@ interface Props {
   searchParams: Promise<{
     add?: string;
     student_id?: string;
+    search?: string; source?: string; attended?: string; page?: string; pageSize?: string;
   }>;
 }
 
-type EffectiveFellowshipThursday =
-  Database["public"]["Views"]["effective_fellowship_thursday"]["Row"];
+type EffectiveFellowshipThursday = Database["public"]["Views"]["fellowship_thursday_list"]["Row"];
 
 type FellowshipThursday = EffectiveFellowshipThursday & {
   student: { full_name: string } | null;
 };
 
-type StudentRow = Pick<
-  Database["public"]["Tables"]["student"]["Row"],
-  "student_id" | "full_name"
->;
-
 /**
  * Operational Fellowship Thursday reader.
  *
- * Reads the shared `effective_fellowship_thursday` SECURITY INVOKER view so the
- * page-level stats and table consume the newest applicable correction per
- * field; the immutable base rows and the amendment audit trail remain readable
- * through their own surfaces. Corrections are never extra attendance rows, so
- * the effective view has exactly one row per attendance record.
+ * Reads the flattened `fellowship_thursday_list` SECURITY INVOKER view, which is
+ * backed by the shared `effective_fellowship_thursday` view, so the page and
+ * table consume the newest applicable correction per field while the immutable
+ * base rows and the amendment audit trail remain readable through their own
+ * surfaces. Corrections are never extra attendance rows: the view exposes
+ * exactly one row per attendance record, with the display name already
+ * flattened as `student_name` (no row-multiplying join).
  *
- * The view carries no PostgREST relationship to `student`, so the display names
- * are resolved with a second scoped lookup rather than an embedded join.
+ * Results are server-paginated with an exact count and an inclusive
+ * `.range(offset, to)` bound, ordered by the stable `attendance_id`.
  */
-export async function getFellowshipThursdayRecords(): Promise<FellowshipThursday[]> {
+export interface FellowshipThursdayRecordsResult {
+  records: FellowshipThursday[];
+  count: number;
+  pagination: ReturnType<typeof resolvePagination>;
+  pages: number;
+  error: Error | null;
+}
+
+export async function getFellowshipThursdayRecords(params: { search?: string; source?: string; attended?: string; page?: string; pageSize?: string } = {}): Promise<FellowshipThursdayRecordsResult> {
   const supabase = createServerClient();
   try {
-    const { data, error } = await supabase
-      .from("effective_fellowship_thursday")
-      .select("*")
-      .order("attendance_id", { ascending: false });
+    const pagination = resolvePagination(params);
+    let query = supabase.from("fellowship_thursday_list").select("*", { count: "exact" });
+    if (params.search?.trim()) query = query.ilike("student_name", `%${params.search.trim()}%`);
+    if (params.source && params.source !== "all") query = query.eq("source_info", params.source);
+    if (params.attended === "yes") query = query.eq("attended", true);
+    if (params.attended === "no") query = query.eq("attended", false);
+    const { data, error, count } = await query.order("attendance_id", { ascending: false }).range(pagination.offset, pagination.to);
     if (error) {
       console.error("Error fetching fellowship thursday records:", error);
-      return [];
+      return { records: [], count: 0, pagination, pages: 0, error: error as Error };
     }
 
     const records = (data as EffectiveFellowshipThursday[]) || [];
-    const studentIds = [...new Set(records.map((record) => record.student_id))];
-    const nameById = new Map<number, string>();
-    if (studentIds.length > 0) {
-      const { data: students } = await supabase
-        .from("student")
-        .select("student_id, full_name")
-        .in("student_id", studentIds);
-      for (const student of students ?? []) {
-        nameById.set(student.student_id, student.full_name);
-      }
-    }
-
-    return records.map((record) => ({
-      ...record,
-      student: nameById.has(record.student_id)
-        ? { full_name: nameById.get(record.student_id)! }
-        : null,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Active-students selector for the Fellowship Thursday attendance form.
- * Excludes archived students server-side: attendance records are an
- * active-workflow signal and archived students should not pick up new
- * attendance events.
- */
-async function getActiveStudents(): Promise<StudentRow[]> {
-  const supabase = createServerClient();
-  try {
-    let query = supabase
-      .from("student")
-      .select("student_id, full_name");
-    if (typeof (query as { is?: unknown }).is === "function") {
-      query = (query as unknown as { is: (col: string, val: null) => typeof query }).is(
-        "archived_at",
-        null,
-      );
-    }
-    const { data } = await query.order("full_name", { ascending: true });
-    return data || [];
-  } catch {
-    return [];
+    const pages = totalPages(count ?? 0, pagination.pageSize);
+    return { records: records.map((record) => ({ ...record, student: { full_name: record.student_name } })), count: count ?? 0, pagination, pages, error: null };
+  } catch (cause) {
+    return { records: [], count: 0, pagination: resolvePagination(params), pages: 0, error: cause instanceof Error ? cause : new Error(String(cause)) };
   }
 }
 
@@ -107,10 +76,24 @@ export default async function FellowshipThursdayPage({ searchParams }: Props) {
   const autoOpenAdd = params.add === "1";
   const defaultStudentId = params.student_id;
 
-  const [records, students] = await Promise.all([
-    getFellowshipThursdayRecords(),
-    getActiveStudents(),
-  ]);
+  const result = await getFellowshipThursdayRecords(params);
+  // Canonicalize the URL: clamp an out-of-range page to the last real page and
+  // rewrite non-canonical page/pageSize values, preserving every other
+  // contextual parameter (search/source/attended/add/student_id).
+  const pageOutOfRange = result.pagination.page > Math.max(1, result.pages);
+  const nonCanonical =
+    String(result.pagination.page) !== (params.page ?? "1") ||
+    String(result.pagination.pageSize) !== (params.pageSize ?? "25");
+  if (pageOutOfRange || nonCanonical) {
+    const canonical = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined) canonical.set(key, value);
+    }
+    canonical.set("page", String(pageOutOfRange ? Math.max(1, result.pages) : result.pagination.page));
+    canonical.set("pageSize", String(result.pagination.pageSize));
+    redirect(`/fellowship-thursday?${canonical.toString()}`);
+  }
+  const records = result.records;
   const attendedCount = records.filter((record) => record.attended).length;
   const sourcedCount = records.filter((record) => Boolean(record.source_info)).length;
   const uniqueStudents = new Set(records.map((record) => record.student_id)).size;
@@ -124,26 +107,29 @@ export default async function FellowshipThursdayPage({ searchParams }: Props) {
         description="Track weekly Fellowship Thursday attendance and monitor which students are entering through partner channels."
       >
         <MetricBadge tone="blue">{records.length} records</MetricBadge>
-        <MetricBadge tone="green">{attendedCount} attended</MetricBadge>
+        <MetricBadge tone="green">{attendedCount} attended on this page</MetricBadge>
         <MetricBadge tone="amber">{sourcedCount} tagged sources</MetricBadge>
       </PageHeader>
 
       <PageSection
         title="Attendance Snapshot"
-        description="Review participation, source attribution, and how broadly Fellowship Thursday is reaching the student population."
+        description="Page-level snapshot for the records currently shown."
         className="mb-6"
       >
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <StatCard icon={CalendarDays} value={records.length} title="Attendance Records" description="All Fellowship Thursday records currently tracked" tone="blue" />
-          <StatCard icon={CircleCheckBig} value={attendedCount} title="Attended" description="Students marked as present at the event" tone="green" />
-          <StatCard icon={Users} value={uniqueStudents} title="Students Reached" description={`${missedCount} absence record${missedCount === 1 ? "" : "s"} captured`} tone="violet" />
-          <StatCard icon={Tags} value={sourcedCount} title="Tagged Sources" description="Records with outreach-source attribution" tone="amber" />
+          <StatCard icon={CalendarDays} value={records.length} title="Attendance Records" description="Records on this page" tone="blue" />
+          <StatCard icon={CircleCheckBig} value={attendedCount} title="Attended" description="Attendance on this page" tone="green" />
+          <StatCard icon={Users} value={uniqueStudents} title="Unique Students on this page" description={`${missedCount} absence record${missedCount === 1 ? "" : "s"} on this page`} tone="violet" />
+          <StatCard icon={Tags} value={sourcedCount} title="Tagged Sources" description="Records with outreach-source attribution on this page" tone="amber" />
         </div>
       </PageSection>
 
       <FellowshipThursdayTable
         initialRecords={records}
-        students={students}
+        totalCount={result.count}
+        totalPages={result.pages}
+        currentPage={result.pagination.page}
+        currentPageSize={result.pagination.pageSize}
         autoOpenAdd={autoOpenAdd}
         defaultStudentId={defaultStudentId}
       />

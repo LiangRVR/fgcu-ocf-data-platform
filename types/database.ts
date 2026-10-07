@@ -509,6 +509,58 @@ export type Database = {
       }
     }
     Views: {
+      advising_meeting_list: {
+        Row: {
+          advisor_id: number | null
+          advisor_name: string | null
+          application_id: number | null
+          application_year: number | null
+          created_at: string
+          created_by_advisor_id: number | null
+          fellowship_id: number | null
+          fellowship_name: string | null
+          meeting_date: string
+          meeting_id: number
+          meeting_mode: string
+          no_show: boolean
+          notes: string | null
+          recorded_by_advisor_name: string | null
+          student_id: number
+          student_name: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "never"
+            columns: []
+            isOneToOne: false
+            referencedRelation: "advising_meeting"
+            referencedColumns: ["meeting_id"]
+          },
+        ]
+      }
+      application_list: {
+        Row: {
+          application_id: number
+          application_year: number | null
+          destination_country: string | null
+          fellowship_id: number
+          fellowship_name: string
+          is_finalist: boolean
+          is_semi_finalist: boolean
+          stage_of_application: string
+          student_id: number
+          student_name: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "never"
+            columns: []
+            isOneToOne: false
+            referencedRelation: "application"
+            referencedColumns: ["application_id"]
+          },
+        ]
+      }
       effective_fellowship_thursday: {
         Row: {
           attendance_id: number
@@ -551,6 +603,102 @@ export type Database = {
           },
         ]
       }
+      fellowship_list: {
+        Row: {
+          archived_at: string | null
+          awarded_students: number
+          fellowship_id: number
+          fellowship_name: string
+          finalists: number
+          has_applications: boolean
+          total_applications: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "never"
+            columns: []
+            isOneToOne: false
+            referencedRelation: "fellowship"
+            referencedColumns: ["fellowship_id"]
+          },
+        ]
+      }
+      fellowship_thursday_list: {
+        Row: {
+          attendance_id: number
+          attended: boolean
+          base_attended: boolean
+          base_source_info: string | null
+          has_amendments: boolean
+          source_info: string | null
+          student_id: number
+          student_name: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "never"
+            columns: []
+            isOneToOne: false
+            referencedRelation: "fellowship_thursday"
+            referencedColumns: ["attendance_id"]
+          },
+        ]
+      }
+      scholarship_history_list: {
+        Row: {
+          base_fellowship_id: number
+          fellowship_id: number
+          fellowship_name: string
+          has_correction: boolean
+          history_id: number
+          is_voided: boolean
+          student_id: number
+          student_name: string
+          voided_at: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "never"
+            columns: []
+            isOneToOne: false
+            referencedRelation: "scholarship_history"
+            referencedColumns: ["history_id"]
+          },
+        ]
+      }
+      student_list: {
+        Row: {
+          age: number | null
+          archived_at: string | null
+          class_standing: string | null
+          email: string
+          first_gen: boolean
+          full_name: string
+          gender: string | null
+          gpa: number | null
+          has_advising: boolean
+          has_application: boolean
+          has_prior_award: boolean
+          honors_college: boolean
+          is_ch_student: boolean
+          languages: string | null
+          major: string | null
+          minor: string | null
+          pronouns: string | null
+          race_ethnicity: string | null
+          student_id: number
+          us_citizen: boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "never"
+            columns: []
+            isOneToOne: false
+            referencedRelation: "student"
+            referencedColumns: ["student_id"]
+          },
+        ]
+      }
     }
     Functions: {
       acquire_advisor_role_lock: {
@@ -590,6 +738,13 @@ export type Database = {
       release_advisor_role_lock: {
         Args: { p_advisor_id: number; p_holder: string }
         Returns: boolean
+      }
+      scholarship_history_operational_summary: {
+        Args: { p_fellowship_id?: number | null; p_search?: string | null }
+        Returns: {
+          distinct_students: number
+          total_records: number
+        }[]
       }
       set_advisor_role: {
         Args: { p_advisor_id: number; p_role: string }

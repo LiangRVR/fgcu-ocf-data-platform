@@ -308,6 +308,11 @@ test.describe("entity lifecycle", () => {
       await page.goto("/applications");
       await page.getByRole("button", { name: "New Application" }).click();
 
+      // The creation selectors are lazily bounded to the open dialog: type at
+      // least two characters, then choose from the bounded option list. "E2E"
+      // matches both the archived fixture name and the seeded active students,
+      // so the archived record's absence is a real active-roster assertion.
+      await page.getByLabel("Search students and fellowships").fill("E2E");
       await page.locator("#app-student").click();
       // The archived student is never offered; the seeded active students are.
       await expect(page.getByRole("option", { name, exact: true })).toHaveCount(0);
@@ -328,6 +333,9 @@ test.describe("entity lifecycle", () => {
       await page.goto("/applications");
       await page.getByRole("button", { name: "New Application" }).click();
 
+      // Typing narrows the lazily bounded option list; "E2E" matches both the
+      // archived fixture name and the seeded active fellowship.
+      await page.getByLabel("Search students and fellowships").fill("E2E");
       await page.locator("#app-fellowship").click();
       await expect(page.getByRole("option", { name, exact: true })).toHaveCount(0);
       await expect(page.getByRole("option", { name: FELLOWSHIP_NAME, exact: true })).toBeVisible();

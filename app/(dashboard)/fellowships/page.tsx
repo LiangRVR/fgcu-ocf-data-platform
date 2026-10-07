@@ -1,233 +1,60 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import { PageHeader } from "@/components/layout/page-header";
-import { AppCard, AppCardContent } from "@/components/ui/app-card";
-import { MetricBadge } from "@/components/ui/metric-badge";
-import { PageSection } from "@/components/ui/page-section";
-import { StatCard } from "@/components/ui/stat-card";
-import Link from "next/link";
-import { Search, Award } from "lucide-react";
 import { AddFellowshipButton } from "@/components/fellowships/add-fellowship-button";
 import { FellowshipsTable } from "@/components/fellowships/fellowships-table";
-import type { FellowshipWithMetrics } from "@/components/fellowships/fellowships-table";
 import { createServerClient } from "@/lib/supabase/server";
+import { resolvePagination, totalPages } from "@/lib/utils/pagination";
 import type { Database } from "@/types/database";
 
 export const metadata: Metadata = { title: "Fellowships" };
+type Row = Database["public"]["Views"]["fellowship_list"]["Row"];
+type Params = Record<string, string | string[] | undefined>;
 
-type Fellowship = Database["public"]["Tables"]["fellowship"]["Row"];
-type Application = Database["public"]["Tables"]["application"]["Row"];
-
-type FellowshipView = "all" | "archived" | "no-applicants";
-
-interface Props {
-  searchParams: Promise<{ view?: string }>;
+function one(value: string | string[] | undefined) { return Array.isArray(value) ? value[0] : value; }
+function canonical(params: Params, normalized: {page:number;pageSize:number}, view: string, search: string, sort: string) {
+  const query = new URLSearchParams();
+  if (view !== "all") query.set("view", view);
+  if (search) query.set("search", search);
+  if (sort !== "fellowship_name") query.set("sort", sort);
+  if (normalized.page !== 1) query.set("page", String(normalized.page));
+  if (normalized.pageSize !== 25) query.set("pageSize", String(normalized.pageSize));
+  return query.size ? `/fellowships?${query}` : "/fellowships";
 }
 
-/**
- * Fetch fellowships from the database.
- *
- * Active workflows (default `view=all` and the `view=no-applicants` exception
- * view) read only NON-archived fellowships — `fellowship.archived_at IS NULL`.
- * The explicit `view=archived` view returns only archived records so that
- * restore is reachable from an explicit archive context, while normal
- * active-workflow lists and creation selectors never pick up archived
- * fellowships.
- */
-async function getFellowships(view: FellowshipView): Promise<Fellowship[]> {
-  const supabase = createServerClient();
-  try {
-    let query = supabase
-      .from("fellowship")
-      .select("*")
-      .order("fellowship_name", { ascending: true });
+export default async function FellowshipsPage({ searchParams }: { searchParams: Promise<Params> }) {
+  const raw = await searchParams;
+  const view = one(raw.view) ?? "all";
+  const safeView = ["all", "archived", "no-applicants"].includes(view) ? view : "all";
+  const search = (one(raw.search) ?? "").trim();
+  const sort = one(raw.sort) ?? "fellowship_name";
+  const safeSort = ["fellowship_name", "fellowship_id"].includes(sort) ? sort : "fellowship_name";
+  const pagination = resolvePagination({ page: one(raw.page), pageSize: one(raw.pageSize) });
+  const expected = canonical(raw, pagination, safeView, search, safeSort);
+  const supplied = new URLSearchParams(Object.entries(raw).flatMap(([k,v]) => v === undefined ? [] : Array.isArray(v) ? v.map(x=>[k,x]) : [[k,v]])).toString();
+  const suppliedUrl = supplied ? `/fellowships?${supplied}` : "/fellowships";
+  if (view !== safeView || sort !== safeSort || suppliedUrl !== expected) redirect(expected);
 
-    // PostgREST exposes `.is()` and `.not()` on the chain. We probe for
-    // `.is()` to keep the loader resilient against the unit-test mock chain
-    // (which only exposes `select`, `eq`, and `order`); production sessions
-    // always apply the filter at the database boundary.
-    const chain = query as unknown as {
-      is?: (col: string, val: null) => typeof query;
-      not?: (col: string, op: string, val: null) => typeof query;
-    };
-
-    if (view === "archived") {
-      if (typeof chain.not === "function") {
-        query = chain.not("archived_at", "is", null);
-      }
-      // When the chain lacks `.not()` (unit-test mock), we fall back to
-      // fetching all rows; the unit test for the fellowships page exercises
-      // the happy-path render and does not assert archive filtering here.
-    } else {
-      if (typeof chain.is === "function") {
-        query = chain.is("archived_at", null);
-      }
-    }
-
-    const { data, error } = await query;
-    if (error) {
-      console.error("Error fetching fellowships:", error);
-      return [];
-    }
-    return data || [];
-  } catch (error) {
-    console.error("Error fetching fellowships:", error);
-    return [];
-  }
-}
-
-async function getApplicationMetrics(): Promise<Application[]> {
-  const supabase = createServerClient();
-  try {
-    const { data, error } = await supabase
-      .from("application")
-      .select("fellowship_id, is_finalist, stage_of_application");
-    if (error) {
-      console.error("Error fetching application metrics:", error);
-      return [];
-    }
-    return (data as Application[]) || [];
-  } catch {
-    return [];
-  }
-}
-
-export default async function FellowshipsPage({ searchParams }: Props) {
-  const params = await searchParams;
-  const view = (params.view ?? "all") as FellowshipView;
-
-  const [fellowships, applications] = await Promise.all([
-    getFellowships(view),
-    getApplicationMetrics(),
-  ]);
-
-  const metricsMap = new Map<
-    number,
-    { totalApplications: number; finalists: number; awardedStudents: number }
-  >();
-  for (const app of applications) {
-    const existing = metricsMap.get(app.fellowship_id) ?? {
-      totalApplications: 0,
-      finalists: 0,
-      awardedStudents: 0,
-    };
-    existing.totalApplications += 1;
-    if (app.is_finalist) existing.finalists += 1;
-    if (app.stage_of_application === "Awarded") existing.awardedStudents += 1;
-    metricsMap.set(app.fellowship_id, existing);
-  }
-
-  const fellowshipsWithMetrics: FellowshipWithMetrics[] = fellowships.map((f) => ({
-    ...f,
-    ...(metricsMap.get(f.fellowship_id) ?? {
-      totalApplications: 0,
-      finalists: 0,
-      awardedStudents: 0,
-    }),
-  }));
-
-  const visibleFellowships =
-    view === "no-applicants"
-      ? fellowshipsWithMetrics.filter((f) => f.totalApplications === 0)
-      : fellowshipsWithMetrics;
-
-  const totalApplicationsAll = fellowshipsWithMetrics.reduce((sum, f) => sum + f.totalApplications, 0);
-  const totalFinalistsAll = fellowshipsWithMetrics.reduce((sum, f) => sum + f.finalists, 0);
-  const totalAwardedAll = fellowshipsWithMetrics.reduce((sum, f) => sum + f.awardedStudents, 0);
-
-  return (
-    <>
-      <PageHeader
-        eyebrow="Program Portfolio"
-        title="Fellowships"
-        description="Manage the active fellowship catalog, surface under-promoted programs, and review pipeline performance by program."
-      >
-        <MetricBadge tone="blue">{fellowshipsWithMetrics.length} programs</MetricBadge>
-        <MetricBadge tone="green">{totalFinalistsAll} finalists</MetricBadge>
-        <MetricBadge tone="amber">{totalAwardedAll} awarded</MetricBadge>
-        <AddFellowshipButton />
-      </PageHeader>
-
-      {/* Exception view pill bar */}
-      <div className="mb-8 flex flex-wrap gap-2">
-        <Link
-          href="/fellowships"
-          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium motion-safe:transition-colors ${
-            view === "all"
-              ? "border-slate-900 bg-slate-900 text-white shadow-sm"
-              : "border-border bg-white/80 text-slate-600 hover:border-slate-400 hover:bg-white"
-          }`}
-        >
-          Active Fellowships
-        </Link>
-        <Link
-          href="/fellowships?view=archived"
-          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium motion-safe:transition-colors ${
-            view === "archived"
-              ? "border-amber-600 bg-amber-600 text-white shadow-sm"
-              : "border-amber-200 bg-amber-50/80 text-amber-700 hover:border-amber-400 hover:bg-amber-50"
-          }`}
-        >
-          Archived Fellowships
-        </Link>
-        <Link
-          href="/fellowships?view=no-applicants"
-          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium motion-safe:transition-colors ${
-            view === "no-applicants"
-              ? "border-amber-600 bg-amber-600 text-white shadow-sm"
-              : "border-amber-200 bg-amber-50/80 text-amber-700 hover:border-amber-400 hover:bg-amber-50"
-          }`}
-        >
-          No Applicants Yet
-          {view !== "no-applicants" && (
-            <span className="ml-1.5 tabular-nums">
-              ({fellowshipsWithMetrics.filter((f) => f.totalApplications === 0).length})
-            </span>
-          )}
-        </Link>
-      </div>
-
-      {view === "no-applicants" && (
-        <AppCard variant="soft" className="mb-6 border-amber-200/70 bg-amber-50/70">
-          <AppCardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
-            <div className="space-y-1">
-              <p className="text-sm font-semibold text-amber-900">Promotion candidates</p>
-              <p className="text-sm text-amber-800">
-                {visibleFellowships.length} fellowship{visibleFellowships.length !== 1 ? "s" : ""} have no applications on record. These may need additional promotion or outreach.
-              </p>
-            </div>
-            <MetricBadge tone="amber">{visibleFellowships.length} open</MetricBadge>
-          </AppCardContent>
-        </AppCard>
-      )}
-
-      {view === "archived" && (
-        <AppCard variant="soft" className="mb-6 border-amber-200/70 bg-amber-50/70">
-          <AppCardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
-            <div className="space-y-1">
-              <p className="text-sm font-semibold text-amber-900">Archived fellowships</p>
-              <p className="text-sm text-amber-800">
-                {visibleFellowships.length} archived fellowship{visibleFellowships.length !== 1 ? "s" : ""}. Each row shows when the fellowship was archived; restoring returns it to active workflows while preserving every application and scholarship history record.
-              </p>
-            </div>
-            <MetricBadge tone="amber">{visibleFellowships.length} archived</MetricBadge>
-          </AppCardContent>
-        </AppCard>
-      )}
-
-      <PageSection
-        title="Program Health"
-        description="Use these metrics to spot coverage gaps and see where applicant flow is concentrating."
-        className="mb-6"
-      >
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <StatCard title="Fellowships" value={fellowshipsWithMetrics.length} description="Programs in the current catalog" icon={Award} tone="blue" />
-          <StatCard title="Total Applications" value={totalApplicationsAll} description="Applications linked across all programs" icon={Search} tone="violet" />
-          <StatCard title="Finalists" value={totalFinalistsAll} description="Applicants marked as finalists" icon={Award} tone="green" />
-          <StatCard title="Awarded" value={totalAwardedAll} description="Awarded outcomes across the program set" icon={Award} tone="amber" />
-        </div>
-      </PageSection>
-
-      <FellowshipsTable initialFellowships={visibleFellowships} view={view} />
-    </>
-  );
+  const db = createServerClient();
+  let query = db.from("fellowship_list").select("*", { count: "exact" });
+  if (safeView === "archived") query = query.not("archived_at", "is", null);
+  else query = query.is("archived_at", null);
+  if (safeView === "no-applicants") query = query.eq("has_applications", false);
+  if (search) query = query.ilike("fellowship_name", `%${search.replace(/[\%_]/g, "\\$&")}%`);
+  query = query.order(safeSort, { ascending: true }).order("fellowship_id", { ascending: true });
+  const { data, count, error } = await query.range(pagination.offset, pagination.to);
+  if (error) throw new Error("Unable to load fellowships");
+  const total = count ?? 0;
+  const pages = totalPages(total, pagination.pageSize);
+  // An out-of-range page canonicalizes to the last valid page, or to page 1
+  // when the exact total is zero. Redirecting rewrites the URL; no second
+  // bounded replacement query is issued from this render.
+  if (pagination.page > Math.max(1, pages)) redirect(canonical(raw, { ...pagination, page: Math.max(1, pages) }, safeView, search, safeSort));
+  return <>
+    <PageHeader eyebrow="Program Portfolio" title="Fellowships" description="Manage fellowship opportunities and review application activity."><AddFellowshipButton /></PageHeader>
+    <nav className="mb-6 flex flex-wrap gap-2" aria-label="Fellowship views">
+      {([ ["all","Active Fellowships"], ["archived","Archived Fellowships"], ["no-applicants","No Applicants Yet"] ] as const).map(([key,label]) => <a key={key} href={key === "all" ? "/fellowships" : `/fellowships?view=${key}`} className={`rounded-full border px-3 py-1.5 text-xs font-medium ${safeView === key ? "border-slate-900 bg-slate-900 text-white" : "border-border bg-white text-slate-600"}`}>{label}</a>)}
+    </nav>
+    <FellowshipsTable fellowships={(data ?? []) as Row[]} view={safeView} search={search} page={pagination.page} pageSize={pagination.pageSize} totalCount={total} totalPages={pages} sort={safeSort} />
+  </>;
 }

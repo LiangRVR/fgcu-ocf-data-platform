@@ -168,7 +168,13 @@ test.describe("application workflow", () => {
       await page.locator("#app-stage").click();
       await expect(page.getByRole("option", { name: "Did Not Submit", exact: true })).toBeVisible();
       await expect(page.getByRole("option", { name: "Withdrawn", exact: true })).toBeVisible();
-      await page.getByRole("option", { name: stage, exact: true }).click();
+      // The radix listbox is scroll-bounded (max-h-56), so the lower terminal
+      // options sit outside the clickable viewport and a pointer click times
+      // out. Focus the exact option through the DOM (no viewport-bound click),
+      // then commit it with Enter — the same user-visible selection.
+      const option = page.getByRole("option", { name: stage, exact: true });
+      await option.focus();
+      await page.keyboard.press("Enter");
       await page.getByRole("dialog").getByRole("button", { name: "Save Changes" }).click();
       await expect(page.locator("table tbody tr", { hasText: STUDENT_NAME })).toContainText(stage);
     };
@@ -236,8 +242,14 @@ test.describe("application workflow", () => {
     await page.goto("/applications");
     await page.getByRole("button", { name: "New Application" }).click();
 
+    // The creation selectors are lazily bounded to the open dialog and
+    // filtered by a shared search field: type at least two characters, then
+    // choose the bounded option. The single search filters both lists, so it
+    // is retargeted between the student and fellowship choices.
+    await page.getByLabel("Search students and fellowships").fill(STUDENT_TWO_NAME);
     await page.locator("#app-student").click();
     await page.getByRole("option", { name: STUDENT_TWO_NAME, exact: true }).click();
+    await page.getByLabel("Search students and fellowships").fill(FELLOWSHIP_TWO_NAME);
     await page.locator("#app-fellowship").click();
     await page.getByRole("option", { name: FELLOWSHIP_TWO_NAME, exact: true }).click();
     await page.locator("#app-year").fill(createdYear);

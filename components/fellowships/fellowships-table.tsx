@@ -1,284 +1,47 @@
 "use client";
 
-import { useState, useMemo } from "react";
 import Link from "next/link";
-import { Search, Eye, Award } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useState } from "react";
+import { Award, Eye, Search } from "lucide-react";
+import type { Database } from "@/types/database";
 import { AppCard, AppCardContent } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
 import { DataToolbar } from "@/components/ui/data-toolbar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { Pagination } from "@/components/pagination/pagination";
 import { LifecycleAction } from "@/components/lifecycle";
 import { FellowshipEditButton } from "@/components/fellowships/fellowship-edit-button";
 import { AddFellowshipButton } from "@/components/fellowships/add-fellowship-button";
-import type { Database } from "@/types/database";
+import { updateListSearchParams, type PageSize } from "@/lib/utils/pagination";
 
-type Fellowship = Database["public"]["Tables"]["fellowship"]["Row"];
+type Row = Database["public"]["Views"]["fellowship_list"]["Row"];
+interface Props { fellowships: Row[]; view: string; search: string; page: number; pageSize: PageSize; totalCount: number; totalPages: number; sort: string }
 
-export interface FellowshipWithMetrics extends Fellowship {
-  totalApplications: number;
-  finalists: number;
-  awardedStudents: number;
-}
-
-type FellowshipView = "all" | "archived" | "no-applicants";
-
-interface FellowshipsTableProps {
-  initialFellowships: FellowshipWithMetrics[];
-  view: FellowshipView;
-}
-
-const PAGE_SIZE = 20;
-
-export function FellowshipsTable({ initialFellowships, view }: FellowshipsTableProps) {
-  const [fellowships] = useState<FellowshipWithMetrics[]>(initialFellowships);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [currentPage, setCurrentPage] = useState(1);
-
-  const filteredFellowships = useMemo(() => {
-    if (!searchQuery.trim()) return fellowships;
-    const q = searchQuery.toLowerCase();
-    return fellowships.filter((f) =>
-      f.fellowship_name.toLowerCase().includes(q)
-    );
-  }, [fellowships, searchQuery]);
-
-  const totalPages = Math.ceil(filteredFellowships.length / PAGE_SIZE);
-  const paginatedFellowships = useMemo(() => {
-    const start = (currentPage - 1) * PAGE_SIZE;
-    return filteredFellowships.slice(start, start + PAGE_SIZE);
-  }, [filteredFellowships, currentPage]);
-
-  const startIndex = filteredFellowships.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
-  const endIndex = Math.min(currentPage * PAGE_SIZE, filteredFellowships.length);
-
-  const handleSearchChange = (value: string) => {
-    setSearchQuery(value);
-    setCurrentPage(1);
+export function FellowshipsTable({ fellowships, view, search, page, pageSize, totalCount, totalPages, sort }: Props) {
+  const router = useRouter();
+  const params = useSearchParams();
+  const [query, setQuery] = useState(search);
+  const archived = view === "archived";
+  const href = (patch: {page?:number;pageSize?:number;search?:string;sort?:string}) => {
+    const next = updateListSearchParams(params.toString(), patch);
+    const text = next.toString(); return `/fellowships${text ? `?${text}` : ""}`;
   };
-
-  // The destructive delete control has been replaced by the lifecycle
-  // Archive / Restore flow (rendered per-row via LifecycleAction). Archived
-  // fellowships remain reachable in the explicit ?view=archived context
-  // and can be restored by an administrator; the normal all-fellowships view
-  // excludes archived records.
-  const isArchiveView = view === "archived";
-
-  return (
-    <TooltipProvider>
-      <>
-        <DataToolbar
-          className="mb-4"
-          leading={
-            <div className="relative w-full sm:max-w-xs">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <Input
-                placeholder="Search fellowships..."
-                className="pl-9"
-                value={searchQuery}
-                onChange={(e) => handleSearchChange(e.target.value)}
-              />
-            </div>
-          }
-        />
-
-        <AppCard>
-          <AppCardContent className="p-0">
-            {paginatedFellowships.length === 0 ? (
-              <EmptyState
-                icon={Award}
-                title={
-                  searchQuery
-                    ? "No fellowships match your search"
-                    : view === "no-applicants"
-                    ? "All fellowships have applicants"
-                    : view === "archived"
-                    ? "No archived fellowships"
-                    : "No fellowships found"
-                }
-                description={
-                  searchQuery
-                    ? "Try a different search term."
-                    : view === "no-applicants"
-                    ? "Every fellowship currently has at least one applicant."
-                    : view === "archived"
-                    ? "No fellowships are currently archived."
-                    : "Get started by adding your first fellowship opportunity."
-                }
-                action={!searchQuery && view === "all" ? <AddFellowshipButton size="default" /> : undefined}
-              />
-            ) : (
-              <>
-                {/* Mobile card list */}
-                <div className="md:hidden divide-y divide-gray-200">
-                  {paginatedFellowships.map((fellowship) => (
-                    <div key={fellowship.fellowship_id} className="p-4">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <Link
-                            href={`/fellowships/${fellowship.fellowship_id}`}
-                            prefetch={false}
-                            className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
-                          >
-                            {fellowship.fellowship_name}
-                          </Link>
-                          <div className="mt-1 flex flex-wrap gap-3 text-xs text-slate-500">
-                            <span><span className="font-medium text-slate-700">{fellowship.totalApplications}</span> apps</span>
-                            <span><span className="font-medium text-slate-700">{fellowship.finalists}</span> finalists</span>
-                            <span><span className="font-medium text-slate-700">{fellowship.awardedStudents}</span> awarded</span>
-                          </div>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1">
-                          <Link href={`/fellowships/${fellowship.fellowship_id}`} prefetch={false}>
-                            <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-600 hover:text-slate-900" title="View fellowship">
-                              <Eye className="h-4 w-4" />
-                            </Button>
-                          </Link>
-                          <FellowshipEditButton
-                            fellowshipId={fellowship.fellowship_id}
-                            fellowshipName={fellowship.fellowship_name}
-                          />
-                          <LifecycleAction
-                            entity="fellowship"
-                            entityId={fellowship.fellowship_id}
-                            entityLabel={fellowship.fellowship_name}
-                            action={isArchiveView ? "restore" : "archive"}
-                            variant="ghost"
-                            iconOnly
-                            stopPropagation={false}
-                            className="h-8 w-8 text-amber-700 hover:bg-amber-50 hover:text-amber-800"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Desktop table */}
-                <div className="hidden overflow-x-auto md:block">
-                  <table className="w-full">
-                    <thead className="bg-gray-50">
-                      <tr className="border-b border-gray-200">
-                        <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">Name</th>
-                        <th className="hidden px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-500 sm:table-cell sm:px-6 sm:py-3">Applications</th>
-                        <th className="hidden px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 md:table-cell">Finalists</th>
-                        <th className="hidden px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3 md:table-cell">Awarded</th>
-                        <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-gray-500 sm:px-6 sm:py-3">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200 bg-white">
-                      {paginatedFellowships.map((fellowship) => (
-                        <tr
-                          key={fellowship.fellowship_id}
-                          className="motion-safe:transition-colors motion-safe:duration-150 hover:bg-gray-50"
-                        >
-                          <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
-                            <Link
-                              href={`/fellowships/${fellowship.fellowship_id}`}
-                              prefetch={false}
-                              className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
-                            >
-                              {fellowship.fellowship_name}
-                            </Link>
-                          </td>
-                          <td className="hidden whitespace-nowrap px-3 py-3 text-right sm:table-cell sm:px-6 sm:py-4">
-                            <span className="text-sm font-medium text-slate-700">{fellowship.totalApplications}</span>
-                          </td>
-                          <td className="hidden whitespace-nowrap px-3 py-3 text-right sm:px-6 sm:py-4 md:table-cell">
-                            <span className="text-sm font-medium text-slate-700">{fellowship.finalists}</span>
-                          </td>
-                          <td className="hidden whitespace-nowrap px-3 py-3 text-right sm:px-6 sm:py-4 md:table-cell">
-                            <span className="text-sm font-medium text-slate-700">{fellowship.awardedStudents}</span>
-                          </td>
-                          <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
-                            <div className="flex items-center justify-end gap-2">
-                              <Link href={`/fellowships/${fellowship.fellowship_id}`} prefetch={false}>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8 text-slate-600 hover:text-slate-900"
-                                  title="View fellowship"
-                                >
-                                  <Eye className="h-4 w-4" />
-                                </Button>
-                              </Link>
-                              <FellowshipEditButton
-                                fellowshipId={fellowship.fellowship_id}
-                                fellowshipName={fellowship.fellowship_name}
-                              />
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <LifecycleAction
-                                    entity="fellowship"
-                                    entityId={fellowship.fellowship_id}
-                                    entityLabel={fellowship.fellowship_name}
-                                    action={isArchiveView ? "restore" : "archive"}
-                                    variant="ghost"
-                                    iconOnly
-                                    stopPropagation={false}
-                                    className="h-8 w-8 text-amber-700 hover:bg-amber-50 hover:text-amber-800"
-                                  />
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  <p>
-                                    {isArchiveView
-                                      ? "Restore fellowship"
-                                      : "Archive fellowship"}
-                                  </p>
-                                </TooltipContent>
-                              </Tooltip>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            )}
-          </AppCardContent>
-        </AppCard>
-
-        {/* Pagination */}
-        {filteredFellowships.length > 0 && (
-          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-sm text-slate-500">
-              Showing <span className="font-medium">{startIndex}</span>–<span className="font-medium">{endIndex}</span> of{" "}
-              <span className="font-medium">{filteredFellowships.length}</span> fellowships
-            </div>
-            <div className="flex gap-2 self-start sm:self-auto">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={currentPage <= 1}
-                onClick={() => setCurrentPage((p) => p - 1)}
-              >
-                Previous
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={currentPage >= totalPages}
-                onClick={() => setCurrentPage((p) => p + 1)}
-              >
-                Next
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* The destructive delete dialog has been removed: lifecycle is
-            handled by the per-row LifecycleAction (Archive Fellowship /
-            Restore Fellowship). Archived fellowships remain reachable in
-            the explicit ?view=archived context and can be restored by an
-            administrator. */}
-      </>
-    </TooltipProvider>
-  );
+  const actions = (row: Row) => <div className="flex items-center justify-end gap-1">
+    <Link href={`/fellowships/${row.fellowship_id}`} prefetch={false}><Button variant="ghost" size="icon" title="View fellowship" aria-label="View fellowship"><Eye className="h-4 w-4" /></Button></Link>
+    <FellowshipEditButton fellowshipId={row.fellowship_id} fellowshipName={row.fellowship_name} />
+    <LifecycleAction entity="fellowship" entityId={row.fellowship_id} entityLabel={row.fellowship_name} action={archived ? "restore" : "archive"} variant="ghost" iconOnly className="text-amber-700" />
+  </div>;
+  return <>
+    <DataToolbar className="mb-4" leading={<div className="relative w-full sm:max-w-xs"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><Input className="pl-9" placeholder="Search fellowships..." value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>e.key === "Enter" && router.push(href({search:query}))} /></div>} trailing={<div className="flex items-center gap-2"><label className="sr-only" htmlFor="fellowship-sort">Sort fellowships</label><select id="fellowship-sort" className="h-9 rounded-md border bg-white px-2 text-sm" value={sort} onChange={e=>router.push(href({sort:e.target.value}))}><option value="fellowship_name">Name</option><option value="fellowship_id">ID</option></select><Button variant="outline" size="sm" onClick={()=>router.push(href({search:query}))}>Search</Button></div>} />
+    <AppCard><AppCardContent className="p-0">{fellowships.length === 0 ? <EmptyState icon={Award} title={search ? "No fellowships match your search" : view === "no-applicants" ? "All fellowships have applicants" : archived ? "No archived fellowships" : "No fellowships found"} description={search ? "Try a different search term." : "Fellowships will appear here when available."} action={!search && view === "all" ? <AddFellowshipButton size="default" /> : undefined} /> : <>
+      <div className="divide-y md:hidden">{fellowships.map(row => <article key={row.fellowship_id} className="space-y-3 p-4">
+        <div className="flex items-start justify-between gap-3"><Link href={`/fellowships/${row.fellowship_id}`} prefetch={false} className="font-medium text-slate-900 hover:text-[#006747] hover:underline">{row.fellowship_name}</Link>{actions(row)}</div>
+        <dl className="grid grid-cols-3 gap-2 text-sm"><div><dt className="text-xs text-slate-500">Applications</dt><dd className="mt-1 tabular-nums">{row.total_applications}</dd></div><div><dt className="text-xs text-slate-500">Finalists</dt><dd className="mt-1 tabular-nums">{row.finalists}</dd></div><div><dt className="text-xs text-slate-500">Awarded</dt><dd className="mt-1 tabular-nums">{row.awarded_students}</dd></div></dl>
+      </article>)}</div>
+      <div className="hidden overflow-x-auto md:block"><table className="w-full"><thead className="bg-gray-50"><tr className="border-b text-left text-xs uppercase tracking-wide text-gray-500"><th className="px-4 py-3 sm:px-6">Fellowship</th><th className="px-4 py-3 text-right">Applications</th><th className="hidden px-4 py-3 text-right md:table-cell">Finalists</th><th className="hidden px-4 py-3 text-right md:table-cell">Awarded</th><th className="px-4 py-3 text-right">Actions</th></tr></thead><tbody className="divide-y">{fellowships.map(row=><tr key={row.fellowship_id} className="hover:bg-slate-50"><td className="px-4 py-4 sm:px-6"><Link href={`/fellowships/${row.fellowship_id}`} prefetch={false} className="font-medium text-slate-900 hover:text-[#006747] hover:underline">{row.fellowship_name}</Link></td><td className="px-4 py-4 text-right tabular-nums">{row.total_applications}</td><td className="hidden px-4 py-4 text-right tabular-nums md:table-cell">{row.finalists}</td><td className="hidden px-4 py-4 text-right tabular-nums md:table-cell">{row.awarded_students}</td><td className="px-4 py-4">{actions(row)}</td></tr>)}</tbody></table></div>
+    </>}</AppCardContent></AppCard>
+    <Pagination page={page} pageSize={pageSize} totalCount={totalCount} totalPages={totalPages} getPageHref={n=>href({page:n})} getPageSizeHref={n=>href({pageSize:n})} />
+  </>;
 }

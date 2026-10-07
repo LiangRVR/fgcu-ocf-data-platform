@@ -1,6 +1,9 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useEffect } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Pagination } from "@/components/pagination/pagination";
+import { updateListSearchParams } from "@/lib/utils/pagination";
 import { AppCard, AppCardContent } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
 import { DataToolbar } from "@/components/ui/data-toolbar";
@@ -29,7 +32,7 @@ import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
 import type { Database } from "@/types/database";
 
-type FellowshipThursday = Database["public"]["Tables"]["fellowship_thursday"]["Row"] & Partial<Database["public"]["Views"]["effective_fellowship_thursday"]["Row"]> & {
+type FellowshipThursday = Database["public"]["Views"]["fellowship_thursday_list"]["Row"] & {
     student: { full_name: string } | null;
   };
 type Amendment = Database["public"]["Tables"]["fellowship_thursday_amendment"]["Row"] & { created_by: { advisor_name: string } | null };
@@ -45,7 +48,10 @@ type SourceInfo = (typeof SOURCE_OPTIONS)[number];
 
 interface FellowshipThursdayTableProps {
   initialRecords: FellowshipThursday[];
-  students: StudentRow[];
+  totalCount?: number;
+  totalPages?: number;
+  currentPage?: number;
+  currentPageSize?: number;
   defaultStudentId?: string;
   autoOpenAdd?: boolean;
 }
@@ -58,16 +64,37 @@ const EMPTY_FORM = {
 
 export function FellowshipThursdayTable({
   initialRecords,
-  students,
+  totalCount = initialRecords.length,
+  totalPages = 1,
+  currentPage = 1,
+  currentPageSize = 25,
   defaultStudentId,
   autoOpenAdd,
 }: FellowshipThursdayTableProps) {
-  const [records, setRecords] = useState<FellowshipThursday[]>(initialRecords);
+  // The server is the source of truth for the current page: derive the list
+  // from the prop so new pages/corrections arrive without a stale client copy.
+  const records = initialRecords;
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [amendments, setAmendments] = useState<Record<number, Amendment[]>>({});
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(searchParams.get("search") || "");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [attendedFilter, setAttendedFilter] = useState<string>("all");
-  const [sourceFilter, setSourceFilter] = useState<string>("all");
+  const [attendedFilter, setAttendedFilter] = useState<string>(searchParams.get("attended") || "all");
+  const [sourceFilter, setSourceFilter] = useState<string>(searchParams.get("source") || "all");
+
+  // Apply a criterion change to the canonical URL and reset to page 1. Unrelated
+  // contextual parameters (add/student_id/pageSize) are preserved.
+  const navigate = (patch: Record<string, string | null>) => {
+    const next = new URLSearchParams(searchParams.toString());
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === null || value === "") next.delete(key);
+      else next.set(key, value);
+    }
+    const canonical = updateListSearchParams(next, { page: 1 });
+    const query = canonical.toString();
+    router.push(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  };
 
   const [addOpen, setAddOpen] = useState(false);
   const [correctionRecord, setCorrectionRecord] = useState<FellowshipThursday | null>(null);
@@ -82,22 +109,73 @@ export function FellowshipThursdayTable({
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [studentSearch, setStudentSearch] = useState("");
+  const [studentOptions, setStudentOptions] = useState<StudentRow[]>([]);
+  const [selectedStudent, setSelectedStudent] = useState<StudentRow | null>(null);
+  const [studentLookupLoading, setStudentLookupLoading] = useState(false);
 
+  // A contextual student ID is resolved individually through the authenticated
+  // client (and therefore RLS), without fetching a broad selector list.
   useEffect(() => {
-    if (!records.length) return;
-    void supabaseBrowserClient.from("effective_fellowship_thursday").select("*").then(({ data, error }) => {
-      if (error) { console.error(error); toast.error("Failed to refresh attendance records."); return; }
-      if (data) setRecords(data.map((row) => ({ ...row, student: records.find((r) => r.attendance_id === row.attendance_id)?.student ?? null })) as FellowshipThursday[]);
-    });
-    void supabaseBrowserClient.from("fellowship_thursday_amendment").select("*, created_by:advisor!fellowship_thursday_amendment_created_by_advisor_id_fkey(advisor_name)").in("attendance_id", records.map((r) => r.attendance_id)).order("created_at", { ascending: true }).then(({ data, error }) => {
+    if (!defaultStudentId || !/^\d+$/.test(defaultStudentId)) return;
+    let active = true;
+    void supabaseBrowserClient.from("student").select("student_id, full_name")
+      .eq("student_id", Number(defaultStudentId)).maybeSingle().then(({ data }) => {
+        if (!active || !data) return;
+        const student = data as StudentRow;
+        setSelectedStudent(student);
+        setStudentSearch(student.full_name);
+      });
+    return () => { active = false; };
+  }, [defaultStudentId]);
+
+  // Search only after the user enters at least two characters. The result set
+  // is deliberately bounded and relies on the caller's normal RLS policies.
+  useEffect(() => {
+    const term = studentSearch.trim();
+    if (selectedStudent && term === selectedStudent.full_name) {
+      setStudentOptions([]);
+      return;
+    }
+    if (term.length < 2) { setStudentOptions([]); return; }
+    let active = true;
+    const timer = setTimeout(async () => {
+      setStudentLookupLoading(true);
+      const { data, error } = await supabaseBrowserClient.from("student")
+        .select("student_id, full_name").ilike("full_name", `%${term}%`)
+        .order("full_name").limit(20);
+      if (active) {
+        setStudentOptions(error ? [] : (data ?? []) as StudentRow[]);
+        setStudentLookupLoading(false);
+      }
+    }, 250);
+    return () => { active = false; clearTimeout(timer); };
+  }, [studentSearch, selectedStudent]);
+
+  // Audit history is bounded to the attendance IDs on the current page, and
+  // reloads whenever the page data changes.
+  useEffect(() => {
+    if (!initialRecords.length) {
+      setAmendments({});
+      return;
+    }
+    let active = true;
+    void supabaseBrowserClient.from("fellowship_thursday_amendment").select("*, created_by:advisor!fellowship_thursday_amendment_created_by_advisor_id_fkey(advisor_name)").in("attendance_id", initialRecords.map((r) => r.attendance_id)).order("created_at", { ascending: true }).then(({ data, error }) => {
+      if (!active) return;
       if (error) { console.error(error); toast.error("Failed to load correction history."); return; }
       const grouped: Record<number, Amendment[]> = {};
       for (const item of data ?? []) { const a = item as unknown as Amendment; (grouped[a.attendance_id] ??= []).push(a); }
       setAmendments(grouped);
     });
-  // Refresh effective values and audit trail on mount.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return () => { active = false; };
+  }, [initialRecords]);
+
+  // Keep the controlled filters in sync with the canonical URL (Back/Forward).
+  useEffect(() => {
+    setSearchQuery(searchParams.get("search") ?? "");
+    setAttendedFilter(searchParams.get("attended") ?? "all");
+    setSourceFilter(searchParams.get("source") ?? "all");
+  }, [searchParams]);
 
   // Pre-fill and auto-open add dialog when arriving from a contextual link
   useEffect(() => {
@@ -110,33 +188,18 @@ export function FellowshipThursdayTable({
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Debounce the search box, then commit it to the canonical URL (page resets).
   useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+      if ((searchQuery ?? "") === (searchParams.get("search") ?? "")) return;
+      navigate({ search: searchQuery || null });
+    }, 300);
     return () => clearTimeout(timer);
+  // `navigate` reads the latest URL at commit time.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchQuery]);
-
-  const filteredRecords = useMemo(() => {
-    let list = records;
-
-    if (debouncedSearch) {
-      const q = debouncedSearch.toLowerCase();
-      list = list.filter((r) =>
-        (r.student?.full_name ?? "").toLowerCase().includes(q)
-      );
-    }
-
-    if (attendedFilter === "yes") {
-      list = list.filter((r) => r.attended);
-    } else if (attendedFilter === "no") {
-      list = list.filter((r) => !r.attended);
-    }
-
-    if (sourceFilter !== "all") {
-      list = list.filter((r) => r.source_info === sourceFilter);
-    }
-
-    return list;
-  }, [records, debouncedSearch, attendedFilter, sourceFilter]);
 
   const validateForm = (f: typeof form): Record<string, string> => {
     const errors: Record<string, string> = {};
@@ -151,19 +214,17 @@ export function FellowshipThursdayTable({
 
     setIsLoading(true);
     try {
-      const { data, error } = await supabaseBrowserClient
+      const { error } = await supabaseBrowserClient
         .from("fellowship_thursday")
         .insert({
           student_id: Number(form.student_id),
           attended: form.attended,
           source_info: form.source_info || null,
-        })
-        .select(`*, student(full_name)`)
-        .single();
+        });
 
       if (error) throw error;
 
-      setRecords((prev) => [data as FellowshipThursday, ...prev]);
+      router.refresh();
       toast.success("Attendance record created.");
       setAddOpen(false);
       setForm(EMPTY_FORM);
@@ -186,14 +247,13 @@ export function FellowshipThursdayTable({
       if (advisorError) throw advisorError;
       const { error } = await supabaseBrowserClient.from("fellowship_thursday_amendment").insert({ attendance_id: correctionRecord.attendance_id, created_by_advisor_id: advisor.advisor_id, reason: reason.trim(), details: details.trim() || null, corrected_attended: correctAttendance ? correctedAttended : null, corrects_source_info: correctSource, corrected_source_info: correctSource ? correctedSource || null : null });
       if (error) throw error;
-      const [effective, history] = await Promise.all([
-        supabaseBrowserClient.from("effective_fellowship_thursday").select("*").eq("attendance_id", correctionRecord.attendance_id).single(),
-        supabaseBrowserClient.from("fellowship_thursday_amendment").select("*, created_by:advisor!fellowship_thursday_amendment_created_by_advisor_id_fkey(advisor_name)").eq("attendance_id", correctionRecord.attendance_id).order("created_at", { ascending: true }),
-      ]);
-      if (effective.error) throw effective.error;
-      if (history.error) throw history.error;
-      setRecords((prev) => prev.map((r) => r.attendance_id === correctionRecord.attendance_id ? { ...effective.data, student: r.student } : r));
-      setAmendments((prev) => ({ ...prev, [correctionRecord.attendance_id]: (history.data ?? []) as unknown as Amendment[] }));
+      const { data: history, error: historyError } = await supabaseBrowserClient.from("fellowship_thursday_amendment").select("*, created_by:advisor!fellowship_thursday_amendment_created_by_advisor_id_fkey(advisor_name)").eq("attendance_id", correctionRecord.attendance_id).order("created_at", { ascending: true });
+      if (historyError) throw historyError;
+      // Show the appended audit entry immediately, then refresh the page so the
+      // effective value comes from the security-invoker list view rather than a
+      // stale client copy.
+      setAmendments((prev) => ({ ...prev, [correctionRecord.attendance_id]: (history ?? []) as unknown as Amendment[] }));
+      router.refresh();
       toast.success("Correction added to the audit trail."); setCorrectionRecord(null); setReason(""); setDetails(""); setCorrectAttendance(false); setCorrectSource(false); setCorrectedSource("");
     } catch (err) { console.error(err); toast.error("Failed to add correction."); }
     finally { setIsLoading(false); }
@@ -240,7 +300,7 @@ export function FellowshipThursdayTable({
               </Button>
             </div>
             <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
-              <Select value={attendedFilter} onValueChange={setAttendedFilter}>
+              <Select value={attendedFilter} onValueChange={(value) => { setAttendedFilter(value); navigate({ attended: value === "all" ? null : value }); }}>
                 <SelectTrigger className="w-full sm:w-36">
                   <SelectValue placeholder="All attendance" />
                 </SelectTrigger>
@@ -250,7 +310,7 @@ export function FellowshipThursdayTable({
                   <SelectItem value="no">Not attended</SelectItem>
                 </SelectContent>
               </Select>
-              <Select value={sourceFilter} onValueChange={setSourceFilter}>
+              <Select value={sourceFilter} onValueChange={(value) => { setSourceFilter(value); navigate({ source: value === "all" ? null : value }); }}>
                 <SelectTrigger className="w-full sm:w-40">
                   <SelectValue placeholder="All sources" />
                 </SelectTrigger>
@@ -277,7 +337,7 @@ export function FellowshipThursdayTable({
       {/* Table */}
       <AppCard>
         <AppCardContent className="p-0">
-          {filteredRecords.length === 0 ? (
+          {records.length === 0 ? (
             <EmptyState
               icon={CalendarDays}
               title="No attendance records found"
@@ -297,7 +357,7 @@ export function FellowshipThursdayTable({
             <>
               {/* Mobile card list */}
               <div className="md:hidden divide-y divide-gray-200">
-                {filteredRecords.map((record) => (
+                {records.map((record) => (
                   <div key={record.attendance_id} className="p-4">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
@@ -347,7 +407,7 @@ export function FellowshipThursdayTable({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 bg-white">
-                  {filteredRecords.map((record) => (
+                  {records.map((record) => (
                     <tr
                       key={record.attendance_id}
                       className="motion-safe:transition-colors motion-safe:duration-150 hover:bg-gray-50"
@@ -393,12 +453,15 @@ export function FellowshipThursdayTable({
       </AppCard>
 
       {/* Record count */}
-      {filteredRecords.length > 0 && (
+      {records.length > 0 && (
         <div className="mt-4 text-sm text-slate-500">
-          Showing <span className="font-medium">{filteredRecords.length}</span>{" "}
-          of <span className="font-medium">{records.length}</span> records
+          Showing <span className="font-medium">{records.length}</span>{" "}
+          of <span className="font-medium">{totalCount}</span> records
         </div>
       )}
+      <Pagination page={currentPage} pageSize={currentPageSize} totalCount={totalCount} totalPages={totalPages}
+        getPageHref={(p) => { const next = updateListSearchParams(searchParams.toString(), { page: p }); return `${pathname}?${next.toString()}`; }}
+        getPageSizeHref={(s) => { const next = updateListSearchParams(searchParams.toString(), { pageSize: s }); return `${pathname}?${next.toString()}`; }} className="mt-4" />
 
       {/* ── Add Dialog ────────────────────────── */}
       <Dialog open={addOpen} onOpenChange={(o) => !o && resetAndCloseAdd()}>
@@ -414,7 +477,11 @@ export function FellowshipThursdayTable({
             form={form}
             setForm={setForm}
             formErrors={formErrors}
-            students={students}
+            studentSearch={studentSearch}
+            setStudentSearch={(value) => { setStudentSearch(value); setSelectedStudent(null); setForm((prev) => ({ ...prev, student_id: "" })); }}
+            students={studentOptions}
+            loading={studentLookupLoading}
+            onSelectStudent={(student) => { setSelectedStudent(student); setStudentSearch(student.full_name); setForm((prev) => ({ ...prev, student_id: String(student.student_id) })); }}
           />
 
           <DialogFooter>
@@ -473,9 +540,13 @@ interface ThursdayFormProps {
   setForm: React.Dispatch<React.SetStateAction<typeof EMPTY_FORM>>;
   formErrors: Record<string, string>;
   students: StudentRow[];
+  studentSearch: string;
+  setStudentSearch: (value: string) => void;
+  loading: boolean;
+  onSelectStudent: (student: StudentRow) => void;
 }
 
-function ThursdayForm({ form, setForm, formErrors, students }: ThursdayFormProps) {
+function ThursdayForm({ form, setForm, formErrors, students, studentSearch, setStudentSearch, loading, onSelectStudent }: ThursdayFormProps) {
   return (
     <div className="grid gap-4 py-2">
       {/* Student */}
@@ -483,24 +554,13 @@ function ThursdayForm({ form, setForm, formErrors, students }: ThursdayFormProps
         <Label htmlFor="ft_student_id">
           Student <span className="text-red-500">*</span>
         </Label>
-        <Select
-          value={form.student_id}
-          onValueChange={(v) => setForm((prev) => ({ ...prev, student_id: v }))}
-        >
-          <SelectTrigger
-            id="ft_student_id"
-            className={formErrors.student_id ? "border-red-500" : ""}
-          >
-            <SelectValue placeholder="Select a student…" />
-          </SelectTrigger>
-          <SelectContent>
-            {students.map((s) => (
-              <SelectItem key={s.student_id} value={String(s.student_id)}>
-                {s.full_name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <Input id="ft_student_id" aria-label="Search students" placeholder="Type at least 2 letters to search…" value={studentSearch} onChange={(event) => setStudentSearch(event.target.value)} className={formErrors.student_id ? "border-red-500" : ""} />
+        {(students.length > 0 || loading || studentSearch.trim().length >= 2) && <div role="listbox" aria-label="Student results" className="max-h-36 overflow-y-auto rounded-md border">
+          {loading && <p className="p-2 text-sm text-slate-500">Searching students…</p>}
+          {!loading && students.map((student) => <button type="button" role="option" aria-selected={form.student_id === String(student.student_id)} key={student.student_id} className="block w-full p-2 text-left text-sm hover:bg-slate-50" onClick={() => onSelectStudent(student)}>{student.full_name}</button>)}
+          {!loading && studentSearch.trim().length >= 2 && students.length === 0 && <p className="p-2 text-sm text-slate-500">No students found.</p>}
+        </div>}
+        {form.student_id && <p className="text-xs text-slate-500">Selected: {studentSearch}</p>}
         {formErrors.student_id && (
           <p className="text-xs text-red-500">{formErrors.student_id}</p>
         )}

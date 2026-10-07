@@ -971,11 +971,15 @@ describe("historical integrity remediation steady state (migration 2026100800000
 describe("entity lifecycle archiving steady state (migration 20260930000005)", () => {
   it("adds nullable student.archived_at and fellowship.archived_at TIMESTAMPTZ with no default", async () => {
     const rows = await query(
-      `SELECT table_name, column_name, data_type, is_nullable, column_default
-         FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND column_name = 'archived_at'
-        ORDER BY table_name`
+      `SELECT c.table_name, c.column_name, c.data_type, c.is_nullable, c.column_default
+         FROM information_schema.columns c
+         JOIN information_schema.tables t
+           ON t.table_schema = c.table_schema
+          AND t.table_name = c.table_name
+          AND t.table_type = 'BASE TABLE'
+        WHERE c.table_schema = 'public'
+          AND c.column_name = 'archived_at'
+        ORDER BY c.table_name`
     );
     expect(rows.map((row) => row.table_name)).toEqual(["fellowship", "student"]);
     for (const row of rows) {

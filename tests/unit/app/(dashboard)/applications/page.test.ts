@@ -46,15 +46,17 @@ async function renderPage(node: ReturnType<typeof createElement>): Promise<strin
 }
 
 function createMockClient(
-  responses: Record<string, { data?: unknown; error?: { message: string } | null }>
+  responses: Record<string, { data?: unknown; error?: { message: string } | null; count?: number | null }>
 ) {
   return {
     from: vi.fn((table: string) => {
       const response = responses[table] ?? { data: [], error: null };
-      return {
-        select: vi.fn().mockReturnThis(),
-        order: vi.fn().mockResolvedValue(response),
-      };
+      const chain: Record<string, unknown> = {};
+      for (const method of ["select", "order", "or", "eq", "ilike", "range", "is"]) {
+        chain[method] = vi.fn().mockReturnValue(chain);
+      }
+      chain.then = (resolve: (value: unknown) => unknown) => Promise.resolve(response).then(resolve);
+      return chain;
     }),
   } as never;
 }
@@ -69,7 +71,7 @@ describe("getApplications", () => {
   it("returns { ok: false } when the query reports an error", async () => {
     createServerClient.mockReturnValue(
       createMockClient({
-        application: { data: null, error: { message: "permission denied" } },
+        application_list: { data: null, error: { message: "permission denied" } },
       })
     );
 
@@ -80,7 +82,9 @@ describe("getApplications", () => {
     createServerClient.mockReturnValue({
       from: vi.fn().mockReturnValue({
         select: vi.fn().mockReturnThis(),
-        order: vi.fn().mockRejectedValue(new Error("network failure")),
+        order: vi.fn().mockReturnThis(),
+        range: vi.fn().mockReturnThis(),
+        then: (_resolve: (value: unknown) => unknown, reject: (reason: Error) => unknown) => Promise.reject(new Error("network failure")).then(_resolve, reject),
       }),
     } as never);
 
@@ -97,14 +101,14 @@ describe("getApplications", () => {
     await expect(getApplications()).resolves.toEqual({ ok: false });
   });
 
-  it("returns { ok: true, applications: [] } for successful empty data", async () => {
+  it("returns count and pagination for successful empty data", async () => {
     createServerClient.mockReturnValue(
-      createMockClient({ application: { data: [], error: null } })
+      createMockClient({ application_list: { data: [], error: null, count: 0 } })
     );
 
     const result = await getApplications();
 
-    expect(result).toEqual({ ok: true, applications: [] });
+    expect(result).toMatchObject({ ok: true, applications: [], count: 0, pages: 0, pagination: { page: 1, pageSize: 25, offset: 0, to: 24 } });
   });
 });
 
@@ -187,6 +191,19 @@ describe("ApplicationsUnavailable", () => {
 // ── ApplicationsPage (page-level failure branch) ────────────────────────────
 
 describe("ApplicationsPage", () => {
+  it("loads only the paginated application view during normal list navigation", async () => {
+    createServerClient.mockReturnValue(createMockClient({
+      application_list: { data: [], error: null, count: 0 },
+      student: { data: [], error: null },
+      fellowship: { data: [], error: null },
+    }));
+    await renderPage(createElement(ApplicationsPage, { searchParams: Promise.resolve({}) }));
+    const queriedTables = createServerClient.mock.results.flatMap(({ value }) => value.from.mock.calls.map(([table]: [string]) => table));
+    expect(queriedTables).toEqual(["application_list"]);
+    expect(queriedTables).not.toContain("student");
+    expect(queriedTables).not.toContain("fellowship");
+  });
+
   it("renders the unavailable UI when the server client rejects", async () => {
     createServerClient.mockReturnValue({
       from: vi.fn().mockReturnValue({
@@ -224,7 +241,7 @@ describe("ApplicationsPage", () => {
   it("renders the unavailable UI when any query reports an error", async () => {
     createServerClient.mockReturnValue(
       createMockClient({
-        application: { data: null, error: { message: "permission denied" } },
+        application_list: { data: null, error: { message: "permission denied" } },
       })
     );
 
@@ -239,7 +256,7 @@ describe("ApplicationsPage", () => {
   it("renders the successful-empty state, distinct from the unavailable UI", async () => {
     createServerClient.mockReturnValue(
       createMockClient({
-        application: { data: [], error: null },
+        application_list: { data: [], error: null, count: 0 },
         student: { data: [], error: null },
         fellowship: { data: [], error: null },
       })

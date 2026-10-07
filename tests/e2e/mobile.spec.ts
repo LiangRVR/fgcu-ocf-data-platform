@@ -145,7 +145,7 @@ test.describe("mobile smoke", () => {
     await page.getByRole("button", { name: "Log Meeting" }).click();
 
     const dialog = page.getByRole("dialog");
-    await expect(dialog.locator("#student_id")).toBeVisible();
+    await expect(dialog.locator("#student-search")).toBeVisible();
     await expect(dialog.locator("#application_id")).toBeVisible();
     await expect(dialog.locator("#meeting_date")).toBeVisible();
     await expect(dialog.locator("#meeting_mode")).toBeVisible();
@@ -153,9 +153,11 @@ test.describe("mobile smoke", () => {
     await expect(dialog.locator("#notes")).toBeVisible();
 
     // Selecting a student offers that student's applications plus General
-    // Advising — the dependent meeting-selector behavior stays usable.
-    await dialog.locator("#student_id").click();
-    await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
+    // Advising — the dependent meeting-selector behavior stays usable. The
+    // student field is a lazy bounded typeahead: type at least two characters,
+    // then choose the bounded option.
+    await dialog.locator("#student-search").fill(STUDENT_NAME);
+    await dialog.getByRole("button", { name: STUDENT_NAME, exact: true }).click();
     await dialog.locator("#application_id").click();
     await expect(page.getByRole("option", { name: "General Advising", exact: true })).toBeVisible();
     await expect(

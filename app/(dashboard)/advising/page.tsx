@@ -10,6 +10,8 @@ import { AdvisingTable } from "@/components/advising/advising-table";
 import type { Database } from "@/types/database";
 import Link from "next/link";
 import { CalendarCheck2, ShieldAlert, UserRoundCheck, Users } from "lucide-react";
+import { redirect } from "next/navigation";
+import { resolvePagination, totalPages } from "@/lib/utils/pagination";
 
 export const metadata: Metadata = { title: "Advising" };
 
@@ -19,6 +21,10 @@ interface Props {
     student_id?: string;
     advisor_id?: string;
     no_show?: string;
+    page?: string;
+    pageSize?: string;
+    search?: string;
+    mode?: string;
   }>;
 }
 
@@ -38,103 +44,138 @@ type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] &
   })[];
 };
 
-type ApplicationOption = {
-  application_id: number;
-  student_id: number;
-  application_year: number | null;
-  fellowship: { fellowship_name: string } | null;
+type AdvisingMeetingsResult = {
+  meetings: AdvisingMeeting[];
+  count: number;
+  pagination: ReturnType<typeof resolvePagination>;
+  pages: number;
 };
 
-type StudentRow = Pick<
-  Database["public"]["Tables"]["student"]["Row"],
-  "student_id" | "full_name"
->;
-
-type AdvisorRow = Pick<
-  Database["public"]["Tables"]["advisor"]["Row"],
-  "advisor_id" | "advisor_name"
->;
-
-async function getAdvisingMeetings(): Promise<AdvisingMeeting[]> {
-  const supabase = createServerClient();
-  try {
-    const { data, error } = await supabase
-      .from("advising_meeting")
-      .select(`*, student(full_name), advisor!advising_meeting_advisor_id_fkey(advisor_name), recorded_by:advisor!advising_meeting_created_by_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name)), amendments:advising_meeting_amendment(amendment_id, meeting_id, reason, details, created_at, created_by_advisor_id, created_by:advisor!advising_meeting_amendment_created_by_advisor_id_fkey(advisor_name))`)
-      .order("meeting_date", { ascending: false })
-      .order("created_at", { ascending: true, foreignTable: "amendments" })
-      .order("amendment_id", { ascending: true, foreignTable: "amendments" });
-    if (error) {
-      console.error("Error fetching advising meetings:", error);
-      return [];
-    }
-    return (data as AdvisingMeeting[]) || [];
-  } catch {
-    return [];
-  }
-}
-
 /**
- * Active-students selector for the advising meeting creation form.
+ * Bounded, server-side advising list loader.
  *
- * Excludes archived students server-side when the PostgREST chain exposes
- * the `.is()` filter (production clients do, the unit-test mock chain does
- * not). Archived students retain every historical advising record
- * (`advising_meeting.student_id` is a non-cascading FK), so historical
- * advising context is never lost — but the active selector must not let an
- * advisor create a new meeting against an archived student.
+ * Reads the read-only `advising_meeting_list` view (flattened student/advisor/
+ * recorder/application/fellowship context) with an exact count and an inclusive
+ * `.range(...)`. Free-text search is an allowlisted PostgREST `.or` over actual
+ * view columns — never a raw column/operator from the query string, and never
+ * the non-existent `search_document` field. Amendments are loaded in a second,
+ * bounded query for just the meeting IDs on this page so history stays
+ * chronological without loading the whole amendment table.
  */
-async function getActiveStudents(): Promise<StudentRow[]> {
+async function getAdvisingMeetings(params: {
+  page?: string;
+  pageSize?: string;
+  search?: string;
+  mode?: string;
+  no_show?: string;
+  advisor_id?: string;
+}): Promise<AdvisingMeetingsResult> {
   const supabase = createServerClient();
+  const pagination = resolvePagination(params);
   try {
     let query = supabase
-      .from("student")
-      .select("student_id, full_name");
-    // Defensive server-side filter: PostgREST's `is(col, null)` is part of
-    // the real client; the unit-test mock chain omits it (preserved by the
-    // test contract). Production sessions still apply the filter at the
-    // database boundary.
-    if (typeof (query as { is?: unknown }).is === "function") {
-      query = (query as unknown as { is: (col: string, val: null) => typeof query }).is(
-        "archived_at",
-        null,
+      .from("advising_meeting_list")
+      .select("*", { count: "exact" });
+
+    // Allowlisted search: only view columns, delimiters neutralized so a
+    // crafted term cannot inject extra PostgREST operators into `.or(...)`.
+    const term = params.search?.trim().replace(/[,%()*\\]/g, " ").replace(/\s+/g, " ").trim();
+    if (term) {
+      const clauses = [
+        `student_name.ilike.*${term}*`,
+        `advisor_name.ilike.*${term}*`,
+        `notes.ilike.*${term}*`,
+        `meeting_mode.ilike.*${term}*`,
+        `fellowship_name.ilike.*${term}*`,
+      ];
+      query = query.or(
+        /^\d{4}$/.test(term)
+          ? `${clauses.join(",")},application_year.eq.${term}`
+          : clauses.join(","),
       );
     }
-    const { data } = await query.order("full_name", { ascending: true });
-    return data || [];
-  } catch {
-    return [];
-  }
-}
-
-async function getAdvisors(): Promise<AdvisorRow[]> {
-  const supabase = createServerClient();
-  try {
-    const { data } = await supabase
-      .from("advisor")
-      .select("advisor_id, advisor_name")
-      .eq("is_active", true)
-      .order("advisor_name", { ascending: true });
-    return data || [];
-  } catch {
-    return [];
-  }
-}
-
-async function getApplications(): Promise<ApplicationOption[]> {
-  const supabase = createServerClient();
-  try {
-    const { data, error } = await supabase
-      .from("application")
-      .select("application_id, student_id, application_year, fellowship(fellowship_name)")
-      .order("application_id", { ascending: false });
-    if (error) {
-      console.error("Error fetching applications:", error);
-      return [];
+    if (params.mode === "In-Person" || params.mode === "Virtual") {
+      query = query.eq("meeting_mode", params.mode);
     }
-    return (data as ApplicationOption[]) || [];
+    if (params.no_show === "yes") query = query.eq("no_show", true);
+    if (params.no_show === "no") query = query.eq("no_show", false);
+    if (params.advisor_id && /^\d+$/.test(params.advisor_id)) {
+      query = query.eq("advisor_id", Number(params.advisor_id));
+    }
+
+    const { data, error, count } = await query
+      .order("meeting_date", { ascending: false })
+      .order("meeting_id", { ascending: false })
+      .range(pagination.offset, pagination.to);
+    if (error) {
+      console.error("Error fetching advising meetings:", error);
+      return { meetings: [], count: 0, pagination, pages: 0 };
+    }
+
+    const rows =
+      (data as Database["public"]["Views"]["advising_meeting_list"]["Row"][] | null) ?? [];
+    const ids = rows.map((row) => row.meeting_id);
+
+    type AmendmentRow = Database["public"]["Tables"]["advising_meeting_amendment"]["Row"] & {
+      created_by: { advisor_name: string } | null;
+    };
+    let amendments: AmendmentRow[] = [];
+    if (ids.length) {
+      const { data: amendmentRows, error: amendmentError } = await supabase
+        .from("advising_meeting_amendment")
+        .select(
+          "amendment_id, meeting_id, reason, details, created_at, created_by_advisor_id, created_by:advisor!advising_meeting_amendment_created_by_advisor_id_fkey(advisor_name)",
+        )
+        .in("meeting_id", ids)
+        .order("created_at", { ascending: true })
+        .order("amendment_id", { ascending: true });
+      if (amendmentError) {
+        console.error("Error fetching advising amendments:", amendmentError);
+      }
+      amendments = ((amendmentRows as AmendmentRow[] | null) ?? [])
+        .slice()
+        .sort(
+          (a, b) =>
+            a.created_at.localeCompare(b.created_at) || a.amendment_id - b.amendment_id,
+        );
+    }
+    const amendmentsByMeeting = new Map<number, AmendmentRow[]>();
+    for (const amendment of amendments) {
+      const list = amendmentsByMeeting.get(amendment.meeting_id) ?? [];
+      list.push(amendment);
+      amendmentsByMeeting.set(amendment.meeting_id, list);
+    }
+
+    const meetings: AdvisingMeeting[] = rows.map((row) => ({
+      ...row,
+      student: row.student_name ? { full_name: row.student_name } : null,
+      advisor: row.advisor_name ? { advisor_name: row.advisor_name } : null,
+      recorded_by: row.recorded_by_advisor_name
+        ? { advisor_name: row.recorded_by_advisor_name }
+        : null,
+      application_id: row.application_id,
+      application:
+        row.application_id == null
+          ? null
+          : {
+              application_id: row.application_id,
+              application_year: row.application_year,
+              fellowship_id: row.fellowship_id ?? 0,
+              fellowship: row.fellowship_name
+                ? { fellowship_name: row.fellowship_name }
+                : null,
+            },
+      amendments: amendmentsByMeeting.get(row.meeting_id) ?? [],
+    }));
+
+    return {
+      meetings,
+      count: count ?? 0,
+      pagination,
+      pages: totalPages(count ?? 0, pagination.pageSize),
+    };
   } catch {
-    return [];
+    return { meetings: [], count: 0, pagination, pages: 0 };
   }
 }
 
@@ -144,19 +185,34 @@ export default async function AdvisingPage({ searchParams }: Props) {
   const autoOpenAdd       = params.add     === "1";
   const defaultStudentId  = params.student_id;
   const defaultAdvisorId  = params.advisor_id ?? String(advisor.advisor_id);
-  const initialNoShowFilter = params.no_show === "yes" ? "yes" : undefined;
+  const initialNoShowFilter =
+    params.no_show === "yes" ? "yes" : params.no_show === "no" ? "no" : undefined;
 
-  const [meetings, students, advisors, applications] = await Promise.all([
-    getAdvisingMeetings(),
-    getActiveStudents(),
-    getAdvisors(),
-    getApplications(),
-  ]);
+  const result = await getAdvisingMeetings(params);
+  // Canonicalize the URL: an out-of-range page (after a filter change or a
+  // deleted row) collapses to the last valid page, and any non-canonical
+  // page/pageSize representation is rewritten once via redirect.
+  const pageOutOfRange = result.pagination.page > Math.max(1, result.pages);
+  const nonCanonical =
+    String(result.pagination.page) !== (params.page ?? "1") ||
+    String(result.pagination.pageSize) !== (params.pageSize ?? "25");
+  if (pageOutOfRange || nonCanonical) {
+    const canonical = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined) canonical.set(key, value);
+    }
+    canonical.set(
+      "page",
+      String(pageOutOfRange ? Math.max(1, result.pages) : result.pagination.page),
+    );
+    canonical.set("pageSize", String(result.pagination.pageSize));
+    redirect(`/advising?${canonical.toString()}`);
+  }
+  const meetings = result.meetings;
 
   // Compute exception counts for pill bar labels
   const noShowCount = meetings.filter((m) => m.no_show).length;
   const studentIdsWithMeetings = new Set(meetings.map((m) => m.student_id));
-  const neverSeenCount = students.filter((s) => !studentIdsWithMeetings.has(s.student_id)).length;
   const advisorCoverage = new Set(meetings.map((m) => m.advisor_id).filter((advisorId): advisorId is number => advisorId !== null)).size;
 
   const isNoShow = params.no_show === "yes";
@@ -168,9 +224,9 @@ export default async function AdvisingPage({ searchParams }: Props) {
         title="Advising"
         description="Track advising sessions, attendance risk, and students who still need advisor contact."
       >
-        <MetricBadge tone="blue">{meetings.length} meetings</MetricBadge>
+        <MetricBadge tone="blue">{result.count} meetings</MetricBadge>
         <MetricBadge tone="red">{noShowCount} no-shows</MetricBadge>
-        <MetricBadge tone="amber">{neverSeenCount} never seen</MetricBadge>
+        <MetricBadge tone="amber">{studentIdsWithMeetings.size} students on this page</MetricBadge>
       </PageHeader>
 
       <PageSection
@@ -179,10 +235,10 @@ export default async function AdvisingPage({ searchParams }: Props) {
         className="mb-6"
       >
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <StatCard icon={CalendarCheck2} value={meetings.length} title="Meetings Logged" description="Advising sessions currently on record" tone="blue" />
-          <StatCard icon={ShieldAlert} value={noShowCount} title="No-Shows" description="Meetings where the student did not attend" tone="rose" />
-          <StatCard icon={Users} value={neverSeenCount} title="Students Never Seen" description="Students with no advising history yet" tone="amber" />
-          <StatCard icon={UserRoundCheck} value={advisorCoverage} title="Active Advisors" description="Advisors represented in recorded meetings" tone="green" />
+          <StatCard icon={CalendarCheck2} value={meetings.length} title="Meetings on this page" description="Advising sessions on this page" tone="blue" />
+          <StatCard icon={ShieldAlert} value={noShowCount} title="No-shows on this page" description="Meetings where the student did not attend on this page" tone="rose" />
+          <StatCard icon={Users} value={studentIdsWithMeetings.size} title="Students on this page" description="Students represented on this page" tone="amber" />
+          <StatCard icon={UserRoundCheck} value={advisorCoverage} title="Advisors on this page" description="Advisors represented in meetings on this page" tone="green" />
         </div>
       </PageSection>
 
@@ -216,9 +272,6 @@ export default async function AdvisingPage({ searchParams }: Props) {
           className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50/80 px-3 py-1.5 text-xs font-medium text-amber-700 motion-safe:transition-colors hover:border-amber-400 hover:bg-amber-50"
         >
           Students Never Seen
-          {neverSeenCount > 0 && (
-            <span className="ml-1.5 tabular-nums">({neverSeenCount})</span>
-          )}
         </Link>
       </div>
 
@@ -233,14 +286,17 @@ export default async function AdvisingPage({ searchParams }: Props) {
 
       <AdvisingTable
         initialMeetings={meetings}
-        students={students}
-        advisors={advisors}
-        applications={applications}
         currentAdvisorId={advisor.advisor_id}
         autoOpenAdd={autoOpenAdd}
         defaultStudentId={defaultStudentId}
         defaultAdvisorId={defaultAdvisorId}
         initialNoShowFilter={initialNoShowFilter}
+        initialModeFilter={params.mode}
+        initialSearchQuery={params.search}
+        page={result.pagination.page}
+        pageSize={result.pagination.pageSize}
+        totalCount={result.count}
+        totalPages={result.pages}
       />
     </>
   );
