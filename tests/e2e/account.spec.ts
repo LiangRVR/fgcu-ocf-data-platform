@@ -82,6 +82,27 @@ test.describe("account workflow", () => {
     await expect(page.getByRole("heading", { name: ACTIVE_ADVISOR_NAME })).toBeVisible();
   });
 
+  test("the account email is read-only in ordinary profile editing (R4)", async ({ page }) => {
+    await signInAsActive(page);
+    await page.goto("/dashboard/account");
+
+    const email = page.locator("#email");
+    await expect(email).toBeVisible();
+    await expect(email).toHaveValue(ACTIVE_EMAIL);
+    // Ordinary profile editing must not be able to change the login email; the
+    // account surface points the user at an administrator instead. The exact
+    // match anchors the assertion to the email-field helptext alone — a prefix
+    // of it also appears in the card description, which would otherwise make
+    // the locator ambiguous.
+    await expect(email).not.toBeEditable();
+    await expect(
+      page.getByText(
+        "Email changes require account administration. Contact an administrator for help.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+  });
+
   test("an advisor can sign out from the user menu and the auth gate closes", async ({ page }) => {
     await signInAsActive(page);
 

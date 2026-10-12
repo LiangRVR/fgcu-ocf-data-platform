@@ -38,8 +38,10 @@ export type ScholarshipHistory = ScholarshipHistoryListRow & {
 /** URL/query state accepted by the Scholarship History list loader. */
 export interface ScholarshipHistoryQuery {
   search?: string;
-  fellowship_id?: string;
+  /** Validated list-filter key for the award program (legacy alias retained). */
   filter?: string;
+  /** Contextual add-form default only; never a list filter. */
+  fellowship_id?: string;
   page?: string;
   pageSize?: string;
 }
@@ -75,14 +77,24 @@ const EMPTY_SUMMARY: ScholarshipHistoryOperationalSummary = {
   repeatAwards: 0,
 };
 
-/** Normalize the (legacy `filter`-compatible) fellowship selector value. */
+/**
+ * Normalize the separately-validated list filter for the award program.
+ *
+ * The list filter is driven only by the dedicated `filter` key: the
+ * `fellowship_id` parameter is reserved for the contextual add-form default
+ * emitted by Fellowship Detail (`?add=1&fellowship_id=<id>`) and must never
+ * narrow the history list. Malformed values (non-numeric, zero, negative,
+ * fractional) resolve to `null` so they cannot reach PostgREST.
+ */
 export function normalizeFellowshipFilter(
   params: Pick<ScholarshipHistoryQuery, "fellowship_id" | "filter">,
 ): string | null {
-  const raw = params.fellowship_id ?? params.filter;
+  const raw = params.filter;
   if (!raw || raw === "all") return null;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) ? String(parsed) : null;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? String(parsed) : null;
 }
 
 /**
@@ -105,7 +117,9 @@ export async function getScholarshipHistory(
   const pagination = resolvePagination(params);
   try {
     const search = params.search?.trim() ?? "";
-    const searchPattern = search ? `%${search.replace(/[%_\\]/g, "\\$&")}%` : null;
+    // Escape LIKE wildcards (`%`, `_`, `*`) and the backslash so a literal
+    // search term cannot widen its match set.
+    const searchPattern = search ? `%${search.replace(/[%_\\*]/g, "\\$&")}%` : null;
     const fellowship = normalizeFellowshipFilter(params);
 
     // Independently-derived non-void metrics (search/fellowship scoped). The
@@ -238,15 +252,16 @@ export default async function ScholarshipHistoryPage({ searchParams }: Props) {
 
   const result = await getScholarshipHistory(params);
 
-  // Canonicalize URL state: normalize page/pageSize/search/fellowship, drop
+  // Canonicalize URL state: normalize page/pageSize/search/list-filter, drop
   // defaults and invalid values, and resolve an out-of-range page to the last
-  // valid page (or page 1 for zero results). Contextual `add`/`student_id`
-  // parameters survive canonicalization so the creation flow is never lost.
+  // valid page (or page 1 for zero results). Contextual `add`/`student_id`/
+  // `fellowship_id` parameters are preserved verbatim but are NEVER treated as
+  // list criteria, so `?add=1&fellowship_id=<id>` only preselects the add form.
   const resolvedPage = result.pages > 0 ? Math.min(result.pagination.page, result.pages) : 1;
   const search = params.search?.trim() ?? "";
   const fellowship = normalizeFellowshipFilter(params);
   const supplied = new URLSearchParams();
-  for (const key of ["page", "pageSize", "search", "fellowship_id", "filter"] as const) {
+  for (const key of ["page", "pageSize", "search", "filter", "add", "student_id", "fellowship_id"] as const) {
     const value = params[key];
     if (value !== undefined && value !== "") supplied.set(key, value);
   }
@@ -256,10 +271,11 @@ export default async function ScholarshipHistoryPage({ searchParams }: Props) {
     canonical.set("pageSize", String(result.pagination.pageSize));
   }
   if (search) canonical.set("search", search);
-  if (fellowship) canonical.set("fellowship_id", fellowship);
+  if (fellowship) canonical.set("filter", fellowship);
+  if (params.add) canonical.set("add", params.add);
+  if (params.student_id) canonical.set("student_id", params.student_id);
+  if (params.fellowship_id) canonical.set("fellowship_id", params.fellowship_id);
   if (supplied.toString() !== canonical.toString()) {
-    if (params.add) canonical.set("add", params.add);
-    if (params.student_id) canonical.set("student_id", params.student_id);
     redirect(canonical.size ? `/scholarship-history?${canonical}` : "/scholarship-history");
   }
 

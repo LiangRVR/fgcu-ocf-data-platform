@@ -26,10 +26,14 @@ function PaginationAction({
   onClick?: () => void;
 }) {
   const className = "h-9 px-3";
-  if (href) {
+  // A disabled control must not be navigable at all: an anchor with an href is
+  // pointer-activatable even when marked `aria-disabled`, so disabled states
+  // render a real disabled button (removed from the tab order and non-clickable)
+  // rather than a link with a suppressed tab stop.
+  if (href && !disabled) {
     return (
       <Button asChild variant="outline" size="sm" className={className}>
-        <a href={href} aria-label={label} aria-disabled={disabled || undefined} tabIndex={disabled ? -1 : undefined}>
+        <a href={href} aria-label={label}>
           {label}
         </a>
       </Button>

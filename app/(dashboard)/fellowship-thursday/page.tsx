@@ -12,6 +12,28 @@ import { resolvePagination, totalPages } from "@/lib/utils/pagination";
 
 export const metadata: Metadata = { title: "Fellowship Thursday" };
 
+/** Source values allowed by the schema CHECK constraint. */
+const SOURCE_ALLOWLIST: ReadonlySet<string> = new Set(["OCF", "HC", "MM"]);
+
+/**
+ * Normalize an untrusted `source` filter against the schema allowlist. `all`,
+ * missing, and unrecognized values resolve to `null` (no predicate) so a
+ * malformed URL can never reach PostgREST.
+ */
+export function normalizeSourceFilter(value: string | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  return SOURCE_ALLOWLIST.has(trimmed) ? trimmed : null;
+}
+
+/**
+ * Escape LIKE wildcards (`%`, `_`, `*`) and the backslash so a literal search
+ * term cannot widen its match set.
+ */
+export function escapeLikeSearchTerm(value: string): string {
+  return value.trim().replace(/[%_\\*]/g, "\\$&");
+}
+
 interface Props {
   searchParams: Promise<{
     add?: string;
@@ -53,8 +75,9 @@ export async function getFellowshipThursdayRecords(params: { search?: string; so
   try {
     const pagination = resolvePagination(params);
     let query = supabase.from("fellowship_thursday_list").select("*", { count: "exact" });
-    if (params.search?.trim()) query = query.ilike("student_name", `%${params.search.trim()}%`);
-    if (params.source && params.source !== "all") query = query.eq("source_info", params.source);
+    if (params.search?.trim()) query = query.ilike("student_name", `%${escapeLikeSearchTerm(params.search)}%`);
+    const source = normalizeSourceFilter(params.source);
+    if (source) query = query.eq("source_info", source);
     if (params.attended === "yes") query = query.eq("attended", true);
     if (params.attended === "no") query = query.eq("attended", false);
     const { data, error, count } = await query.order("attendance_id", { ascending: false }).range(pagination.offset, pagination.to);

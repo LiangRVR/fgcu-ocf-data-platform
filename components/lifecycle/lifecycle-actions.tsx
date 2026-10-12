@@ -15,6 +15,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
 
@@ -249,6 +250,7 @@ export function LifecycleAction({
 }: LifecycleActionProps) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
   const [isPending, startTransition] = useTransition();
 
@@ -272,6 +274,8 @@ export function LifecycleAction({
     (action === "archive" || action === "deactivate" ? "outline" : "outline");
 
   const handleConfirm = () => {
+    const trimmedReason = reason.trim();
+    if (!trimmedReason) return;
     const params = resolveRpcParams(entity, action);
     if (!params) {
       // Cross-axis call. Fail closed with a visible toast.
@@ -284,7 +288,8 @@ export function LifecycleAction({
         p_entity: params.p_entity,
         p_action: params.p_action,
         p_entity_id: entityId,
-      });
+        p_reason: trimmedReason,
+      } as never);
       if (error) {
         toast.error(error.message ?? "Lifecycle transition failed.");
         return;
@@ -329,7 +334,10 @@ export function LifecycleAction({
       <AlertDialog
         open={open}
         onOpenChange={(nextOpen) => {
-          if (!isPending) setOpen(nextOpen);
+          if (!isPending) {
+            setOpen(nextOpen);
+            if (nextOpen) setReason("");
+          }
         }}
       >
         <AlertDialogContent>
@@ -342,6 +350,19 @@ export function LifecycleAction({
               </span>
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="lifecycle-reason">Reason <span aria-hidden="true">*</span></Label>
+            <textarea
+              id="lifecycle-reason"
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              placeholder="Enter a reason for this change"
+              required
+              aria-required="true"
+              rows={3}
+              className="flex min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            />
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isPending}>Cancel</AlertDialogCancel>
             <AlertDialogAction
@@ -352,7 +373,7 @@ export function LifecycleAction({
                 event.preventDefault();
                 handleConfirm();
               }}
-              disabled={isPending}
+              disabled={isPending || !reason.trim()}
               className={
                 action === "archive" || action === "deactivate"
                   ? "bg-amber-600 text-white hover:bg-amber-700"

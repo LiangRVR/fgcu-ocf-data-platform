@@ -40,15 +40,25 @@ export type ProvisionAdvisorValues = z.infer<typeof provisionAdvisorSchema>;
 
 /**
  * Update: change the target's role OR active state — exactly one mutation per
- * request. A combined `role` + `isActive` payload is rejected fail-closed with
- * 400 BEFORE any state change, so a partial application can never occur. Unknown
- * keys — most importantly `auth_user_id` (no rebinding via the API) — are
- * rejected fail-closed with 400.
+ * request — with a REQUIRED non-blank human reason. A combined
+ * `role` + `isActive` payload is rejected fail-closed with 400 BEFORE any
+ * state change, so a partial application can never occur; a missing/blank
+ * `reason` is also rejected before any privileged operation (role changes and
+ * advisor activate/deactivate both require a human-attributable reason per
+ * the approved plan, design points 4–5). The actor identity is never part of
+ * the payload: the route injects the server-resolved effective-Admin id into
+ * the trusted operations. Unknown keys — most importantly `auth_user_id` (no
+ * rebinding via the API) — are rejected fail-closed with 400.
  */
 export const updateAdvisorSchema = z
   .strictObject({
     role: advisorRoleSchema.optional(),
     isActive: z.boolean().optional(),
+    reason: z
+      .string()
+      .trim()
+      .min(1, "A reason is required.")
+      .max(500, "Reason must be 500 characters or fewer"),
   })
   .refine((value) => value.role !== undefined || value.isActive !== undefined, {
     message: "Provide role or isActive to update an advisor.",

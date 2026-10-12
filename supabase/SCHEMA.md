@@ -5,11 +5,11 @@
 >
 > Active auth model: Supabase Auth identity + `public.advisor` authorization
 >
-> ⚠️ **Provenance notice (2026-09-25, updated 2026-10-01):** the hosted
+> ⚠️ **Provenance notice (2026-09-25, updated 2026-10-09):** the hosted
 > production database is the physical-schema authority. Its migration ledger
 > records only `20260924065221_advisor_self_activation_lockdown`, while this
-> repository tracks twenty-two migrations (`20260305000000` …
-> `20261009000001_scholarship_void_serialization`), and the deployed schema
+> repository tracks twenty-six migrations (`20260305000000` …
+> `20261013000001_advisor_admin_immutable_history.sql`), and the deployed schema
 > materially differs from the repository chain. Do **not** run
 > `supabase db push`, replay migrations, or repair migration history against
 > production. See [Migration deployment freeze](#migration-deployment-freeze).
@@ -34,8 +34,9 @@
 | `scholarship_history` | Confirmed past fellowship awards | `history_id` |
 | `scholarship_history_amendment` | Append-only Correction / Void records for scholarship awards | `amendment_id` |
 | `advisor_role_lock` | Server-only per-advisor role-change lease (migration `20261003000001`) | `advisor_id` (FK) |
+| `audit_event` | Immutable, database-authored audit trail of every `student`/`fellowship`/`application`/`advisor` mutation (migrations `20261012000001` + `20261013000001`) | `audit_id` (bigint) |
 
-All PKs are **integer sequences** (never UUIDs) except `advisor_role_lock`, whose primary key is the `advisor_id` foreign key (a server-only lock table, never exposed to clients). All table names are **singular**.
+All PKs are **integer sequences** (never UUIDs) except `advisor_role_lock`, whose primary key is the `advisor_id` foreign key (a server-only lock table, never exposed to clients); `audit_event.audit_id` is a `bigint` sequence, every other PK is `integer`. All table names are **singular**.
 
 ---
 
@@ -86,6 +87,28 @@ column-scoped `role`/`is_active`/`auth_user_id` guards still protect those
 fields on the self row. Advisor rows are created/managed only through the
 trusted `service_role` / DBA provisioning path and the protected management
 API.
+
+**Email is read-only in ordinary profile editing (change
+`advisor-admin-immutable-history`, migration `20261013000001`):** an advisor's
+login email is a Supabase Auth identity field. Ordinary profile PATCH accepts
+`advisor_name` only; a supplied `email` is rejected rather than updating
+`advisor.email` without the Auth email (which would silently diverge the two
+identity sources). Changing a login email requires a future explicit trusted
+account-management workflow that updates Auth and the advisor projection
+together; no self-service email edit exists in this handoff.
+
+**Trusted creation and atomic role change (migration `20261013000001`):**
+advisor rows are created only by the service-role-only
+`public.provision_advisor` RPC, which validates the initiating effective Admin,
+writes the bound advisor row, and emits exactly one `created` audit event
+attributed to that Admin in the same transaction. Role changes run through the
+service-role-only `public.set_advisor_role(p_advisor_id, p_role, p_reason,
+p_actor_id)` RPC, which requires a non-blank reason, revalidates the actor,
+serializes membership-reducing changes under a fixed advisory lock, refuses to
+remove the last active bound durable Admin, and atomically updates the Auth claim
+and the display role with exactly one `role_changed` event. The old 2-arg/3-arg
+signatures are dropped. See
+[Advisor / Admin Immutable History](#advisor--admin-immutable-history-migration-20261013000001).
 
 Authenticated clients **cannot `DELETE`** advisor rows (migration
 `20260930000006_core_history_delete_lockdown`): the `authenticated` DELETE
@@ -439,6 +462,212 @@ amendment.
 
 ---
 
+## `audit_event` — Immutable Audit Trail (migration `20261012000001`)
+
+**Purpose:** Immutable, database-authored audit read model for the current-state
+`student`, `fellowship`, and `application` rows plus trusted `advisor`/
+administrator operations (migration `20261013000001`). Every INSERT and every
+*meaningful* UPDATE of an audited table writes exactly one audit event, inside
+the source mutation's own transaction, through an internal `SECURITY DEFINER`
+trigger helper. An audit failure aborts the business write; no client code or RPC
+can fabricate history.
+
+| Column | Type | Null | Default | Constraint |
+| --- | --- | --- | --- | --- |
+| `audit_id` | bigint | NO | nextval | **PK**; sequence-backed, never exposed to client roles |
+| `entity_type` | text | NO | — | CHECK — exactly the ten reserved entity names (below) |
+| `entity_id` | integer | NO | — | Immutable historical entity id at event time; **no FK** |
+| `action` | text | NO | — | CHECK — exactly the ten reserved actions (below) |
+| `actor_advisor_id` | integer | YES | — | Active advisor resolved from `auth.uid()`, or a verified server-supplied trusted actor for service operations; NULL for a technical/system origin |
+| `actor_name_snapshot` | text | NO | — | Advisor display name copied at event time (`'System'` for technical writes); a later rename cannot rewrite a prior event |
+| `occurred_at` | timestamptz | NO | `now()` | Transaction timestamp of the audited mutation |
+| `old_values` | jsonb | YES | — | Whitelisted snapshot BEFORE a meaningful UPDATE; NULL for INSERT |
+| `new_values` | jsonb | YES | — | Whitelisted snapshot AFTER the insertion/mutation |
+| `changes` | jsonb | YES | — | Only whitelisted fields that differ under `IS DISTINCT FROM`, as `{field: {old, new}}`; NULL for INSERT |
+| `reason` | text | YES | — | Human-supplied reason for trusted role/lifecycle actions (required by `set_advisor_role` and `lifecycle_transition`); NULL for ordinary profile/data edits |
+| `subject_student_id` | integer | YES | — | Immutable subject student context; **no FK** |
+| `subject_application_id` | integer | YES | — | Immutable subject application context; **no FK** |
+| `subject_fellowship_id` | integer | YES | — | Immutable subject fellowship context; **no FK** |
+| `origin` | text | NO | — | CHECK — exactly `user`, `system`, `migration` |
+
+**CHECK vocabularies.**
+
+- `audit_event_entity_type_check` — exactly `student`, `advisor`, `fellowship`,
+  `application`, `advising_meeting`, `advising_meeting_amendment`,
+  `fellowship_thursday`, `fellowship_thursday_amendment`, `scholarship_history`,
+  `scholarship_history_amendment`.
+- `audit_event_action_check` — exactly `created`, `updated`, `archived`,
+  `restored`, `deactivated`, `reactivated`, `role_changed`,
+  `correction_added`, `voided`, `baseline_captured`.
+- `audit_event_origin_check` — exactly `user`, `system`, `migration`.
+
+`student`, `fellowship`, `application`, and `advisor` are wired to triggers;
+`created`, `updated`, `archived`, `restored`, `deactivated`, `reactivated`, and
+`role_changed` have writers. The remaining entity names and the
+`correction_added`, `voided`, and `baseline_captured` actions are reserved
+vocabulary with no writer yet.
+
+**Event semantics.**
+
+- **INSERT** → `old_values`/`changes` are NULL, `new_values` is the explicit
+  whitelisted snapshot, `action = 'created'`.
+- **UPDATE** → `old_values`/`new_values`/`changes` are populated. `changes`
+  contains ONLY whitelisted business fields whose value differs under
+  `IS DISTINCT FROM`; a no-op or technical-only update (no whitelisted field
+  changed) records nothing.
+- **Student/Fellowship lifecycle:** `NULL → non-NULL archived_at` is `archived`;
+  `non-NULL → NULL` is `restored`; any other meaningful change is `updated`.
+  Application updates are always `updated`.
+- **Advisor classification (migration `20261013000001`):** an `is_active`
+  transition is `deactivated`/`reactivated`; a role change is `role_changed`
+  (written explicitly by the atomic role RPC, which suppresses the trigger for
+  that one write); a permitted allowlisted profile edit is `updated`; a
+  `last_login_at`-only change writes no event. Advisor snapshots/diffs contain
+  ONLY `advisor_name`, `email`, `role`, and `is_active`.
+- **Actor/origin:** a non-NULL `auth.uid()` MUST resolve to exactly one ACTIVE,
+  pre-bound `public.advisor`; its current `advisor_name` is copied into
+  `actor_name_snapshot` and `origin = 'user'`. An authenticated but unresolved
+  actor raises `42501` and aborts the source mutation. A trusted service
+  operation attributes the event to the server-supplied effective-Admin advisor
+  id after revalidating it against durable Auth metadata (transaction-local
+  context; no client-reachable actor parameter); `origin = 'user'`. A session
+  with no request actor and no trusted context records `actor_advisor_id = NULL`,
+  `actor_name_snapshot = 'System'`, `origin = 'system'`.
+- Snapshots are EXPLICIT `jsonb_build_object` whitelists (never `to_jsonb(row)`):
+  technical, binding, credential, and future columns never enter a snapshot or
+  diff. JSON nulls are retained so a change to/from NULL is unambiguous.
+
+**RLS and immutability boundary.**
+
+- RLS is **enabled**; ALL privileges are revoked from `PUBLIC`, `anon`, and
+  `authenticated`; only `authenticated` receives `SELECT`. The sole policy
+  `audit_event_select_active_advisor` (`FOR SELECT TO authenticated`) gates reads
+  on the existing `public.is_active_advisor()` predicate.
+- There is **no INSERT/UPDATE/DELETE/TRUNCATE grant or policy** for any product
+  role, and sequence usage is revoked, so neither staff nor Admin can write audit
+  rows. The only writer is the internal trigger helper.
+
+**Triggers.** Two `private`-schema `SECURITY DEFINER` trigger helpers, each with
+`SET search_path = ''` and every relation/function reference schema-qualified.
+`PUBLIC`/`anon`/`authenticated` get no `USAGE` on `private` and no `EXECUTE` on
+either function, so neither is a Data API RPC and neither has a client writer
+path.
+
+- `private.audit_current_state_change()` is attached `AFTER INSERT OR UPDATE …
+  FOR EACH ROW` on `public.student`, `public.fellowship`, and
+  `public.application` (`trg_audit_student_current_state`,
+  `trg_audit_fellowship_current_state`,
+  `trg_audit_application_current_state`). It reads the transaction-local
+  `ocf.audit_reason` setting (published by `lifecycle_transition`) into
+  `reason`.
+- `private.audit_advisor_change()` is attached `AFTER INSERT OR UPDATE … FOR EACH
+  ROW` on `public.advisor` (`trg_audit_advisor_current_state`) with the strict
+  advisor allowlist above.
+
+`AFTER` timing follows the existing `BEFORE` lifecycle guards: a denied direct
+archive write never reaches the trigger, while a lifecycle transition emits
+exactly one canonical archive/restore event. The atomic role RPC suppresses the
+advisor trigger for its own role write and emits its single explicit
+`role_changed` event, so no duplicate is produced.
+
+**Indexes.** Six chronological B-tree indexes, each ending in a stable
+`audit_id DESC` tie-breaker; **no JSONB GIN index** is added by design.
+
+| Index | Columns |
+| --- | --- |
+| `idx_audit_event_entity_chronology` | `(entity_type, entity_id, occurred_at DESC, audit_id DESC)` |
+| `idx_audit_event_actor_chronology` | `(actor_advisor_id, occurred_at DESC, audit_id DESC)` |
+| `idx_audit_event_subject_student_chronology` | `(subject_student_id, occurred_at DESC, audit_id DESC)` |
+| `idx_audit_event_subject_application_chronology` | `(subject_application_id, occurred_at DESC, audit_id DESC)` |
+| `idx_audit_event_subject_fellowship_chronology` | `(subject_fellowship_id, occurred_at DESC, audit_id DESC)` |
+| `idx_audit_event_occurred_at_chronology` | `(occurred_at DESC, audit_id DESC)` |
+
+**No-baseline boundary.** No event is created for pre-existing rows.
+`baseline_captured` and the `migration` origin are reserved in the CHECK
+vocabularies but have **no writer** in this rollout; a baseline may only be
+captured by a future, explicitly authorized operation. Rollback is forward-only:
+the audit surface is additive and unread by any write path, so application
+rollback can simply stop reading it — there is no down migration and no data
+reset.
+
+---
+
+## Advisor / Admin Immutable History (migration `20261013000001`)
+
+Extends the immutable-audit core to advisor and administrator operations without
+a second audit table or a second authorization system. `public.audit_event`
+remains the single protected history surface.
+
+**Advisor audit coverage.** A dedicated internal helper
+(`private.audit_advisor_change`, trigger `trg_audit_advisor_current_state` on
+`public.advisor`) writes exactly one event per advisor INSERT or meaningful
+UPDATE. The snapshot/diff allowlist is exactly `advisor_name`, `email`, `role`,
+and `is_active`; binding (`auth_user_id`), login-time (`last_login_at`),
+timestamps, Auth claims, tokens, credentials, the legacy `advisor_role_lock`
+infrastructure, and any future column are structurally excluded, and a
+`last_login_at`-only change writes no event.
+
+**Human attribution across trusted operations.** A service-role operation (the
+browser session is lost) passes its already-authorized effective-Admin advisor id
+to a service-only routine. `private.assert_durable_effective_admin` revalidates
+the id as a current, ACTIVE, pre-bound advisor whose durable Auth metadata
+(`auth.users.raw_app_meta_data.ocf_admin`) is the strict JSON boolean `true` —
+the same durable authority the last-Admin invariant uses, never the mutable
+display role and never a stale JWT. `private.set_audit_actor` stores the verified
+id and frozen name in transaction-local context, which cannot leak across
+requests and has no client EXECUTE grant. `public.provision_advisor`
+(service-role only) INSERTs the advisor row and writes exactly one `created`
+event attributed to that Admin in the same transaction, so normal provisioning
+is not `System`. Ordinary profile/lifecycle writes still derive the actor from
+`auth.uid()`.
+
+**Atomic role change with required reason.**
+`public.set_advisor_role(p_advisor_id, p_role, p_reason, p_actor_id)` replaces
+the 2-arg form (old signature dropped). It requires a non-blank reason,
+revalidates the actor, serializes membership-reducing transitions under a fixed
+advisory lock, refuses to demote the last active bound durable Admin, and
+atomically sets `auth.users.raw_app_meta_data.ocf_admin` and
+`public.advisor.role` in one transaction with exactly one explicit
+`role_changed` event (the advisor trigger is suppressed for that write). It never
+rebinds and never touches `is_active`/history; EXECUTE is pinned to
+`service_role`.
+
+**Lifecycle transition with required reason.**
+`public.lifecycle_transition(p_entity, p_action, p_entity_id, p_reason)` replaces
+the 3-arg form (old signature dropped). The actor remains database-derived from
+`auth.uid()` (never a parameter) and authorization stays claim +
+active-bound-advisor. Student/fellowship `archive`/`restore` events receive the
+reason through the current-state helper; advisor `deactivate`/`reactivate` is
+classified by the advisor helper; advisor deactivation is serialized with role
+demotion under the same advisory lock and the same last-Admin check, and the
+self-deactivation guard is retained.
+
+**Durable, concurrency-safe last-active-bound-Admin invariant.** Role demotion
+and advisor deactivation acquire the same fixed transaction-scoped advisory lock
+(`hashtextextended('ocf.advisor_admin_membership', 0)`) before reading
+membership, then count ACTIVE, bound advisors joined to
+`auth.users.raw_app_meta_data.ocf_admin = true` (strict JSON boolean). A
+transition that would take a nonzero membership to zero is rejected (`42501`);
+competing final-Admin reductions serialize and cannot interleave. The check does
+not repair a pre-existing zero-Admin state (break-glass/DBA recovery remains
+outside normal product paths).
+
+**Email read-only in ordinary profile editing.** An advisor's login email is an
+Auth identity field. Ordinary profile PATCH accepts `advisor_name` only and
+rejects a supplied `email`, so `advisor.email` cannot silently diverge from the
+Auth email; a future explicit trusted account-management workflow must update
+both together. See
+[`docs/schema-decisions.md` §11](../docs/schema-decisions.md#11-advisoradmin-immutable-history-attribution-required-reasons-and-the-durable-last-admin-invariant).
+
+**Preserved unchanged.** Supabase Auth, one-time `auth_user_id` binding, the
+`app_metadata.ocf_admin` + active-bound-advisor effective-Admin model, the atomic
+role-change boundary, direct lifecycle/role/binding write guards, all RLS
+policies, all `audit_event` grants, all FKs (`NO ACTION`), and the legacy
+`advisor_role_lock` infrastructure (still infrastructure-only and unaudited). No
+down migration is provided.
+
+---
+
 ## Entity Lifecycle & Archive Model (migration `20260930000005`)
 
 Non-destructive, reversible lifecycle behavior for advisors, students, and
@@ -493,40 +722,41 @@ the protected `advisor.role` display column is never authorization.
   with `claim_read_failed` if the prior claim cannot be read (never a guessed
   rollback). No service key ever reaches a client; no email self-link, public
   signup, self-binding, or rebinding exists.
-- **ATOMIC role change (migration `20261007000001`)**: every NORMAL trusted
-  role change is now a single service-role-only SECURITY DEFINER RPC
-  (`set_advisor_role`) that atomically writes the Auth claim
+- **ATOMIC role change (migrations `20261007000001` + `20261013000001`)**: every
+  NORMAL trusted role change is a single service-role-only SECURITY DEFINER RPC
+  (`set_advisor_role(p_advisor_id, p_role, p_reason, p_actor_id)`) that
+  atomically writes the Auth claim
   (`auth.users.raw_app_meta_data.ocf_admin` JSON boolean) AND the protected
   `public.advisor.role` display projection in ONE Postgres transaction — a
   claim/display mismatch is impossible (commit = both consistent; abort =
-  neither changed). The trusted provisioning adapter calls this RPC; browser
-  clients cannot (EXECUTE pinned to service_role). The earlier per-advisor
+  neither changed). The migration `20261013000001` extension requires a
+  non-blank reason, revalidates the server-supplied actor as a durable active
+  bound effective Admin, serializes membership-reducing changes under a fixed
+  advisory lock, refuses to demote the last active bound durable Admin, and
+  emits exactly one `role_changed` event (the advisor trigger is suppressed for
+  that write); the old 2-arg signature is dropped. The trusted provisioning
+  adapter calls this RPC; browser clients cannot (EXECUTE pinned to
+  service_role). The earlier per-advisor
   lease/fencing/saga machinery (migrations `20261003000001`–`20261006000001`)
-  is RETAINED but NOT relied on by the normal flow (legacy primitives only;
-  `recoverAdvisorRoleChange` remains as an explicit recovery for historical
-  drift). The lease is acquired
-  before any read/mutation; a contending operation on another instance fails
-  safely with `lock_busy` and mutates nothing; the lease is released reliably
-  on success AND failure (a `finally`) and is holder-scoped; a crashed holder
-  is recovered after the bounded lease (60s) expires
-  (`acquire_advisor_role_lock` takes over expired leases). The protected
-  display-role write is FENCED
-  (`fenced_write_advisor_role_display`): the database only accepts it while
-  the caller's holder still owns a NON-EXPIRED lease (atomically verified with
-  a lease-row lock), so a lease that expires mid-operation can never leave a
-  stale display write after another holder's takeover — the stale operation
-  fails safely with `lock_lost` and performs no further mutation. An UNKNOWN
-  fenced-write outcome (lost response) is reconciled by an EXACT fenced
-  display-role read-back (`fenced_read_advisor_role_display`) while the same
-  holder owns a non-expired lease, BEFORE any compensation: read-back ==
-  desired role → safe reconciled success (matching Auth claim kept); read-back
-  != desired role → compensate ONLY then; read-back NULL (lease lost) →
-  `lock_lost`; read-back unavailable → `reconciliation_required` (no guessed
-  rollback; a trusted OCF administrator reconciles the advisor). The lock
-  table is server-only (RLS enabled with no policies, privileges revoked from
-  anon/authenticated, granted to service_role), its FK stays the default
-  `NO ACTION`, and its acquire/release/fenced-write/fenced-read/verify RPCs
-  are SECURITY DEFINER with service_role-pinned EXECUTE.
+  is RETAINED but NOT relied on by the normal flow. `set_advisor_role` is the
+  single role-changing writer: the two legacy direct-write display-role RPCs
+  (`fenced_write_advisor_role_display` and `reconcile_advisor_role_display`)
+  were DECOMMISSIONED (EXECUTE revoked, then DROP) in migration
+  `20261013000001`, and the legacy `recoverAdvisorRoleChange` adapter recovery
+  path no longer exists. The retained `advisor_role_lock` infrastructure is
+  lease/acquire/release/verify/fenced-read only and writes no advisor state:
+  the server-only lease table (RLS enabled with no policies, privileges revoked
+  from anon/authenticated, granted to service_role; FK stays the default
+  `NO ACTION`) is granted by `acquire_advisor_role_lock` before any
+  read/mutation; a contending operation on another instance fails safely with
+  `lock_busy` and mutates nothing; the lease is released reliably on success
+  AND failure (a `finally`) and is holder-scoped; a crashed holder is recovered
+  after the bounded lease (60s) expires (`acquire_advisor_role_lock` takes over
+  expired leases). The read-only primitives `verify_advisor_role_lock` (holder
+  ownership check) and `fenced_read_advisor_role_display` (the current display
+  role only while the caller's holder owns a non-expired lease) provide fenced
+  reads without writing display state. The acquire/release/verify/fenced-read
+  RPCs are SECURITY DEFINER with service_role-pinned EXECUTE.
 - **Protected API**: `GET/POST /api/advisors` and
   `GET/PATCH /api/advisors/[id]` are effective-Admin-only. `PATCH` accepts
   `role` OR `isActive` — a combined payload is rejected with 400 before any
@@ -570,15 +800,21 @@ the protected `advisor.role` display column is never authorization.
 
 **The lifecycle RPC is the only normal transition path.**
 
-- `public.lifecycle_transition(entity, action, entity_id)` (SECURITY DEFINER,
-  migration-owned, empty `search_path`) is the only normal writer of lifecycle
-  state. It:
+- `public.lifecycle_transition(p_entity, p_action, p_entity_id, p_reason)`
+  (SECURITY DEFINER, migration-owned, empty `search_path`) is the only normal
+  writer of lifecycle state; the earlier 3-arg signature is dropped. It:
+  - requires a non-blank human `reason` (`22023` otherwise), stored once on the
+    emitted `audit_event`;
   - derives the actor **exclusively** from `auth.uid()` — never from a
     parameter — and rejects technical (`service_role`/DBA) sessions that carry
     no JWT subject, so every transition is attributable to a specific
     authenticated administrator;
   - requires `public.is_ocf_admin()` = true **and** the session's bound advisor
     row to be currently ACTIVE (the deactivated-admin gate above);
+  - enforces the durable last-active-bound-Admin invariant for advisor
+    deactivation (shared fixed advisory lock with role demotion), rejecting a
+    transition that would leave zero ACTIVE, bound, durable Auth-`ocf_admin`
+    admins (`42501`), including under concurrency;
   - accepts only the whitelisted transitions `student`/`fellowship`
     `archive` | `restore` (stamps/clears `archived_at := now()`) and `advisor`
     `deactivate` | `reactivate` (sets `is_active`); anything else fails closed;
@@ -721,15 +957,19 @@ fellowship (1) ────────────────┐            �
 | `20261001000001_explicit_admin_advisor_permissions.sql` | Explicit Admin/Advisor model: normalizes `advisor.role` to exactly `Admin`/`Advisor` (+ CHECK + `'Advisor'` default), hardens `is_ocf_admin()` to a strict JSON-boolean claim, adds the effective-Admin predicate `is_effective_admin()` (claim + active bound advisor), and adds the invoker-security `trg_advisor_role_display` guard denying direct authenticated role writes (self/peer, and creating `Admin` rows); preserves lifecycle/immutable-history guards |
 | `20261002000001_advisor_self_service_role_reconciliation.sql` | Review remediation: drops the broad authenticated `advisor_insert_active_staff` policy (no advisor-row creation via the client), replaces `advisor_update_active_staff_only` with the self-scoped `advisor_update_own_profile` UPDATE policy (an active, pre-bound advisor may update only their own bound row), and reconciles every `advisor.role` to the Auth claim (`Admin` only when `auth.users.raw_app_meta_data.ocf_admin` is the JSON boolean `true`, otherwise `Advisor`); preserves one-time binding, role/lifecycle guards, and immutable history |
 | `20261003000001_advisor_role_change_lock.sql` | Review remediation: adds the server-only per-advisor role-change lease `advisor_role_lock` (RLS enabled, no policies; anon/authenticated revoked, service_role granted; FK stays NO ACTION) and the SECURITY DEFINER `acquire_advisor_role_lock` / `release_advisor_role_lock` RPCs — atomic lease grant with bounded stale-lock recovery (expired leases are taken over) and holder-scoped release — so concurrent trusted role changes are serialized cross-instance and a contender fails safely without mutation |
-| `20261004000001_advisor_role_fenced_write.sql` | Final P1 remediation: `fenced_write_advisor_role_display` is the ONLY writer of `advisor.role` for the role-change flow — it atomically verifies (with a lease-row lock) that the caller's holder still owns a NON-EXPIRED lease before writing, so a lease that expires mid-operation cannot leave a stale display write after another holder's takeover; `verify_advisor_role_lock` gates holder-aware compensation (a stale holder never rolls back a new holder's claim). Both are SECURITY DEFINER with service_role-pinned EXECUTE |
+| `20261004000001_advisor_role_fenced_write.sql` | Superseded P1 remediation (legacy; its direct-write RPC was decommissioned by `20261013000001`): `fenced_write_advisor_role_display` was a lease-fenced writer of the `advisor.role` display projection — it atomically verified (with a lease-row lock) that the caller's holder still owned a NON-EXPIRED lease before writing. Because it wrote only the mutable display projection (never the durable Auth claim), carried no human actor/reason, and performed no last-Admin check, `20261013000001` decommissioned it (EXECUTE revoked, then DROP). The read-only `verify_advisor_role_lock` ownership check is retained (SECURITY DEFINER, service_role-pinned EXECUTE) as holder-aware compensation infrastructure |
 | `20261005000001_advisor_role_fenced_read.sql` | Final P1 remediation: `fenced_read_advisor_role_display` returns the CURRENT `advisor.role` ONLY while the caller's holder owns a NON-EXPIRED lease (lease-row locked, atomic with the lock lifecycle). The trusted adapter reconciles an UNKNOWN/lost fenced-write outcome by exact read-back BEFORE any compensation: matching role = safe reconciled success (claim kept); non-matching = compensate only then; NULL (lease lost) = `lock_lost`; read-back unavailable = `reconciliation_required` (no guessed rollback). SECURITY DEFINER, service_role-pinned EXECUTE |
-| `20261006000001_advisor_role_display_reconcile.sql` | Prior P1 remediation (retained as a harmless legacy primitive, no longer relied on by the normal flow): `reconcile_advisor_role_display` is a lease-fenced display-role alignment to the authoritative Auth claim |
+| `20261006000001_advisor_role_display_reconcile.sql` | Superseded P1 remediation (legacy; decommissioned by `20261013000001`): `reconcile_advisor_role_display` was a lease-fenced display-role alignment to the authoritative Auth claim, but it wrote only the mutable display projection with no human actor/reason and no last-Admin check, so `20261013000001` decommissioned it (EXECUTE revoked, then DROP) |
 | `20261007000001_atomic_advisor_role_change.sql` | FUNDAMENTAL FINAL P1 remediation: `set_advisor_role(advisor_id, role)` is a NARROW service-role-only SECURITY DEFINER RPC that validates the role (Admin/Advisor), locks the target advisor row, verifies it exists and is BOUND, then in ONE Postgres transaction sets `auth.users.raw_app_meta_data.ocf_admin` to the matching JSON boolean AND `public.advisor.role` to the display projection — a claim/display mismatch is IMPOSSIBLE (commit = both consistent; abort = neither changed). This is the ONLY normal role-change path; the trusted adapter calls it and clients cannot. Never rebinds, never touches `is_active`/history |
 | `20261008000001_historical_integrity_remediation.sql` | Historical integrity remediation: adds the append-only `fellowship_thursday_amendment` / `scholarship_history_amendment` tables (database-authored creator/timestamp; a scholarship `Void` is terminal and stays auditable); locks `fellowship_thursday` and `scholarship_history` base rows down to active-advisor SELECT/INSERT only; adds the `effective_fellowship_thursday` / `effective_scholarship_history` SECURITY INVOKER views; expands `stage_of_application` to nine named stages with an exact stage/`is_semi_finalist`/`is_finalist` consistency CHECK and bounds `application_year` to `NULL` or `2000–2100`; and requires a conducting `advisor_id` on new authenticated `advising_meeting` inserts while preserving legacy `NULL` rows |
 | `20261009000001_scholarship_void_serialization.sql` | Scholarship terminal-`Void` serialization (review finding 3 of `2026-10-06-historical-integrity-remediation`): the first action of `set_scholarship_history_amendment_metadata()` on INSERT is now an exclusive `SELECT … FOR UPDATE` lock on the parent `public.scholarship_history` row, so concurrent amendments for the same award serialize on that lock and a loser re-evaluates the terminal-`Void` `EXISTS` guard against the committed state and is rejected (two concurrent Voids, or a Void racing a Correction, can no longer both commit); adds the partial unique index `uidx_scholarship_history_amendment_single_void` (at most one `Void` per award) as a declarative backstop that cannot be bypassed by trigger ordering, failing loudly if history is already inconsistent rather than normalizing; preserves the append-only SELECT/INSERT model, the SECURITY DEFINER trigger with empty `search_path`, service_role-only EXECUTE, RLS, and the effective-value views |
+| `20261010000001_security_invoker_list_views.sql` | Read-only `SECURITY INVOKER` list views (`student_list`, `application_list`, `advising_meeting_list`, `fellowship_thursday_list`, `scholarship_history_list`, `fellowship_list`): explicit columns only (no Auth binding fields), correlated scalar subqueries/EXISTS (never row-multiplying joins), corrected/void-aware by reading the `effective_*` views, and `SELECT`-only granted to `authenticated` |
+| `20261011000001_scholarship_history_operational_summary.sql` | RLS-preserving `SECURITY INVOKER` aggregate `scholarship_history_operational_summary(p_search, p_fellowship_id)` returning the exact non-void award and distinct-student totals over the same filters as the paginated list, without shipping rows to the client; EXECUTE pinned to `authenticated` |
+| `20261012000001_immutable_audit.sql` | Immutable audit trail: `public.audit_event` (CHECK-vocabulary entity/action/origin, explicit jsonb snapshots/diffs, context columns with no FKs), six `audit_id DESC` chronology indexes, RLS with `SELECT`-only active-advisor access and no product-role writer, the `private.audit_current_state_change()` SECURITY DEFINER helper (`SET search_path = ''`, fully qualified), and `AFTER INSERT/UPDATE` triggers on `student`/`fellowship`/`application`; `baseline_captured`/`migration` are reserved with no writer |
+| `20261013000001_advisor_admin_immutable_history.sql` | Advisor/admin immutable audit extension: adds the `private.audit_advisor_change()` trigger + `trg_audit_advisor_current_state` on `advisor` with a strict positive allowlist (`advisor_name`/`email`/`role`/`is_active`; binding/claim/token/login-time/role-lock excluded; `last_login_at`-only writes none); trusted-actor validation `private.assert_durable_effective_admin` + transaction-local `private.set_audit_actor`; service-role-only `provision_advisor` (audited `created` attributed to the initiating Admin); replaces `set_advisor_role` (4-arg, required non-blank reason, verified actor, atomic Auth-claim + display write, one explicit `role_changed`) and `lifecycle_transition` (4-arg, required non-blank reason, reason propagated to lifecycle events); and a shared transaction advisory lock enforcing the durable concurrency-safe last-active-bound-Admin invariant for role demotion and advisor deactivation; `audit_current_state_change` re-created only to read `ocf.audit_reason`; decommissions the two legacy direct-write display-role RPCs `fenced_write_advisor_role_display`/`reconcile_advisor_role_display` (EXECUTE revoked, then DROP), leaving `set_advisor_role` as the **single role-changing writer** while the `advisor_role_lock` lease and its read-only `verify`/fenced-read primitives are preserved |
 
 Migrations 2 and 3 are temporary bootstrap steps. The chain must be applied in
-order and ends with `20261009000001_scholarship_void_serialization.sql`.
+order and ends with `20261013000001_advisor_admin_immutable_history.sql`.
 `20260318000001_advisor_self_activation_lockdown.sql` is required and must
 follow `20260317000004_active_advisor_rls.sql`; the forward-only
 `20260929000001_advising_application_link.sql` extends the model afterwards,
@@ -766,8 +1006,22 @@ conducting `advisor_id` on new authenticated advising meetings, and
 `20261009000001_scholarship_void_serialization.sql` closes the terminal-`Void`
 race by locking the parent `scholarship_history` row in the amendment trigger
 before the guard (concurrent amendments for one award serialize) and adding a
-partial unique index that allows at most one `Void` per award; none of these
-alters the auth steady state.
+partial unique index that allows at most one `Void` per award, and
+`20261010000001_security_invoker_list_views.sql` adds one read-only,
+explicit-column, `SECURITY INVOKER` list view per operational list (RLS
+preserved, no Auth binding fields, no row multiplication), and
+`20261011000001_scholarship_history_operational_summary.sql` adds the
+`SECURITY INVOKER` aggregate that returns the operational Scholarship History
+totals without shipping rows to the client, and
+`20261012000001_immutable_audit.sql` adds the immutable, database-authored
+`public.audit_event` read model plus the internal `SECURITY DEFINER` trigger on
+`student`/`fellowship`/`application` (SELECT-only for active advisors; no client
+writer; no baseline rows), and
+`20261013000001_advisor_admin_immutable_history.sql` extends the same
+`audit_event` model to `advisor`/administrator operations with a strict positive
+allowlist, trusted human attribution, required role/lifecycle reasons, audited
+`provision_advisor` creation, and the durable concurrency-safe
+last-active-bound-Admin invariant; none of these alters the auth steady state.
 
 **Migration/history limits for `20260929000001`:** the migration is additive
 and forward-only — no existing migration, table, column, row, or RLS policy is
@@ -790,12 +1044,17 @@ The persisted display role is exactly `Admin` or `Advisor` (protected by a
 database CHECK + direct-write guard), is reconciled to the Auth claim, and is
 never authorization. Authenticated advisor-row creation is denied and an
 active, pre-bound advisor may UPDATE only their own bound row (self-scoped
-`advisor_update_own_profile`); advisor rows are managed through the trusted
-server-only provisioning path. Trusted
-server-only provisioning (`lib/provisioning`) create/invites and binds Auth
-identities with a matching boolean claim and display role; protected
+`advisor_update_own_profile`); ordinary profile editing accepts `advisor_name`
+only (login email is read-only pending a future trusted workflow), and advisor
+rows are created through the trusted server-only `provision_advisor` RPC.
+Trusted server-only provisioning (`lib/provisioning`) create/invites and binds
+Auth identities with a matching boolean claim and display role; protected
 `/api/advisors` routes are effective-Admin-only, never accept `auth_user_id`,
-and `PATCH` accepts exactly one of `role`/`isActive` per request.
+and `PATCH` accepts exactly one of `role`/`isActive` per request with a required
+non-blank reason. Role changes go through the atomic service-role-only
+`set_advisor_role(..., p_reason, p_actor_id)` RPC and lifecycle changes through
+`lifecycle_transition(..., p_reason)`; both revalidate authority and refuse to
+remove the last active bound durable Admin.
 Authenticated clients cannot
 `DELETE` `advisor`, `student`, `fellowship`, or `application` (grant and RLS
 layers); destructive removal of those historical entities is
@@ -808,15 +1067,24 @@ operational child records
 (`application`, `advising_meeting`, `fellowship_thursday`,
 `scholarship_history`) can never reference an archived student/fellowship at
 the database boundary (INSERT and re-linking UPDATE are denied; historical
-reads are preserved). The chain is **not proven equivalent** to the deployed
-production schema.
+reads are preserved). Every INSERT and meaningful UPDATE of `student`,
+`fellowship`, `application`, and `advisor` additionally writes exactly one
+immutable, database-authored `public.audit_event` inside the source transaction;
+advisor/admin events use a strict allowlist and are attributed to the verified
+human actor (the service-role `provision_advisor`/role RPCs revalidate the
+server-supplied effective Admin). The audit read model is readable only by
+active advisors, is writable by no product role (including Admin), mints no
+baseline rows, and fails the source transaction closed if an audit event cannot
+be written. The chain is **not proven equivalent** to the deployed production
+schema.
 
 ### Migration deployment freeze
 
 As of 2026-09-25 the production migration ledger contains only
 `20260924065221_advisor_self_activation_lockdown` while the repository tracks
-twenty-two migrations (`20260305000000` … `20261009000001_scholarship_void_serialization`),
-and the live production schema materially differs from the repository chain.
+twenty-six migrations (`20260305000000` …
+`20261013000001_advisor_admin_immutable_history.sql`), and the live production
+schema materially differs from the repository chain.
 Production is the physical-schema authority. Until a reviewed reconciliation is
 approved:
 
@@ -834,7 +1102,7 @@ For a fresh, disposable local Supabase instance only, the chain can be applied
 via the standard Docker-local workflow (`pnpm exec supabase start` then
 `pnpm exec supabase db reset --no-seed`, which applies every file in
 `supabase/migrations/` in order, ending with
-`20261009000001_scholarship_void_serialization.sql`) or via the isolated local
+`20261013000001_advisor_admin_immutable_history.sql`) or via the isolated local
 harness (`node scripts/schema-inventory/run-local.mjs --out <path>`); both are
 safe and the latter is how the reconciliation baseline is produced. Applying
 the chain to a hosted project remains prohibited while provenance is

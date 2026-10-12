@@ -24,7 +24,11 @@ vi.mock("@/lib/supabase/server", () => ({
   createServerClient,
 }));
 
-import { getFellowshipThursdayRecords } from "@/app/(dashboard)/fellowship-thursday/page";
+import {
+  getFellowshipThursdayRecords,
+  normalizeSourceFilter,
+  escapeLikeSearchTerm,
+} from "@/app/(dashboard)/fellowship-thursday/page";
 
 // ── Chainable Supabase mock ─────────────────────────────────────────────────
 
@@ -150,6 +154,30 @@ describe("getFellowshipThursdayRecords", () => {
     expect(queries[0].orders).toEqual([{ column: "attendance_id", ascending: false }]);
   });
 
+  it("drops a malformed source instead of forwarding it to PostgREST", async () => {
+    createServerClient.mockReturnValue(
+      makeClient({ fellowship_thursday_list: { data: [], error: null, count: 0 } })
+    );
+
+    await getFellowshipThursdayRecords({ source: "'; drop table", attended: "maybe" });
+
+    const query = queries.find((q) => q.table === "fellowship_thursday_list");
+    expect(query?.filters).toEqual([]);
+  });
+
+  it("escapes LIKE wildcards in the literal search term", async () => {
+    createServerClient.mockReturnValue(
+      makeClient({ fellowship_thursday_list: { data: [], error: null, count: 0 } })
+    );
+
+    await getFellowshipThursdayRecords({ search: "a%b_c*d" });
+
+    const query = queries.find((q) => q.table === "fellowship_thursday_list");
+    expect(query?.filters).toEqual([
+      { column: "student_name", op: "ilike", value: "%a\\%b\\_c\\*d%" },
+    ]);
+  });
+
   it("returns an empty, errored result (never throws) when the query fails", async () => {
     createServerClient.mockReturnValue(
       makeClient({
@@ -167,5 +195,23 @@ describe("getFellowshipThursdayRecords", () => {
     expect(result.count).toBe(0);
     expect(result.pages).toBe(0);
     expect(result.error?.message).toBe("db unavailable");
+  });
+});
+
+describe("fellowship-thursday criteria normalizers", () => {
+  it("allowlists the three schema source values", () => {
+    expect(normalizeSourceFilter("OCF")).toBe("OCF");
+    expect(normalizeSourceFilter("HC")).toBe("HC");
+    expect(normalizeSourceFilter("MM")).toBe("MM");
+    expect(normalizeSourceFilter("all")).toBeNull();
+    expect(normalizeSourceFilter("OCF ")).toBe("OCF");
+    expect(normalizeSourceFilter("Phishing")).toBeNull();
+    expect(normalizeSourceFilter(undefined)).toBeNull();
+  });
+
+  it("escapes LIKE wildcards while preserving the literal term", () => {
+    expect(escapeLikeSearchTerm("a%b_c\\d*")).toBe("a\\%b\\_c\\\\d\\*");
+    expect(escapeLikeSearchTerm("*")).toBe("\\*");
+    expect(escapeLikeSearchTerm("  Ada  ")).toBe("Ada");
   });
 });

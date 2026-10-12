@@ -176,7 +176,7 @@ export function ScholarshipHistoryTable({
   );
   const [search, setSearch] = useState(searchParams.get("search") ?? "");
   const [debouncedSearch, setDebouncedSearch] = useState(searchParams.get("search") ?? "");
-  const [fellowshipFilter, setFellowshipFilter] = useState(searchParams.get("fellowship_id") ?? "all");
+  const [fellowshipFilter, setFellowshipFilter] = useState(searchParams.get("filter") ?? "all");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [form, setForm] = useState(blank);
@@ -333,10 +333,10 @@ export function ScholarshipHistoryTable({
   const changeFellowshipFilter = (value: string) => {
     setFellowshipFilter(value);
     const next = new URLSearchParams(searchParams.toString());
-    if (value === "all") next.delete("fellowship_id");
-    else next.set("fellowship_id", value);
-    // `filter` is the legacy key; canonical state is `fellowship_id`.
-    next.delete("filter");
+    // `filter` is the dedicated list-filter key. `fellowship_id` is the
+    // contextual add-form default and must never be used to narrow the list.
+    if (value === "all") next.delete("filter");
+    else next.set("filter", value);
     next.delete("page");
     const query = next.toString();
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });

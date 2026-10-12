@@ -162,8 +162,12 @@ describe("PATCH /api/account/profile", () => {
     expect(createServerClient).not.toHaveBeenCalled();
   });
 
-  it("applies the normalized field-only update scoped to the advisor row", async () => {
-    const advisor = makeAdvisor({ advisor_id: 42, auth_user_id: "user-123" });
+  it("applies the normalized NAME-ONLY update scoped to the advisor row (identical email tolerated)", async () => {
+    const advisor = makeAdvisor({
+      advisor_id: 42,
+      auth_user_id: "user-123",
+      email: "jane@example.com",
+    });
     getSessionUser.mockResolvedValue({ id: "user-123" });
     getCurrentAdvisor.mockResolvedValue(advisor);
 
@@ -184,22 +188,73 @@ describe("PATCH /api/account/profile", () => {
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ advisor: updated });
 
-    // Only the two profile fields are written, using the schema-normalized
-    // (trimmed / lowercased) values.
-    expect(query.update).toHaveBeenCalledWith({
-      advisor_name: "Jane Doe",
-      email: "jane@example.com",
-    });
-    expect(Object.keys(query.update.mock.calls[0][0])).toEqual([
-      "advisor_name",
-      "email",
-    ]);
+    // ONLY the name is written — email is read-only (R4) and never reaches
+    // the UPDATE, even when the echoed value equals the current one.
+    expect(query.update).toHaveBeenCalledWith({ advisor_name: "Jane Doe" });
+    expect(Object.keys(query.update.mock.calls[0][0])).toEqual(["advisor_name"]);
 
     // The update is scoped to the advisor resolved from the session.
     expect(query.eq).toHaveBeenCalledWith("advisor_id", 42);
     expect(query.select).toHaveBeenCalledWith(
       "advisor_id, advisor_name, email, role, is_active, last_login_at"
     );
+  });
+
+  it("rejects a CHANGED email with 400 and performs NO write (email is read-only)", async () => {
+    const advisor = makeAdvisor({
+      advisor_id: 42,
+      auth_user_id: "user-123",
+      email: "jane@example.com",
+    });
+    getSessionUser.mockResolvedValue({ id: "user-123" });
+    getCurrentAdvisor.mockResolvedValue(advisor);
+
+    const res = await PATCH(
+      patchRequest({ advisorName: "Jane Doe", email: "someone-else@example.com" })
+    );
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("Email changes require account administration");
+    // No write at all — the advisor row is untouched.
+    expect(query.update).not.toHaveBeenCalled();
+    expect(query.eq).not.toHaveBeenCalled();
+  });
+
+  it("accepts a payload WITHOUT email and writes only the name", async () => {
+    const advisor = makeAdvisor({ advisor_id: 42, auth_user_id: "user-123" });
+    getSessionUser.mockResolvedValue({ id: "user-123" });
+    getCurrentAdvisor.mockResolvedValue(advisor);
+    const updated = makeAdvisor({ advisor_id: 42, advisor_name: "Jane Doe" });
+    query.single.mockResolvedValue({ data: updated, error: null });
+
+    const res = await PATCH(patchRequest({ advisorName: "Jane Doe" }));
+
+    expect(res.status).toBe(200);
+    expect(query.update).toHaveBeenCalledWith({ advisor_name: "Jane Doe" });
+  });
+
+  it("allows an empty echoed email (null-email advisor) and still writes only the name", async () => {
+    const advisor = makeAdvisor({
+      advisor_id: 42,
+      auth_user_id: "user-123",
+      email: null,
+    });
+    getSessionUser.mockResolvedValue({ id: "user-123" });
+    getCurrentAdvisor.mockResolvedValue(advisor);
+    const updated = makeAdvisor({
+      advisor_id: 42,
+      advisor_name: "Jane Doe",
+      email: null,
+    });
+    query.single.mockResolvedValue({ data: updated, error: null });
+
+    const res = await PATCH(
+      patchRequest({ advisorName: "Jane Doe", email: "" })
+    );
+
+    expect(res.status).toBe(200);
+    expect(query.update).toHaveBeenCalledWith({ advisor_name: "Jane Doe" });
   });
 
   it("returns 500 with a generic message when the update fails", async () => {

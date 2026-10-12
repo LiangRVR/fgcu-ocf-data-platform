@@ -23,12 +23,15 @@
  *     session;
  *   - CATALOG: the lock RPCs are SECURITY DEFINER with empty search_path and
  *     service_role-pinned EXECUTE.
- *   - FENCED DISPLAY WRITE (migration 20261004000001): the protected
- *     `advisor.role` write is accepted ONLY while the caller's holder still
- *     owns a non-expired lease — a non-holder, an EXPIRED holder, and a holder
- *     SUPERSEDED by a takeover are all fenced out (the write returns false and
- *     the role is untouched), while the current holder's write lands; the
- *     ownership check `verify_advisor_role_lock` gates compensation.
+ *   - LEGACY WRITER RETIREMENT (review remediation for migrations
+ *     20261004000001 / 20261006000001): the legacy direct display-role writer
+ *     RPCs `fenced_write_advisor_role_display` and
+ *     `reconcile_advisor_role_display` are NO LONGER a writable path. The
+ *     suite no longer exercises them; it asserts each is ABSENT from the
+ *     schema or, if retained, NOT service_role-executable — so the only normal
+ *     writer of `advisor.role` is the atomic `set_advisor_role` transaction.
+ *     The read-only `verify_advisor_role_lock` ownership check and the
+ *     fence/read primitives remain part of the retained lease infrastructure.
  *
  * Service-role usage is restricted to seeding the synthetic advisor row and to
  * exercising the trusted lock surface (the same role the adapter uses); it is
@@ -243,137 +246,87 @@ describe("per-advisor role-change lease (migration 20261003000001)", () => {
     }
   });
 });
-describe("fenced protected-display-role write (migration 20261004000001, P1 finding)", () => {
-  const fencedWrite = (holder: string, role: string) =>
-    service.rpc("fenced_write_advisor_role_display", {
+describe("legacy direct display-role writers are retired (review remediation)", () => {
+  // The review finding requires removing the alternate role-write bypass: the
+  // legacy RPCs must be either dropped, or retained with no write-capable
+  // EXECUTE. Assert the durable catalog state (not a call shape) so the proof
+  // holds whether the remediation chose DROP or REVOKE.
+  const LEGACY_WRITERS = [
+    "public.fenced_write_advisor_role_display(integer, text, text)",
+    "public.reconcile_advisor_role_display(integer, text)",
+  ] as const;
+
+  it("catalog: each legacy writer is ABSENT or retained but NOT service_role/anon-executable", async () => {
+    const rows = await pool.query<{
+      name: string;
+      present: boolean;
+      service_exec: boolean;
+      anon_exec: boolean;
+    }>(
+      `SELECT n.name,
+              (to_regprocedure(n.name) IS NOT NULL) AS present,
+              CASE WHEN to_regprocedure(n.name) IS NULL THEN false
+                   ELSE has_function_privilege('service_role', to_regprocedure(n.name)::oid, 'EXECUTE')
+              END AS service_exec,
+              CASE WHEN to_regprocedure(n.name) IS NULL THEN false
+                   ELSE has_function_privilege('anon', to_regprocedure(n.name)::oid, 'EXECUTE')
+              END AS anon_exec
+         FROM unnest($1::text[]) AS n(name)`,
+      [LEGACY_WRITERS],
+    );
+    expect(rows.rows, "one catalog row per legacy writer").toHaveLength(LEGACY_WRITERS.length);
+    for (const row of rows.rows) {
+      expect(
+        row.service_exec,
+        `${row.name} must NOT be service_role-executable (absent=${!row.present})`,
+      ).toBe(false);
+      expect(row.anon_exec, `${row.name} must NOT be anon-executable`).toBe(false);
+    }
+  });
+
+  it("surface: the trusted service role can no longer invoke the legacy writers", async () => {
+    const retiredFencedWrite = await service.rpc("fenced_write_advisor_role_display", {
       p_advisor_id: advisorId,
-      p_holder: holder,
-      p_role: role,
+      p_holder: "retired-writer",
+      p_role: "Admin",
     });
+    expect(retiredFencedWrite.error, "fenced_write must be unexecutable").not.toBeNull();
+    expect(retiredFencedWrite.data, "fenced_write must not write").toBeNull();
 
-  const verify = (holder: string) =>
-    service.rpc("verify_advisor_role_lock", { p_advisor_id: advisorId, p_holder: holder });
+    const retiredReconcile = await service.rpc("reconcile_advisor_role_display", {
+      p_advisor_id: advisorId,
+      p_holder: "retired-writer",
+    });
+    expect(retiredReconcile.error, "reconcile must be unexecutable").not.toBeNull();
+    expect(retiredReconcile.data, "reconcile must not run").toBeNull();
 
-  const advisorRole = async (): Promise<string | null> => {
-    const { data, error } = await service
+    // The protected display role is untouched by either retired call.
+    const { data: row } = await service
       .from("advisor")
       .select("role")
       .eq("advisor_id", advisorId)
       .maybeSingle();
-    if (error) throw new Error(`read advisor role: ${error.message}`);
-    return data?.role ?? null;
-  };
-
-  it("accepts the fenced display write ONLY while the same holder owns a NON-EXPIRED lease", async () => {
-    const acquired = await acquire("holder-owner", 60);
-    expect(acquired.data, "owner must acquire the lease").toBe(true);
-
-    // The owner writes its role through the fence.
-    const landed = await fencedWrite("holder-owner", "Admin");
-    expect(landed.error, "owner fenced write").toBeNull();
-    expect(landed.data, "owner fenced write must land").toBe(true);
-    expect(await advisorRole(), "owner display role written").toBe("Admin");
-
-    // A NON-holder cannot write: fenced out, role untouched.
-    const denied = await fencedWrite("holder-intruder", "Advisor");
-    expect(denied.error, "non-holder fenced write").toBeNull();
-    expect(denied.data, "non-holder fenced write must be fenced out").toBe(false);
-    expect(await advisorRole(), "role unchanged by the non-holder").toBe("Admin");
-
-    // verify agrees: owner owns a non-expired lease, the intruder does not.
-    expect((await verify("holder-owner")).data).toBe(true);
-    expect((await verify("holder-intruder")).data).toBe(false);
-
-    // The owner can still write (lease still valid).
-    expect((await fencedWrite("holder-owner", "Advisor")).data).toBe(true);
-    expect(await advisorRole()).toBe("Advisor");
+    expect(row?.role, "display role untouched by retired writers").toBe("Advisor");
   });
+});
 
-  it("fences out an EXPIRED holder: after the lease expires, the holder cannot write", async () => {
-    const acquired = await acquire("holder-short", 1);
-    expect(acquired.data, "short-lease holder must acquire").toBe(true);
+describe("retained role-lock infrastructure: verify_advisor_role_lock ownership check (migration 20261004000001)", () => {
+  const verify = (holder: string) =>
+    service.rpc("verify_advisor_role_lock", { p_advisor_id: advisorId, p_holder: holder });
 
-    // Wait for the lease to expire.
+  it("returns true ONLY for the holder of a NON-EXPIRED lease, and is denied to anon", async () => {
+    const acquired = await acquire("holder-verify", 1);
+    expect(acquired.data, "verify holder must acquire").toBe(true);
+
+    // The current holder is verified; a non-holder is not.
+    expect((await verify("holder-verify")).data, "holder owns the lease").toBe(true);
+    expect((await verify("holder-intruder")).data, "non-holder does not own").toBe(false);
+
+    // After expiry the same holder no longer verifies.
     await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect((await verify("holder-verify")).data, "expired holder no longer owns").toBe(false);
 
-    const expired = await fencedWrite("holder-short", "Admin");
-    expect(expired.error, "expired-holder fenced write").toBeNull();
-    expect(expired.data, "expired holder must be fenced out").toBe(false);
-    expect(await advisorRole(), "role untouched after expired-holder fence").toBe("Advisor");
-    expect((await verify("holder-short")).data, "expired holder no longer owns").toBe(false);
-  });
-
-  it("fences out a SUPERSEDED holder after a takeover: stale A cannot write, B can, and the state stays consistent (P1 core proof)", async () => {
-    // A takes a short lease, its lease expires, B takes over.
-    const aAcquired = await acquire("holder-a-stale", 1);
-    expect(aAcquired.data, "A must acquire").toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 1_200));
-    const bTakeover = await acquire("holder-b-new", 60);
-    expect(bTakeover.data, "B must take over the expired lease").toBe(true);
-
-    // Stale A's display write is FENCED OUT by the database.
-    const staleAWrite = await fencedWrite("holder-a-stale", "Admin");
-    expect(staleAWrite.error, "stale A fenced write").toBeNull();
-    expect(staleAWrite.data, "stale A must be fenced out").toBe(false);
-    expect(await advisorRole(), "role untouched by stale A").toBe("Advisor");
-
-    // B (the current owner) writes the OPPOSING role and it lands.
-    const bWrite = await fencedWrite("holder-b-new", "Admin");
-    expect(bWrite.data, "current holder B write must land").toBe(true);
-    expect(await advisorRole(), "B display role written").toBe("Admin");
-
-    // verify agrees on ownership: B owns, stale A does not.
-    expect((await verify("holder-b-new")).data).toBe(true);
-    expect((await verify("holder-a-stale")).data).toBe(false);
-  });
-
-  it("rejects an invalid display role at the database boundary (fail closed)", async () => {
-    const acquired = await acquire("holder-invalid", 60);
-    expect(acquired.data).toBe(true);
-
-    const invalid = await fencedWrite("holder-invalid", "boss");
-    expect(invalid.data, "invalid role must return no data").toBeNull();
-    expect(invalid.error, "invalid role must be rejected").not.toBeNull();
-    expect(invalid.error?.code, "invalid role error code").toBe("22023");
-    expect(await advisorRole(), "role untouched by the invalid write").toBe("Advisor");
-  });
-
-  it("catalog + surface: fenced write and verify are SECURITY DEFINER, service_role-pinned, anon denied", async () => {
-    const rows = await pool.query<{ proname: string; prosecdef: boolean; proconfig: string[] | null; sr: boolean; anon: boolean }>(
-      `SELECT p.proname,
-              p.prosecdef,
-              p.proconfig,
-              CASE p.proname
-                WHEN 'fenced_write_advisor_role_display' THEN
-                  has_function_privilege('service_role', 'public.fenced_write_advisor_role_display(integer, text, text)', 'EXECUTE')
-                WHEN 'verify_advisor_role_lock' THEN
-                  has_function_privilege('service_role', 'public.verify_advisor_role_lock(integer, text)', 'EXECUTE')
-                ELSE false
-              END AS sr,
-              CASE p.proname
-                WHEN 'fenced_write_advisor_role_display' THEN
-                  has_function_privilege('anon', 'public.fenced_write_advisor_role_display(integer, text, text)', 'EXECUTE')
-                WHEN 'verify_advisor_role_lock' THEN
-                  has_function_privilege('anon', 'public.verify_advisor_role_lock(integer, text)', 'EXECUTE')
-                ELSE false
-              END AS anon
-         FROM pg_proc p
-         JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname = 'public'
-          AND p.proname IN ('fenced_write_advisor_role_display', 'verify_advisor_role_lock')
-        ORDER BY p.proname`
-    );
-    expect(rows.rows.map((r) => r.proname).sort()).toEqual([
-      "fenced_write_advisor_role_display",
-      "verify_advisor_role_lock",
-    ]);
-    for (const row of rows.rows) {
-      expect(row.prosecdef, `${row.proname} must be SECURITY DEFINER`).toBe(true);
-      expect(row.proconfig, `${row.proname} must set an empty search_path`).toEqual(["search_path=\"\""]);
-      expect(row.sr, `service_role EXECUTE on ${row.proname}`).toBe(true);
-      expect(row.anon, `no anon EXECUTE on ${row.proname}`).toBe(false);
-    }
-
+    // Server-only: anon is denied the verify RPC at the API surface.
     const anonCall = await anon.rpc("verify_advisor_role_lock", {
       p_advisor_id: advisorId,
       p_holder: "anon",
@@ -381,18 +334,29 @@ describe("fenced protected-display-role write (migration 20261004000001, P1 find
     expect(anonCall.data).toBeNull();
     expect(anonCall.error, "anon must be denied the verify RPC").not.toBeNull();
   });
+
+  it("catalog: verify_advisor_role_lock is SECURITY DEFINER with empty search_path and service_role-pinned EXECUTE", async () => {
+    const rows = await pool.query<{ prosecdef: boolean; proconfig: string[] | null; sr: boolean; anon: boolean }>(
+      `SELECT p.prosecdef,
+              p.proconfig,
+              has_function_privilege('service_role', 'public.verify_advisor_role_lock(integer, text)', 'EXECUTE') AS sr,
+              has_function_privilege('anon', 'public.verify_advisor_role_lock(integer, text)', 'EXECUTE') AS anon
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.proname = 'verify_advisor_role_lock'`
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0].prosecdef, "verify must be SECURITY DEFINER").toBe(true);
+    expect(rows.rows[0].proconfig, "verify must set an empty search_path").toEqual(["search_path=\"\""]);
+    expect(rows.rows[0].sr, "service_role EXECUTE on verify").toBe(true);
+    expect(rows.rows[0].anon, "no anon EXECUTE on verify").toBe(false);
+  });
 });
 
-describe("fenced display-role read-back / lost-response reconciliation (migration 20261005000001, final P1)", () => {
+describe("fenced display-role read-back (migration 20261005000001, retained read-only primitive)", () => {
   const fencedRead = (holder: string) =>
     service.rpc("fenced_read_advisor_role_display", { p_advisor_id: advisorId, p_holder: holder });
-
-  const fencedWrite = (holder: string, role: string) =>
-    service.rpc("fenced_write_advisor_role_display", {
-      p_advisor_id: advisorId,
-      p_holder: holder,
-      p_role: role,
-    });
 
   it("returns the CURRENT display role ONLY while the same holder owns a NON-EXPIRED lease; NULL otherwise", async () => {
     const acquired = await acquire("holder-reader", 60);
@@ -408,32 +372,26 @@ describe("fenced display-role read-back / lost-response reconciliation (migratio
     expect(intruder.error, "non-holder read-back").toBeNull();
     expect(intruder.data, "non-holder read-back must be NULL").toBeNull();
 
-    // After the holder writes a new role, the read-back reflects it.
-    const write = await service.rpc("fenced_write_advisor_role_display", {
-      p_advisor_id: advisorId,
-      p_holder: "holder-reader",
-      p_role: "Admin",
-    });
-    expect(write.data, "owner fenced write").toBe(true);
-    expect((await fencedRead("holder-reader")).data, "read-back reflects the new role").toBe("Admin");
+    // The read-back reflects the CURRENT protected display role. The role is
+    // seeded directly here (the atomic set_advisor_role writer owns the change
+    // path; the retired legacy writer is never exercised).
+    await service.from("advisor").update({ role: "Admin" }).eq("advisor_id", advisorId);
+    expect((await fencedRead("holder-reader")).data, "read-back reflects the current role").toBe("Admin");
   });
 
-  it("returns NULL for an EXPIRED lease and after a SUPERSEDED takeover (the stale holder cannot read or write)", async () => {
+  it("returns NULL for an EXPIRED lease and after a SUPERSEDED takeover", async () => {
     const aAcquired = await acquire("holder-a-expire", 1);
     expect(aAcquired.data, "A must acquire").toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 1_200));
 
-    // Expired: A's read-back is NULL (and its write is fenced out).
-    const expiredRead = await fencedRead("holder-a-expire");
-    expect(expiredRead.data, "expired holder read-back must be NULL").toBeNull();
-    expect((await fencedWrite("holder-a-expire", "Admin")).data, "expired holder write fenced out").toBe(false);
+    // Expired: A's read-back is NULL.
+    expect((await fencedRead("holder-a-expire")).data, "expired holder read-back must be NULL").toBeNull();
 
-    // B takes over and can read/write; A stays fenced.
+    // B takes over and can read; A stays fenced to NULL.
     const bTakeover = await acquire("holder-b-takeover", 60);
     expect(bTakeover.data, "B must take over").toBe(true);
     expect((await fencedRead("holder-b-takeover")).data, "B read-back returns the current role").toBe("Advisor");
     expect((await fencedRead("holder-a-expire")).data, "superseded A read-back must be NULL").toBeNull();
-    expect((await fencedWrite("holder-a-expire", "Admin")).data, "superseded A write fenced out").toBe(false);
   });
 
   it("catalog: fenced read-back is SECURITY DEFINER with empty search_path and service_role-pinned EXECUTE", async () => {
@@ -452,139 +410,6 @@ describe("fenced display-role read-back / lost-response reconciliation (migratio
     expect(rows.rows[0].proconfig, "fenced read-back must set an empty search_path").toEqual(["search_path=\"\""]);
     expect(rows.rows[0].sr, "service_role EXECUTE on fenced read-back").toBe(true);
     expect(rows.rows[0].anon, "no anon EXECUTE on fenced read-back").toBe(false);
-  });
-});
-
-describe("durable display-role reconciliation (migration 20261006000001, lease-expiry P1)", () => {
-  // A BOUND advisor with a real auth user so reconcile can read the claim.
-  let boundAdvisorId: number;
-  let boundAuthUserId: string;
-
-  const seedBoundAdvisor = async (claim: boolean): Promise<void> => {
-    const email = syntheticEmail(`reconcile-${claim}`);
-    const { data: user, error: userError } = await service.auth.admin.createUser({
-      email,
-      password: "ReconcilePass!2026",
-      email_confirm: true,
-      app_metadata: { ocf_admin: claim },
-    });
-    if (userError || !user.user) throw new Error(`seed reconcile auth user: ${userError?.message ?? "none"}`);
-    boundAuthUserId = user.user.id;
-    const { data: advisor, error: advisorError } = await service
-      .from("advisor")
-      .insert({ advisor_name: syntheticName(`reconcile-${claim}`), email, auth_user_id: user.user.id, is_active: true })
-      .select("advisor_id")
-      .single();
-    if (advisorError) throw new Error(`seed reconcile advisor: ${advisorError.message}`);
-    boundAdvisorId = advisor.advisor_id as number;
-  };
-
-  const cleanupBoundAdvisor = async (): Promise<void> => {
-    try {
-      await service.from("advisor_role_lock").delete().eq("advisor_id", boundAdvisorId);
-      await service.from("advisor").delete().eq("advisor_id", boundAdvisorId);
-    } catch {
-      /* best-effort */
-    }
-    if (boundAuthUserId) await service.auth.admin.deleteUser(boundAuthUserId).catch(() => {});
-  };
-
-  const reconcile = (advisorId: number, holder: string) =>
-    service.rpc("reconcile_advisor_role_display", { p_advisor_id: advisorId, p_holder: holder });
-
-  it("re-aligns the display role to the AUTHORITATIVE claim under a non-expired lease (both directions)", async () => {
-    await seedBoundAdvisor(true); // claim true (Admin)
-    await cleanupBoundAdvisor();
-    await seedBoundAdvisor(false); // claim false (Advisor), display default Advisor
-    try {
-      // Force a MISMATCH: claim true, display Advisor.
-      await service
-        .from("advisor")
-        .update({ role: "Admin" })
-        .eq("advisor_id", boundAdvisorId);
-      await service.auth.admin.updateUserById(boundAuthUserId, { app_metadata: { ocf_admin: false } });
-
-      const acquired = await service.rpc("acquire_advisor_role_lock", {
-        p_advisor_id: boundAdvisorId,
-        p_holder: "reconciler",
-        p_lease_seconds: 60,
-      });
-      expect(acquired.data, "reconciler must acquire the lease").toBe(true);
-
-      // claim false -> display should become Advisor.
-      const result = await reconcile(boundAdvisorId, "reconciler");
-      expect(result.error, "reconcile (claim false)").toBeNull();
-      expect(result.data, "reconcile projects Advisor from the false claim").toBe("Advisor");
-      const { data: row } = await service.from("advisor").select("role").eq("advisor_id", boundAdvisorId).maybeSingle();
-      expect(row?.role, "display aligned to the false claim").toBe("Advisor");
-
-      // Now claim true -> display should become Admin.
-      await service.auth.admin.updateUserById(boundAuthUserId, { app_metadata: { ocf_admin: true } });
-      const promoted = await reconcile(boundAdvisorId, "reconciler");
-      expect(promoted.error).toBeNull();
-      expect(promoted.data, "reconcile projects Admin from the true claim").toBe("Admin");
-      const { data: row2 } = await service.from("advisor").select("role").eq("advisor_id", boundAdvisorId).maybeSingle();
-      expect(row2?.role, "display aligned to the true claim").toBe("Admin");
-
-      await service.rpc("release_advisor_role_lock", { p_advisor_id: boundAdvisorId, p_holder: "reconciler" });
-    } finally {
-      await cleanupBoundAdvisor();
-    }
-  });
-
-  it("returns NULL for a NON-holder and after expiry/superseded takeover (never reconciles without ownership)", async () => {
-    await seedBoundAdvisor(false);
-    try {
-      const aAcquired = await service.rpc("acquire_advisor_role_lock", {
-        p_advisor_id: boundAdvisorId,
-        p_holder: "holder-a-short",
-        p_lease_seconds: 1,
-      });
-      expect(aAcquired.data, "A must acquire").toBe(true);
-
-      // Non-holder: NULL.
-      const intruder = await reconcile(boundAdvisorId, "holder-intruder");
-      expect(intruder.error, "non-holder reconcile").toBeNull();
-      expect(intruder.data, "non-holder reconcile must be NULL").toBeNull();
-
-      // Expired: NULL.
-      await new Promise((resolve) => setTimeout(resolve, 1_200));
-      const expired = await reconcile(boundAdvisorId, "holder-a-short");
-      expect(expired.error, "expired-holder reconcile").toBeNull();
-      expect(expired.data, "expired-holder reconcile must be NULL").toBeNull();
-
-      // Superseded by takeover: the stale holder still gets NULL.
-      const bTakeover = await service.rpc("acquire_advisor_role_lock", {
-        p_advisor_id: boundAdvisorId,
-        p_holder: "holder-b-new",
-        p_lease_seconds: 60,
-      });
-      expect(bTakeover.data, "B must take over").toBe(true);
-      expect((await reconcile(boundAdvisorId, "holder-a-short")).data, "superseded A reconcile NULL").toBeNull();
-      expect((await reconcile(boundAdvisorId, "holder-b-new")).data, "B reconcile returns the role").not.toBeNull();
-
-      await service.rpc("release_advisor_role_lock", { p_advisor_id: boundAdvisorId, p_holder: "holder-b-new" });
-    } finally {
-      await cleanupBoundAdvisor();
-    }
-  });
-
-  it("catalog: reconcile is SECURITY DEFINER with empty search_path and service_role-pinned EXECUTE", async () => {
-    const rows = await pool.query<{ prosecdef: boolean; proconfig: string[] | null; sr: boolean; anon: boolean }>(
-      `SELECT p.prosecdef,
-              p.proconfig,
-              has_function_privilege('service_role', 'public.reconcile_advisor_role_display(integer, text)', 'EXECUTE') AS sr,
-              has_function_privilege('anon', 'public.reconcile_advisor_role_display(integer, text)', 'EXECUTE') AS anon
-         FROM pg_proc p
-         JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname = 'public'
-          AND p.proname = 'reconcile_advisor_role_display'`
-    );
-    expect(rows.rows).toHaveLength(1);
-    expect(rows.rows[0].prosecdef, "reconcile must be SECURITY DEFINER").toBe(true);
-    expect(rows.rows[0].proconfig, "reconcile must set an empty search_path").toEqual(["search_path=\"\""]);
-    expect(rows.rows[0].sr, "service_role EXECUTE on reconcile").toBe(true);
-    expect(rows.rows[0].anon, "no anon EXECUTE on reconcile").toBe(false);
   });
 });
 
@@ -617,37 +442,55 @@ describe("compensation lease re-securing (latest P1 compensation race)", () => {
     expect(renewAfterExpiry.data, "re-acquire after expiry (no takeover) must succeed").toBe(true);
     await release("holder-recoverer");
   });
-
-  it("reconcile-after-rollback aligns the display to the authoritative claim under the re-secured lease", async () => {
-    // The lock-target advisor is UNBOUND, so the authoritative claim is false
-    // (Advisor projection). Force a mismatched display (Admin) and reconcile.
-    await service.from("advisor").update({ role: "Admin" }).eq("advisor_id", advisorId);
-    const acquired = await acquire("holder-post-rollback", 60);
-    expect(acquired.data, "post-rollback holder must acquire").toBe(true);
-
-    const reconciled = await service.rpc("reconcile_advisor_role_display", {
-      p_advisor_id: advisorId,
-      p_holder: "holder-post-rollback",
-    });
-    expect(reconciled.error, "post-rollback reconcile").toBeNull();
-    expect(reconciled.data, "reconcile projects Advisor for the unbound (false) claim").toBe("Advisor");
-
-    const { data: row } = await service
-      .from("advisor")
-      .select("role")
-      .eq("advisor_id", advisorId)
-      .maybeSingle();
-    expect(row?.role, "display aligned to the authoritative claim").toBe("Advisor");
-
-    await release("holder-post-rollback");
-    // Restore the baseline for the shared lock-target advisor.
-    await service.from("advisor").update({ role: "Advisor" }).eq("advisor_id", advisorId);
-  });
 });
 
 describe("atomic advisor role change (migration 20261007000001, final P1)", () => {
   let atomicAdvisorId: number;
   let atomicAuthUserId: string;
+  // The final set_advisor_role signature (migration 20261013000001) is
+  // (p_advisor_id, p_role, p_reason, p_actor_id): the service-supplied actor
+  // must be a CURRENT, ACTIVE, BOUND advisor whose durable Auth metadata
+  // carries the strict boolean ocf_admin=true claim. These atomicity tests
+  // therefore drive the RPC through a seeded durable effective-Admin actor.
+  let roleActorId: number;
+  let roleActorAuthUserId: string;
+
+  const actorEmail = syntheticEmail("role-actor");
+
+  const seedRoleActor = async (): Promise<void> => {
+    const { data: actorUser, error: actorUserError } = await service.auth.admin.createUser({
+      email: actorEmail,
+      password: "AtomicPass!2026",
+      email_confirm: true,
+      app_metadata: { ocf_admin: true },
+    });
+    if (actorUserError || !actorUser.user)
+      throw new Error(`seed role actor auth user: ${actorUserError?.message ?? "none"}`);
+    roleActorAuthUserId = actorUser.user.id;
+    const { data: actorAdvisor, error: actorAdvisorError } = await service
+      .from("advisor")
+      .insert({
+        advisor_name: syntheticName("role-actor"),
+        email: actorEmail,
+        auth_user_id: actorUser.user.id,
+        is_active: true,
+        role: "Admin",
+      })
+      .select("advisor_id")
+      .single();
+    if (actorAdvisorError) throw new Error(`seed role actor advisor: ${actorAdvisorError.message}`);
+    roleActorId = actorAdvisor.advisor_id as number;
+  };
+
+  const cleanupRoleActor = async (): Promise<void> => {
+    try {
+      await service.from("advisor_role_lock").delete().eq("advisor_id", roleActorId ?? -1);
+      await service.from("advisor").delete().eq("advisor_id", roleActorId ?? -1);
+    } catch {
+      /* best-effort */
+    }
+    if (roleActorAuthUserId) await service.auth.admin.deleteUser(roleActorAuthUserId).catch(() => {});
+  };
 
   const seedAtomicAdvisor = async (claim = false): Promise<void> => {
     const email = syntheticEmail("atomic-role");
@@ -670,15 +513,28 @@ describe("atomic advisor role change (migration 20261007000001, final P1)", () =
 
   const cleanupAtomicAdvisor = async (): Promise<void> => {
     try {
-      await service.from("advisor").delete().eq("advisor_id", atomicAdvisorId);
+      await service.from("advisor").delete().eq("advisor_id", atomicAdvisorId ?? -1);
     } catch {
       /* best-effort */
     }
     if (atomicAuthUserId) await service.auth.admin.deleteUser(atomicAuthUserId).catch(() => {});
   };
 
+  beforeAll(async () => {
+    await seedRoleActor();
+  }, 30_000);
+
+  afterAll(async () => {
+    await cleanupRoleActor();
+  }, 30_000);
+
   const setRole = (advisorId: number, role: string) =>
-    service.rpc("set_advisor_role", { p_advisor_id: advisorId, p_role: role });
+    service.rpc("set_advisor_role", {
+      p_advisor_id: advisorId,
+      p_role: role,
+      p_reason: "contract atomic role change",
+      p_actor_id: roleActorId,
+    });
 
   const advisorRow = async (advisorId: number) => {
     const { data, error } = await service
@@ -783,9 +639,9 @@ describe("atomic advisor role change (migration 20261007000001, final P1)", () =
     const rows = await pool.query<{ prosecdef: boolean; proconfig: string[] | null; sr: boolean; anon: boolean; auth: boolean }>(
       `SELECT p.prosecdef,
               p.proconfig,
-              has_function_privilege('service_role', 'public.set_advisor_role(integer, text)', 'EXECUTE') AS sr,
-              has_function_privilege('anon', 'public.set_advisor_role(integer, text)', 'EXECUTE') AS anon,
-              has_function_privilege('authenticated', 'public.set_advisor_role(integer, text)', 'EXECUTE') AS auth
+              has_function_privilege('service_role', 'public.set_advisor_role(integer, text, text, integer)', 'EXECUTE') AS sr,
+              has_function_privilege('anon', 'public.set_advisor_role(integer, text, text, integer)', 'EXECUTE') AS anon,
+              has_function_privilege('authenticated', 'public.set_advisor_role(integer, text, text, integer)', 'EXECUTE') AS auth
          FROM pg_proc p
          JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public'
@@ -798,7 +654,12 @@ describe("atomic advisor role change (migration 20261007000001, final P1)", () =
     expect(rows.rows[0].anon, "no anon EXECUTE on set_advisor_role").toBe(false);
     expect(rows.rows[0].auth, "no authenticated EXECUTE on set_advisor_role").toBe(false);
 
-    const anonCall = await anon.rpc("set_advisor_role", { p_advisor_id: atomicAdvisorId ?? 1, p_role: "Admin" });
+    const anonCall = await anon.rpc("set_advisor_role", {
+      p_advisor_id: atomicAdvisorId ?? 1,
+      p_role: "Admin",
+      p_reason: "anon attempt",
+      p_actor_id: roleActorId ?? 1,
+    });
     expect(anonCall.data).toBeNull();
     expect(anonCall.error, "anon must be denied set_advisor_role").not.toBeNull();
   });

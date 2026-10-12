@@ -16,8 +16,62 @@ import type { Database } from "@/types/database";
 import { AlertTriangle, Award, FileText, Trophy, Users } from "lucide-react";
 import { redirect } from "next/navigation";
 import { resolvePagination, totalPages } from "@/lib/utils/pagination";
+import { STAGES } from "@/lib/applications/pipeline";
 
 export const metadata: Metadata = { title: "Applications" };
+
+/** Schema stage allowlist. Only these values may reach a PostgREST predicate. */
+const STAGE_ALLOWLIST: ReadonlySet<string> = new Set(STAGES);
+
+/**
+ * Normalize an untrusted stage filter against the schema allowlist. `all`,
+ * missing, and any unrecognized value resolve to `null` (no predicate) so a
+ * malformed URL can never reach PostgREST.
+ */
+export function normalizeApplicationStage(value: string | undefined): string | null {
+  if (!value) return null;
+  if (!STAGE_ALLOWLIST.has(value)) return null;
+  return value;
+}
+
+/**
+ * Normalize an untrusted fellowship selector to a positive integer id string.
+ * Non-numeric, fractional, zero, negative, and oversized values resolve to
+ * `null` instead of leaking `NaN`/garbage into an integer PostgREST predicate.
+ */
+export function normalizeFellowshipIdFilter(value: string | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? String(parsed) : null;
+}
+
+/**
+ * Normalize an untrusted destination-country filter. The column is free text
+ * (no enumerated allowlist), so only the structural sanity of the literal is
+ * enforced: non-empty after trimming, bounded length, and no control characters.
+ */
+export function normalizeCountryFilter(value: string | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 100) return null;
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return null;
+  return trimmed;
+}
+
+/**
+ * Normalize a user search term for a PostgREST `or()` expression: strip the
+ * grammar characters that delimit/group the expression (`,`, `(`, `)`), then
+ * escape LIKE wildcards (`%`, `_`, `*`) and the backslash so the term is
+ * matched literally rather than widening the result set.
+ */
+export function normalizeSearchTerm(value: string | undefined): string {
+  return (value ?? "")
+    .trim()
+    .replace(/[,()]/g, " ")
+    .replace(/[%_\\*]/g, "\\$&");
+}
 
 interface Props {
   searchParams: Promise<{
@@ -66,14 +120,17 @@ export async function getApplications(params: { search?: string; stage?: string;
     const pagination = resolvePagination(params);
     let query = supabase.from("application_list").select("*", { count: "exact" });
     if (params.search?.trim()) {
-      const term = params.search.trim().replace(/[,%()]/g, " ");
+      const term = normalizeSearchTerm(params.search);
       const text = `student_name.ilike.%${term}%,fellowship_name.ilike.%${term}%,destination_country.ilike.%${term}%,stage_of_application.ilike.%${term}%`;
       query = query.or(/^\d{4}$/.test(term) ? `${text},application_year.eq.${term}` : text);
     }
-    if (params.stage && params.stage !== "all") query = query.eq("stage_of_application", params.stage);
+    const stage = normalizeApplicationStage(params.stage);
+    if (stage) query = query.eq("stage_of_application", stage);
     if (params.year && /^\d{4}$/.test(params.year)) query = query.eq("application_year", Number(params.year));
-    if (params.country) query = query.eq("destination_country", params.country);
-    if (params.fellowship) query = query.eq("fellowship_id", Number(params.fellowship));
+    const country = normalizeCountryFilter(params.country);
+    if (country) query = query.eq("destination_country", country);
+    const fellowship = normalizeFellowshipIdFilter(params.fellowship);
+    if (fellowship) query = query.eq("fellowship_id", Number(fellowship));
     const { data, error, count } = await query.order("application_year", { ascending: false }).order("application_id", { ascending: false }).range(pagination.offset, pagination.to);
 
     if (error) {
@@ -163,7 +220,7 @@ export default async function ApplicationsPage({ searchParams }: Props) {
   const autoOpenAdd = params.add === "1";
   const defaultStudentId = params.student_id;
   const defaultFellowshipId = params.fellowship_id;
-  const initialStageFilter = params.stage ?? params.filter;
+  const initialStageFilter = normalizeApplicationStage(params.stage ?? params.filter) ?? undefined;
   const initialSearchQuery = params.search;
 
   const applicationsResult = await getApplications({ ...params, stage: params.stage ?? params.filter });

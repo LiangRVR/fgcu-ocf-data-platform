@@ -261,6 +261,60 @@ export type Database = {
           },
         ]
       }
+      audit_event: {
+        Row: {
+          action: string
+          actor_advisor_id: number | null
+          actor_name_snapshot: string
+          audit_id: number
+          changes: Json | null
+          entity_id: number
+          entity_type: string
+          new_values: Json | null
+          occurred_at: string
+          old_values: Json | null
+          origin: string
+          reason: string | null
+          subject_application_id: number | null
+          subject_fellowship_id: number | null
+          subject_student_id: number | null
+        }
+        Insert: {
+          action: string
+          actor_advisor_id?: number | null
+          actor_name_snapshot: string
+          audit_id?: number
+          changes?: Json | null
+          entity_id: number
+          entity_type: string
+          new_values?: Json | null
+          occurred_at?: string
+          old_values?: Json | null
+          origin: string
+          reason?: string | null
+          subject_application_id?: number | null
+          subject_fellowship_id?: number | null
+          subject_student_id?: number | null
+        }
+        Update: {
+          action?: string
+          actor_advisor_id?: number | null
+          actor_name_snapshot?: string
+          audit_id?: number
+          changes?: Json | null
+          entity_id?: number
+          entity_type?: string
+          new_values?: Json | null
+          occurred_at?: string
+          old_values?: Json | null
+          origin?: string
+          reason?: string | null
+          subject_application_id?: number | null
+          subject_fellowship_id?: number | null
+          subject_student_id?: number | null
+        }
+        Relationships: []
+      }
       fellowship: {
         Row: {
           archived_at: string | null
@@ -713,15 +767,16 @@ export type Database = {
         Args: { p_advisor_id: number; p_holder: string }
         Returns: string
       }
-      fenced_write_advisor_role_display: {
-        Args: { p_advisor_id: number; p_holder: string; p_role: string }
-        Returns: boolean
-      }
       is_active_advisor: { Args: never; Returns: boolean }
       is_effective_admin: { Args: never; Returns: boolean }
       is_ocf_admin: { Args: never; Returns: boolean }
       lifecycle_transition: {
-        Args: { p_action: string; p_entity: string; p_entity_id: number }
+        Args: {
+          p_action: string
+          p_entity: string
+          p_entity_id: number
+          p_reason: string
+        }
         Returns: {
           action: string
           applied: boolean
@@ -731,9 +786,19 @@ export type Database = {
           is_active: boolean
         }[]
       }
-      reconcile_advisor_role_display: {
-        Args: { p_advisor_id: number; p_holder: string }
-        Returns: string
+      provision_advisor: {
+        Args: {
+          p_actor_id: number
+          p_advisor_name: string
+          p_auth_user_id: string
+          p_email: string
+          p_role: string
+        }
+        Returns: {
+          advisor_id: number
+          auth_user_id: string
+          role: string
+        }[]
       }
       release_advisor_role_lock: {
         Args: { p_advisor_id: number; p_holder: string }
@@ -747,7 +812,12 @@ export type Database = {
         }[]
       }
       set_advisor_role: {
-        Args: { p_advisor_id: number; p_role: string }
+        Args: {
+          p_actor_id: number
+          p_advisor_id: number
+          p_reason: string
+          p_role: string
+        }
         Returns: {
           advisor_id: number
           auth_user_id: string

@@ -1894,7 +1894,14 @@ describe("Advisor cannot promote, self-activate, or provision (display role is n
 
     const { data: transitionData, error: transitionError } = await adminDisplayClient.rpc(
       "lifecycle_transition",
-      { p_entity: "student", p_action: "archive", p_entity_id: fixtures.studentId }
+      {
+        p_entity: "student",
+        p_action: "archive",
+        p_entity_id: fixtures.studentId,
+        // A non-blank reason is supplied so the denial is the missing-admin
+        // claim (42501), never the required-reason gate (22023).
+        p_reason: "no-claim denial",
+      }
     );
     expect(transitionData, "no-claim lifecycle transition must return no row").toBeNull();
     expect(transitionError, "no-claim lifecycle transition must be denied").not.toBeNull();

@@ -370,6 +370,9 @@ describe("POST /api/advisors (admin-only provisioning)", () => {
       name: "Jane",
       role: "Admin",
       method: "create",
+      // The route injects the server-resolved effective-Admin actor id; it is
+      // never read from the request payload.
+      actorAdvisorId: ADMIN_ADVISOR.advisor_id,
     });
   });
 

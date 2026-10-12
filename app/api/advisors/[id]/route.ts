@@ -11,12 +11,17 @@
  *
  * Route authorization uses the shared server effective-Admin predicate. Role
  * changes go through the trusted server-only provisioning adapter (Auth
- * app_metadata + protected display role with failure compensation). Active-
- * state changes go through the ESTABLISHED `lifecycle_transition` RPC using the
- * admin's own server session — the RPC derives the actor from `auth.uid()`,
- * enforces effective-Admin authority, preserves the self-deactivation guard,
- * and never touches role/binding/history. `auth_user_id` is never accepted, so
- * no API path can rebind an existing binding.
+ * app_metadata + protected display role with failure compensation) using the
+ * ROLE RPC CONTRACT: target advisor id + new role + verified actor id +
+ * reason — the actor id is the route-resolved effective-Admin advisor id
+ * (never a payload field), and the reason is a required non-blank value
+ * validated by the schema. Active-state changes go through the ESTABLISHED
+ * `lifecycle_transition` RPC using the admin's own server session — the RPC
+ * derives the actor from `auth.uid()`, requires and records a non-blank
+ * reason, enforces effective-Admin authority, preserves the self-deactivation
+ * guard and final-effective-Admin invariant, and never touches
+ * role/binding/history. `auth_user_id` is never accepted, so no API path can
+ * rebind an existing binding.
  */
 import { NextResponse } from "next/server";
 import { getEffectiveAdmin, getSessionUser } from "@/lib/auth/session";
@@ -116,14 +121,21 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       return NextResponse.json({ error: "Advisor not found." }, { status: 404 });
     }
 
-    // 1. Role change (if requested) through trusted provisioning. The Auth
-    //    claim is updated before the protected display role, and the adapter
-    //    compensates a display-role failure by rolling the claim back.
+    // 1. Role change (if requested) through the trusted provisioning adapter.
+    //    The trusted service-role RPC contract is target advisor id + new role
+    //    + verified actor id + reason: the Auth claim is updated before the
+    //    protected display role in ONE transaction (a claim/display mismatch
+    //    is impossible) and exactly one audit event with the reason is
+    //    written. The actor advisor id is the route-resolved effective Admin
+    //    (`admin.advisor_id`), never a payload field; the schema guarantees a
+    //    non-blank reason.
     if (parsed.data.role !== undefined) {
       const provisioner = createProvisioningClient();
       const roleResult = await provisioner.setAdvisorRole({
         advisorId,
         role: parsed.data.role,
+        actorAdvisorId: admin.advisor_id,
+        reason: parsed.data.reason,
       });
       if (!roleResult.ok) {
         return setRoleFailureResponse(roleResult.code, roleResult.message);
@@ -132,13 +144,16 @@ export async function PATCH(request: Request, { params }: RouteContext) {
 
     // 2. Active-state change (if requested) through the ESTABLISHED lifecycle
     //    RPC using the admin's own server session (actor = auth.uid(), which
-    //    is an effective Admin by the route gate above). The RPC keeps the
-    //    self-deactivation guard and never alters role/binding/history.
+    //    is an effective Admin by the route gate above). The RPC requires a
+    //    non-blank reason (forwarded verbatim), keeps the self-deactivation
+    //    guard, serializes final-effective-Admin removal, and never alters
+    //    role/binding/history.
     if (parsed.data.isActive !== undefined) {
       const { error: rpcError } = await supabase.rpc("lifecycle_transition", {
         p_entity: "advisor",
         p_action: parsed.data.isActive ? "reactivate" : "deactivate",
         p_entity_id: advisorId,
+        p_reason: parsed.data.reason,
       });
       if (rpcError) {
         return NextResponse.json(

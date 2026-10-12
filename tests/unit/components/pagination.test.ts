@@ -33,4 +33,31 @@ describe("Pagination", () => {
     expect(markup).toContain("Rows per page");
     expect(markup).toContain("<option value=\"25\" selected=\"\">25</option>");
   });
+
+  it("renders a disabled Previous as a non-navigable button with no href", () => {
+    const markup = renderPagination({ page: 1, pageSize: 25, totalCount: 60, totalPages: 3, getPageHref: (page) => `?page=${page}` });
+    // Next stays an anchor; Previous must not be a link, so it cannot be
+    // activated by mouse and (being a disabled button) is not keyboard focusable.
+    expect(markup).toContain('href="?page=2"');
+    expect(markup).not.toContain('href="?page=0"');
+    const previous = markup.match(/<button[^>]*aria-label="Previous"[^>]*>/)?.[0] ?? "";
+    expect(previous).toContain("disabled");
+    expect(previous).not.toContain("href");
+  });
+
+  it("renders a disabled Next as a non-navigable button with no href", () => {
+    const markup = renderPagination({ page: 3, pageSize: 25, totalCount: 60, totalPages: 3, getPageHref: (page) => `?page=${page}` });
+    expect(markup).not.toContain('href="?page=4"');
+    const next = markup.match(/<button[^>]*aria-label="Next"[^>]*>/)?.[0] ?? "";
+    expect(next).toContain("disabled");
+    expect(next).not.toContain("href");
+  });
+
+  it("renders a disabled Previous as a non-navigable button for client pagination", () => {
+    const onPageChange = vi.fn();
+    const markup = renderPagination({ page: 1, pageSize: 25, totalCount: 60, totalPages: 3, onPageChange });
+    const previous = markup.match(/<button[^>]*aria-label="Previous"[^>]*>/)?.[0] ?? "";
+    expect(previous).toContain("disabled");
+    expect(previous).not.toContain("href");
+  });
 });

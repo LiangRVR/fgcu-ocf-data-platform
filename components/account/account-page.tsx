@@ -97,7 +97,6 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
   const router = useRouter();
   const [profileForm, setProfileForm] = useState({
     advisorName: advisor.advisor_name,
-    email: advisor.email ?? "",
   });
   const [profileErrors, setProfileErrors] = useState<Record<string, string>>({});
   const [isSavingProfile, setIsSavingProfile] = useState(false);
@@ -202,7 +201,10 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
 
   async function handleProfileSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const parsed = profileUpdateSchema.safeParse(profileForm);
+    const parsed = profileUpdateSchema.safeParse({
+      ...profileForm,
+      email: advisor.email ?? "",
+    });
 
     if (!parsed.success) {
       const nextErrors = Object.fromEntries(
@@ -216,24 +218,12 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
     setIsSavingProfile(true);
 
     try {
-      const emailChanged = (advisor.email ?? "").toLowerCase() !== parsed.data.email;
-
-      if (emailChanged) {
-        const { error } = await supabaseBrowserClient.auth.updateUser({
-          email: parsed.data.email,
-        });
-
-        if (error) {
-          throw new Error(error.message);
-        }
-      }
-
       const response = await fetch("/api/account/profile", {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(parsed.data),
+        body: JSON.stringify({ advisorName: parsed.data.advisorName, email: advisor.email ?? "" }),
       });
 
       const payload = (await response.json().catch(() => null)) as
@@ -245,9 +235,7 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
       }
 
       toast.success("Account updated", {
-        description: emailChanged
-          ? "Your profile is saved. Check your email inboxes for any confirmation steps."
-          : "Your account profile has been updated.",
+        description: "Your account profile has been updated.",
       });
 
       router.refresh();
@@ -368,7 +356,7 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
               <AppCardHeader>
                 <AppCardTitle>Update your profile</AppCardTitle>
                 <AppCardDescription>
-                  You can change your display name and email here. Role and active status stay admin-controlled.
+                  You can change your display name here. Email changes require account administration; role and active status stay admin-controlled.
                 </AppCardDescription>
               </AppCardHeader>
               <AppCardContent>
@@ -399,21 +387,13 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
                       id="email"
                       type="email"
                       className="pl-9"
-                      value={profileForm.email}
-                      onChange={(event) =>
-                        setProfileForm((current) => ({
-                          ...current,
-                          email: event.target.value,
-                        }))
-                      }
-                      aria-invalid={!!profileErrors.email}
+                      value={advisor.email ?? ""}
+                      readOnly
+                      aria-describedby="email-help"
                     />
                   </div>
-                  {profileErrors.email && (
-                    <p className="text-xs text-destructive">{profileErrors.email}</p>
-                  )}
-                  <p className="text-xs text-muted-foreground">
-                    Changing your email may require confirmation in both your current and new inboxes, depending on Supabase settings.
+                  <p id="email-help" className="text-xs text-muted-foreground">
+                    Email changes require account administration. Contact an administrator for help.
                   </p>
                 </div>
 

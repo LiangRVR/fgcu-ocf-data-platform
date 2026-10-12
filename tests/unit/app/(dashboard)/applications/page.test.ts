@@ -23,6 +23,10 @@ import ApplicationsPage, {
   getStudents,
   getFellowships,
   ApplicationsUnavailable,
+  normalizeApplicationStage,
+  normalizeFellowshipIdFilter,
+  normalizeCountryFilter,
+  normalizeSearchTerm,
 } from "@/app/(dashboard)/applications/page";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -59,6 +63,32 @@ function createMockClient(
       return chain;
     }),
   } as never;
+}
+
+/**
+ * Supabase-like client that records the exact predicate calls (eq/or/ilike) so
+ * tests can prove which values reach PostgREST.
+ */
+function createRecordingClient(
+  responses: Record<string, { data?: unknown; error?: { message: string } | null; count?: number | null }> = {},
+) {
+  const calls: Array<{ table: string; method: string; args: unknown[] }> = [];
+  const client = {
+    calls,
+    from: vi.fn((table: string) => {
+      const response = responses[table] ?? { data: [], error: null, count: 0 };
+      const chain: Record<string, unknown> = {};
+      for (const method of ["select", "order", "or", "eq", "ilike", "range", "is"]) {
+        chain[method] = vi.fn((...args: unknown[]) => {
+          calls.push({ table, method, args });
+          return chain;
+        });
+      }
+      chain.then = (resolve: (value: unknown) => unknown) => Promise.resolve(response).then(resolve);
+      return chain;
+    }),
+  };
+  return client;
 }
 
 beforeEach(() => {
@@ -109,6 +139,94 @@ describe("getApplications", () => {
     const result = await getApplications();
 
     expect(result).toMatchObject({ ok: true, applications: [], count: 0, pages: 0, pagination: { page: 1, pageSize: 25, offset: 0, to: 24 } });
+  });
+});
+
+// ── list-criteria allowlisting / normalization ──────────────────────────────
+
+describe("getApplications list-criteria allowlisting", () => {
+  it("drops malformed stage/country/fellowship values before PostgREST", async () => {
+    const client = createRecordingClient();
+    createServerClient.mockReturnValue(client as never);
+
+    await getApplications({ stage: "'; drop table", country: "\u0000bad", fellowship: "abc" });
+
+    expect(client.calls.filter((c) => ["eq", "or", "ilike"].includes(c.method))).toHaveLength(0);
+  });
+
+  it("drops `all` and non-allowlisted stage values", async () => {
+    const client = createRecordingClient();
+    createServerClient.mockReturnValue(client as never);
+
+    await getApplications({ stage: "all" });
+    await getApplications({ stage: "Bogus" });
+
+    expect(client.calls.filter((c) => c.method === "eq")).toHaveLength(0);
+  });
+
+  it("applies an allowlisted stage, integer fellowship, and trimmed country", async () => {
+    const client = createRecordingClient();
+    createServerClient.mockReturnValue(client as never);
+
+    await getApplications({ stage: "Awarded", country: "  United States  ", fellowship: "42" });
+
+    const eqs = client.calls.filter((c) => c.method === "eq");
+    expect(eqs).toContainEqual({ table: "application_list", method: "eq", args: ["stage_of_application", "Awarded"] });
+    expect(eqs).toContainEqual({ table: "application_list", method: "eq", args: ["destination_country", "United States"] });
+    expect(eqs).toContainEqual({ table: "application_list", method: "eq", args: ["fellowship_id", 42] });
+  });
+
+  it("escapes LIKE wildcards in a literal search term", async () => {
+    const client = createRecordingClient();
+    createServerClient.mockReturnValue(client as never);
+
+    await getApplications({ search: "a%b_c*d,e(*)" });
+
+    const or = client.calls.find((c) => c.method === "or");
+    expect(or).toBeDefined();
+    const expression = String(or?.args[0]);
+    // LIKE wildcards (including PostgREST's `*`) are escaped; the raw term
+    // never appears verbatim.
+    expect(expression).toContain("a\\%b\\_c\\*d");
+    expect(expression).not.toContain("a%b_c*d");
+    expect(expression).not.toContain("e(*)");
+  });
+});
+
+describe("application criteria normalizers", () => {
+  it("allowlists stage values", () => {
+    expect(normalizeApplicationStage("Awarded")).toBe("Awarded");
+    expect(normalizeApplicationStage("Under Review")).toBe("Under Review");
+    expect(normalizeApplicationStage("all")).toBeNull();
+    expect(normalizeApplicationStage("Bogus")).toBeNull();
+    expect(normalizeApplicationStage(undefined)).toBeNull();
+  });
+
+  it("normalizes fellowship ids to positive integers", () => {
+    expect(normalizeFellowshipIdFilter("42")).toBe("42");
+    expect(normalizeFellowshipIdFilter(" 42 ")).toBe("42");
+    expect(normalizeFellowshipIdFilter("-1")).toBeNull();
+    expect(normalizeFellowshipIdFilter("0")).toBeNull();
+    expect(normalizeFellowshipIdFilter("2.5")).toBeNull();
+    expect(normalizeFellowshipIdFilter("abc")).toBeNull();
+    expect(normalizeFellowshipIdFilter("999999999999999999999")).toBeNull();
+  });
+
+  it("normalizes free-text country filters", () => {
+    expect(normalizeCountryFilter("  United States  ")).toBe("United States");
+    expect(normalizeCountryFilter("Côte d'Ivoire")).toBe("Côte d'Ivoire");
+    expect(normalizeCountryFilter("")).toBeNull();
+    expect(normalizeCountryFilter("   ")).toBeNull();
+    expect(normalizeCountryFilter("\u0000bad")).toBeNull();
+    expect(normalizeCountryFilter("x".repeat(101))).toBeNull();
+  });
+
+  it("escapes search grammar and LIKE wildcards", () => {
+    expect(normalizeSearchTerm("a%b_c,d(e)")).toBe("a\\%b\\_c d e ");
+    expect(normalizeSearchTerm("a*b")).toBe("a\\*b");
+    expect(normalizeSearchTerm("*")).toBe("\\*");
+    expect(normalizeSearchTerm("  Ada  ")).toBe("Ada");
+    expect(normalizeSearchTerm(undefined)).toBe("");
   });
 });
 

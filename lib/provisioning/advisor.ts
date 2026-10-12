@@ -10,6 +10,13 @@
  * no fallback to an unlinked email-matched row: this adapter never binds or
  * authorizes an authenticated caller by email.
  *
+ * Human attribution (R1, R5): provisioning and role changes forward the
+ * ROUTE-RESOLVED effective-Admin advisor id (`actorAdvisorId` / `p_actor_id`)
+ * into the trusted database operations, which REVALIDATE it against the
+ * durable active/bound Admin state before writing the human-attributed audit
+ * event in the same transaction. Actor identity is never a browser payload:
+ * no Service/API request accepts an actor id from the client.
+ *
  * Safe-saga behavior (amendment A2):
  *   - thrown Admin/DB rejections are normalized to the same generic
  *     `ProvisionFailure` as returned `{ error }` values;
@@ -34,7 +41,6 @@
  * never logs secrets: every failure surfaces as a generic message.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { randomUUID } from "node:crypto";
 import type { Database } from "@/types/database";
 import type { AdvisorRole } from "@/lib/auth/session";
 
@@ -86,6 +92,15 @@ export interface ProvisionRoleSuccess extends ProvisionSuccess {
  * Role-aware provisioning input for `provisionAdvisor`: creates/invites the
  * Auth identity, creates the advisor record bound to it (matching display
  * role, active by default), and sets the matching Auth claim.
+ *
+ * `actorAdvisorId` is NEVER client input: it is the route-resolved effective
+ * Admin advisor id (the authenticated, active, pre-bound administrator who
+ * initiates provisioning). The adapter forwards it into the trusted
+ * service-role `provision_advisor` RPC (`p_actor_id`), where the database
+ * revalidates that the supplied id is a current active bound durable
+ * effective Admin before writing the human-attributed `created` audit event
+ * in the SAME transaction as the committed advisor row. A browser payload can
+ * never supply actor identity.
  */
 export interface RoleAwareProvisionInput {
   /** Intended login email for the invited/created auth account. */
@@ -96,12 +111,31 @@ export interface RoleAwareProvisionInput {
   role?: AdvisorRole;
   /** `invite` (email invite) or `create` (controlled account); defaults to `invite`. */
   method?: "invite" | "create";
+  /**
+   * Server-resolved effective-Admin advisor id initiating this provisioning
+   * (positive `advisor_id` from `getEffectiveAdmin`, never a payload field).
+   */
+  actorAdvisorId: number;
 }
 
-/** Input for `setAdvisorRole`: an Admin-only role change on a bound advisor. */
+/**
+ * Input for `setAdvisorRole`: an Admin-only role change on a bound advisor.
+ *
+ * The trusted service-role RPC contract is: target advisor id + new role +
+ * verified actor id + reason (`p_advisor_id`, `p_role`, `p_actor_id`,
+ * `p_reason`). `actorAdvisorId` is the route-resolved effective-Admin advisor
+ * id (never client input) and is revalidated inside the RPC; `reason` is a
+ * required non-blank human reason that is forwarded verbatim (trimmed).
+ */
 export interface SetAdvisorRoleInput {
+  /** Target bound advisor whose protected display role/claim changes. */
   advisorId: number;
+  /** Desired role; must be exactly `Admin` or `Advisor`. */
   role: AdvisorRole;
+  /** Server-resolved effective-Admin advisor id performing the change. */
+  actorAdvisorId: number;
+  /** Required non-blank human reason for the role change. */
+  reason: string;
 }
 
 export type SetRoleFailureCode =
@@ -125,23 +159,6 @@ export interface SetRoleFailure {
 
 export type SetRoleResult = SetRoleSuccess | SetRoleFailure;
 
-/**
- * Result of the explicit durable recovery (`recoverAdvisorRoleChange`): the
- * display role was re-aligned to the authoritative Auth claim (or confirmed
- * already aligned), so no claim/display mismatch remains.
- */
-export interface RecoverAdvisorRoleChangeResult {
-  ok: boolean;
-  advisorId: number;
-  /** The display role after reconciliation; null when nothing needed reconciling. */
-  role: AdvisorRole | null;
-  /** True when the display role was actually changed to match the claim. */
-  changed: boolean;
-  code?: "lock_busy" | "lock_failed" | "reconciliation_required";
-  /** Generic, secret-free message for failures. */
-  message?: string;
-}
-
 /** Generic failure copy — never echoes provider internals, emails, or keys. */
 const INVITE_FAILED_MESSAGE =
   "Unable to invite the user for this advisor. Please try again later.";
@@ -161,17 +178,12 @@ const ROLE_CHANGE_ADVISOR_NOT_FOUND_MESSAGE =
   "The advisor row could not be found.";
 const ROLE_CHANGE_NOT_BOUND_MESSAGE =
   "The advisor account is not bound to an Auth identity, so its role cannot be changed.";
-const ROLE_CHANGE_LOCK_BUSY_MESSAGE =
-  "Another role change is already in progress for this advisor. Please try again later.";
-const ROLE_CHANGE_LOCK_FAILED_MESSAGE =
-  "Unable to secure the advisor role-change lock. Please try again later.";
-const ROLE_CHANGE_RECONCILIATION_REQUIRED_MESSAGE =
-  "The advisor role change could not be confirmed; an OCF administrator must reconcile this advisor. No change was guessed.";
 const ROLE_CHANGE_DISPLAY_FAILED_MESSAGE =
   "Unable to update the advisor role. Please try again later.";
-
-/** Per-advisor role-change lease duration (seconds): bounds stale-lock recovery. */
-const ROLE_CHANGE_LEASE_SECONDS = 60;
+const ROLE_CHANGE_REASON_REQUIRED_MESSAGE =
+  "A non-blank reason is required for an advisor role change.";
+const PROVISION_ACTOR_REQUIRED_MESSAGE =
+  "The advisor provisioning request could not be attributed to an active administrator.";
 
 export class AdvisorProvisioning {
   constructor(private readonly admin: AdminClient) {}
@@ -266,6 +278,14 @@ export class AdvisorProvisioning {
   async provisionAdvisor(
     input: RoleAwareProvisionInput,
   ): Promise<ProvisionRoleSuccess | ProvisionFailure> {
+    // Fail fast when the trusted server actor is missing/malformed. The
+    // actor advisor id is always route-resolved (`getEffectiveAdmin`), so a
+    // violation here is a server-contract bug that must fail generically
+    // BEFORE any Auth side effect (invite/create/bind) runs.
+    if (!Number.isInteger(input.actorAdvisorId) || input.actorAdvisorId <= 0) {
+      return { ok: false, code: "bind_failed", message: PROVISION_ACTOR_REQUIRED_MESSAGE };
+    }
+
     const role = input.role === "Admin" ? "Admin" : "Advisor";
     const claim = role === "Admin";
     const method = input.method ?? "invite";
@@ -327,32 +347,42 @@ export class AdvisorProvisioning {
     }
 
     // Step 2 — create the advisor record bound to the new identity, in the
-    // matching display role, ACTIVE by default. Trusted session: the
-    // one-time-bind, lifecycle, and role-display guards permit this INSERT.
+    // matching display role, ACTIVE by default, attributed to the verified
+    // effective-Admin actor. The trusted path is the service-role-only
+    // SECURITY DEFINER `provision_advisor(p_actor_id, p_advisor_name,
+    // p_email, p_auth_user_id, p_role)` RPC: it revalidates the supplied
+    // actor as a durable effective Admin, sets transaction-local audit
+    // context, and INSERTs the advisor row in the SAME transaction — so the
+    // advisor audit trigger writes exactly one `created` event attributed to
+    // that Admin (never System for a normal Admin provisioning), while the
+    // one-time-bind/lifecycle/role-display guards still apply.
     const displayName = input.name?.trim() || input.email.split("@")[0] || "Advisor";
     const createdRow = await this.safeRun(() =>
-      this.admin
-        .from("advisor")
-        .insert({
-          advisor_name: displayName,
-          email: input.email,
-          auth_user_id: authUserId,
-          is_active: true,
-          role,
-        })
-        .select("advisor_id, role")
-        .single(),
+      this.admin.rpc("provision_advisor", {
+        p_actor_id: input.actorAdvisorId,
+        p_advisor_name: displayName,
+        p_email: input.email,
+        p_auth_user_id: authUserId,
+        p_role: role,
+      }),
     );
 
+    // Direct success requires an EXACT returned row: the trusted RPC must
+    // return a row whose role and bound auth UUID match EXACTLY what this
+    // flow created/requested. A thrown rejection, a returned error, or a
+    // malformed/missing row is NOT a verified creation.
+    const createdResult =
+      createdRow.ok && !createdRow.value.error ? createdRow.value.data?.[0] : undefined;
     if (
-      createdRow.ok &&
-      !createdRow.value.error &&
-      createdRow.value.data !== null &&
-      createdRow.value.data.role === role
+      createdResult &&
+      Number.isInteger(createdResult.advisor_id) &&
+      createdResult.advisor_id > 0 &&
+      createdResult.role === role &&
+      createdResult.auth_user_id === authUserId
     ) {
       return {
         ok: true,
-        advisorId: createdRow.value.data.advisor_id,
+        advisorId: createdResult.advisor_id,
         authUserId,
         created: true,
         role,
@@ -400,6 +430,16 @@ export class AdvisorProvisioning {
    * (`auth.users.raw_app_meta_data.ocf_admin` JSON boolean) AND the protected
    * `public.advisor.role` display projection in ONE Postgres transaction.
    *
+   * The RPC contract is actor-and-reason-aware (approved plan step 2 /
+   * design point 4): `p_advisor_id` (target advisor), `p_role` (new role),
+   * `p_actor_id` (the VERIFIED server-resolved effective-Admin advisor id —
+   * revalidated inside the RPC against the durable Auth metadata + active
+   * bound advisor state) and a required non-blank `p_reason`. It serializes
+   * final-effective-Admin removal and emits exactly one `role_changed` audit
+   * event in the same transaction. The adapter enforces the non-blank reason
+   * and a positive actor id BEFORE the call (defense in depth; the RPC is
+   * authoritative).
+   *
    * Because the claim and display are written in a single transaction, a
    * claim/display mismatch is IMPOSSIBLE: the transaction commits with both
    * consistent or aborts with neither changed. No external GoTrue Auth Admin
@@ -409,7 +449,8 @@ export class AdvisorProvisioning {
    * Error mapping (the RPC raises distinct SQLSTATEs; the transaction is
    * atomic, so a failure changes NOTHING):
    *   - P0002  -> `advisor_not_found` (the advisor row does not exist);
-   *   - 42501  -> `not_bound` (the advisor is not bound to an Auth identity);
+   *   - 42501  -> `not_bound` (the advisor is not bound to an Auth identity;
+   *               this also covers an invalid/unverified trusted actor);
    *   - anything else (incl. an unknown/network failure) -> `role_update_failed`
    *     (safe: the atomic transaction either fully applied — consistent — or
    *     did not apply at all).
@@ -418,10 +459,32 @@ export class AdvisorProvisioning {
    * effect for the target after a JWT refresh (the claim is stored now).
    */
   async setAdvisorRole(input: SetAdvisorRoleInput): Promise<SetRoleResult> {
+    // Fail fast on a missing/blank reason and a malformed trusted actor
+    // BEFORE the RPC (defense in depth; the route schema enforces these, and
+    // the RPC remains authoritative). Both failures are generic and secret-
+    // free; the atomic RPC never runs, so nothing changes.
+    const reason = input.reason?.trim() ?? "";
+    if (!reason) {
+      return {
+        ok: false,
+        code: "role_update_failed",
+        message: ROLE_CHANGE_REASON_REQUIRED_MESSAGE,
+      };
+    }
+    if (!Number.isInteger(input.actorAdvisorId) || input.actorAdvisorId <= 0) {
+      return {
+        ok: false,
+        code: "role_update_failed",
+        message: ROLE_CHANGE_DISPLAY_FAILED_MESSAGE,
+      };
+    }
+
     const result = await this.safeRun(() =>
       this.admin.rpc("set_advisor_role", {
         p_advisor_id: input.advisorId,
         p_role: input.role,
+        p_actor_id: input.actorAdvisorId,
+        p_reason: reason,
       }),
     );
 
@@ -458,150 +521,6 @@ export class AdvisorProvisioning {
       authUserId: row.auth_user_id,
     };
   }
-  /**
-   * Explicit durable recovery for a claim/display mismatch left by a crashed
-   * or expired role-change operation: acquire a fresh per-advisor lease, align
-   * the protected display role to the AUTHORITATIVE Auth claim, and release.
-   * Returns whether the display changed and the resulting role. This is the
-   * trusted recovery for `reconciliation_required` / post-crash states; it
-   * never touches the Auth claim, `auth_user_id`, `is_active`, or history, and
-   * it skips (lock_busy) when another holder owns an ACTIVE lease.
-   */
-  async recoverAdvisorRoleChange(advisorId: number): Promise<RecoverAdvisorRoleChangeResult> {
-    const holder = randomUUID();
-
-    const acquired = await this.acquireAdvisorRoleLock(advisorId, holder, ROLE_CHANGE_LEASE_SECONDS);
-    if (!acquired.ok) {
-      return {
-        ok: false,
-        advisorId,
-        role: null,
-        changed: false,
-        code: "lock_failed",
-        message: ROLE_CHANGE_LOCK_FAILED_MESSAGE,
-      };
-    }
-    if (!acquired.value) {
-      return {
-        ok: false,
-        advisorId,
-        role: null,
-        changed: false,
-        code: "lock_busy",
-        message: ROLE_CHANGE_LOCK_BUSY_MESSAGE,
-      };
-    }
-
-    try {
-      // Read the current display BEFORE reconciliation (we own the lease).
-      const before = await this.safeRun(() =>
-        this.admin
-          .from("advisor")
-          .select("advisor_id, role")
-          .eq("advisor_id", advisorId)
-          .maybeSingle(),
-      );
-      if (!before.ok || before.value.error || before.value.data === null) {
-        return {
-          ok: false,
-          advisorId,
-          role: null,
-          changed: false,
-          code: "reconciliation_required",
-          message: ROLE_CHANGE_RECONCILIATION_REQUIRED_MESSAGE,
-        };
-      }
-
-      const reconciled = await this.reconcileAdvisorRoleDisplay(advisorId, holder);
-      if (!reconciled.ok || reconciled.role === null) {
-        return {
-          ok: false,
-          advisorId,
-          role: null,
-          changed: false,
-          code: "reconciliation_required",
-          message: ROLE_CHANGE_RECONCILIATION_REQUIRED_MESSAGE,
-        };
-      }
-
-      const beforeRole: AdvisorRole =
-        before.value.data.role === "Admin" ? "Admin" : "Advisor";
-      return {
-        ok: true,
-        advisorId,
-        role: reconciled.role,
-        changed: beforeRole !== reconciled.role,
-      };
-    } finally {
-      await this.releaseAdvisorRoleLock(advisorId, holder);
-    }
-  }
-
-  /**
-   * Acquire the per-advisor role-change lease via the database RPC. Returns
-   * `{ ok: false }` when the lock call itself fails (unknown state → fail
-   * without mutation); `{ ok: true, value: boolean }` carries whether this
-   * holder now owns the lease (false = a different holder owns an ACTIVE
-   * lease).
-   */
-  private async acquireAdvisorRoleLock(
-    advisorId: number,
-    holder: string,
-    leaseSeconds: number,
-  ): Promise<{ ok: boolean; value: boolean }> {
-    const result = await this.safeRun(() =>
-      this.admin.rpc("acquire_advisor_role_lock", {
-        p_advisor_id: advisorId,
-        p_holder: holder,
-        p_lease_seconds: leaseSeconds,
-      }),
-    );
-    if (!result.ok || result.value.error) {
-      return { ok: false, value: false };
-    }
-    return { ok: true, value: result.value.data === true };
-  }
-
-  /** Release the per-advisor lease by holder (best-effort; the lease bounds recovery). */
-  private async releaseAdvisorRoleLock(advisorId: number, holder: string): Promise<void> {
-    await this.safeRun(() =>
-      this.admin.rpc("release_advisor_role_lock", {
-        p_advisor_id: advisorId,
-        p_holder: holder,
-      }),
-    );
-  }
-
-  /**
-   * Lease-fenced display-role reconciliation: the database re-aligns
-   * `advisor.role` to the AUTHORITATIVE Auth claim (never consults the display
-   * for authorization) while THIS holder owns a non-expired lease. Returns
-   * `{ ok: false }` when the call fails (unverifiable); `role: null` when the
-   * holder no longer owns the lease.
-   */
-  private async reconcileAdvisorRoleDisplay(
-    advisorId: number,
-    holder: string,
-  ): Promise<{ ok: true; role: AdvisorRole | null } | { ok: false }> {
-    const result = await this.safeRun(() =>
-      this.admin.rpc("reconcile_advisor_role_display", {
-        p_advisor_id: advisorId,
-        p_holder: holder,
-      }),
-    );
-    if (!result.ok || result.value.error) {
-      return { ok: false };
-    }
-    const role = result.value.data;
-    if (role === null || role === undefined) {
-      return { ok: true, role: null };
-    }
-    if (role === "Admin" || role === "Advisor") {
-      return { ok: true, role };
-    }
-    return { ok: false };
-  }
-
   /**
    * Atomic, unbound-only bind. The UPDATE is filtered by
    * `auth_user_id IS NULL`, so a duplicate/retry can never re-bind an

@@ -177,6 +177,41 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
     expect(client.rpc).not.toHaveBeenCalled();
   });
 
+  it("returns 400 when the role/active-state reason is MISSING (required non-blank reason)", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-admin" });
+    getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
+
+    const response = await PATCH(patchRequest({ role: "Admin" }), CONTEXT);
+    expect(response.status).toBe(400);
+    expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when the reason is BLANK after trimming", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-admin" });
+    getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
+
+    const response = await PATCH(
+      patchRequest({ isActive: false, reason: "   \n  " }),
+      CONTEXT
+    );
+    expect(response.status).toBe(400);
+    expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("rejects a client-supplied actor id (actor identity is never a payload field)", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-admin" });
+    getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
+
+    const response = await PATCH(
+      patchRequest({ role: "Admin", reason: "Promotion", actorAdvisorId: 999 }),
+      CONTEXT
+    );
+    expect(response.status).toBe(400);
+    expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
+  });
+
   it("returns 400 when the payload accepts auth_user_id (no rebinding via the API)", async () => {
     const response = await PATCH(
       patchRequest({ role: "Admin", auth_user_id: "00000000-0000-4000-8000-000000000000" }),
@@ -188,7 +223,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
   it("returns 401 when there is no session", async () => {
     getSessionUser.mockResolvedValue(null);
 
-    const response = await PATCH(patchRequest({ role: "Admin" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
     expect(response.status).toBe(401);
   });
 
@@ -196,7 +231,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
     getSessionUser.mockResolvedValue({ id: "user-1" });
     getEffectiveAdmin.mockResolvedValue(null);
 
-    const response = await PATCH(patchRequest({ role: "Admin" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
     expect(response.status).toBe(403);
     expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
   });
@@ -205,7 +240,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
     getSessionUser.mockResolvedValue({ id: "user-admin" });
     getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
 
-    const response = await PATCH(patchRequest({ role: "Admin" }), {
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), {
       params: Promise.resolve({ id: "abc" }),
     } as never);
     expect(response.status).toBe(400);
@@ -216,7 +251,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
     getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
     query.maybeSingle.mockResolvedValue({ data: null, error: null });
 
-    const response = await PATCH(patchRequest({ role: "Admin" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
     expect(response.status).toBe(404);
     expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
   });
@@ -235,10 +270,16 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
       authUserId: "user-7",
     });
 
-    const response = await PATCH(patchRequest({ role: "Admin" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ advisor: target });
-    expect(provisioner.setAdvisorRole).toHaveBeenCalledWith({ advisorId: 7, role: "Admin" });
+    expect(provisioner.setAdvisorRole).toHaveBeenCalledWith({
+      advisorId: 7,
+      role: "Admin",
+      // The route injects the server-resolved effective-Admin actor id.
+      actorAdvisorId: ADMIN_ADVISOR.advisor_id,
+      reason: "Test reason",
+    });
     expect(client.rpc).not.toHaveBeenCalled();
   });
 
@@ -256,7 +297,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
       message: "Generic role failure.",
     });
 
-    const response = await PATCH(patchRequest({ role: "Admin" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
     expect(response.status).toBe(status);
     await expect(response.json()).resolves.toEqual({ error: "Generic role failure." });
   });
@@ -270,12 +311,13 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
       .mockResolvedValueOnce({ data: target, error: null });
     client.rpc.mockResolvedValue({ data: null, error: null });
 
-    const response = await PATCH(patchRequest({ isActive: true }), CONTEXT);
+    const response = await PATCH(patchRequest({ isActive: true, reason: "Test reason" }), CONTEXT);
     expect(response.status).toBe(200);
     expect(client.rpc).toHaveBeenCalledWith("lifecycle_transition", {
       p_entity: "advisor",
       p_action: "reactivate",
       p_entity_id: 7,
+      p_reason: "Test reason",
     });
     expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
   });
@@ -288,12 +330,13 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
       .mockResolvedValueOnce({ data: { ...ADMIN_ADVISOR, advisor_id: 7, is_active: false }, error: null });
     client.rpc.mockResolvedValue({ data: null, error: null });
 
-    const response = await PATCH(patchRequest({ isActive: false }), CONTEXT);
+    const response = await PATCH(patchRequest({ isActive: false, reason: "Test reason" }), CONTEXT);
     expect(response.status).toBe(200);
     expect(client.rpc).toHaveBeenCalledWith("lifecycle_transition", {
       p_entity: "advisor",
       p_action: "deactivate",
       p_entity_id: 7,
+      p_reason: "Test reason",
     });
   });
 
@@ -306,7 +349,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
       error: { code: "42501", message: "cannot deactivate own account" },
     });
 
-    const response = await PATCH(patchRequest({ isActive: false }), CONTEXT);
+    const response = await PATCH(patchRequest({ isActive: false, reason: "Test reason" }), CONTEXT);
     expect(response.status).toBe(403);
   });
 
@@ -319,7 +362,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
       error: { code: "P0002", message: "advisor does not exist" },
     });
 
-    const response = await PATCH(patchRequest({ isActive: false }), CONTEXT);
+    const response = await PATCH(patchRequest({ isActive: false, reason: "Test reason" }), CONTEXT);
     expect(response.status).toBe(409);
   });
 
@@ -327,7 +370,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
     getSessionUser.mockResolvedValue({ id: "user-admin" });
     getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
 
-    const response = await PATCH(patchRequest({ role: "Admin", isActive: true }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", isActive: true, reason: "Test reason" }), CONTEXT);
 
     expect(response.status).toBe(400);
     // Nothing was touched: no advisor read, no role change, no lifecycle RPC.
@@ -351,7 +394,7 @@ describe("PATCH /api/advisors/[id] — failure paths of the final re-read", () =
     });
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await PATCH(patchRequest({ role: "Admin" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
     expect(response.status).toBe(500);
     expect(consoleSpy).toHaveBeenCalled();
   });
@@ -369,7 +412,7 @@ describe("PATCH /api/advisors/[id] — failure paths of the final re-read", () =
       authUserId: "user-7",
     });
 
-    const response = await PATCH(patchRequest({ role: "Admin" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
     expect(response.status).toBe(404);
   });
 
@@ -380,7 +423,7 @@ describe("PATCH /api/advisors/[id] — failure paths of the final re-read", () =
     provisioner.setAdvisorRole.mockRejectedValue(new Error("role change exploded"));
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await PATCH(patchRequest({ role: "Admin" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
     expect(response.status).toBe(500);
     expect(consoleSpy).toHaveBeenCalled();
   });
@@ -391,7 +434,7 @@ describe("PATCH /api/advisors/[id] — failure paths of the final re-read", () =
     query.maybeSingle.mockResolvedValue({ data: null, error: { name: "PostgrestError", message: "boom" } });
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await PATCH(patchRequest({ role: "Admin" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
     expect(response.status).toBe(500);
     expect(consoleSpy).toHaveBeenCalled();
   });

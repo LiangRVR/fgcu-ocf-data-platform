@@ -208,13 +208,17 @@ test.describe("advisor permissions", () => {
       });
       expect(provision.status()).toBe(403);
 
+      // Both role and active-state mutations require a non-blank reason by
+      // schema (validated before authorization), so the payloads must be
+      // schema-valid to reach the admin gate — then the 403 below proves
+      // authorization is what rejects the non-admin session.
       const promotePeer = await page.request.patch(`/api/advisors/${activeRow.advisor_id}`, {
-        data: { role: "Admin" },
+        data: { role: "Admin", reason: "E2E denied peer role change" },
       });
       expect(promotePeer.status()).toBe(403);
 
       const deactivatePeer = await page.request.patch(`/api/advisors/${activeRow.advisor_id}`, {
-        data: { isActive: false },
+        data: { isActive: false, reason: "E2E denied peer deactivation" },
       });
       expect(deactivatePeer.status()).toBe(403);
     } finally {
@@ -266,6 +270,13 @@ test.describe("advisor permissions", () => {
       // Role management control: promote to Admin through the row's role select.
       await page.locator(`#role-${provisionedRow!.advisor_id}`).click();
       await page.getByRole("option", { name: "Admin", exact: true }).click();
+      const roleDialog = page.getByRole("alertdialog");
+      const roleConfirm = roleDialog.getByRole("button", { name: "Change to Admin" });
+      await expect(roleDialog.getByText("Reason *", { exact: false })).toBeVisible();
+      await expect(roleConfirm).toBeDisabled();
+      await roleDialog.locator("#advisor-role-reason").fill("E2E promotion reason");
+      await expect(roleConfirm).toBeEnabled();
+      await roleConfirm.click();
       // Wait on server state (the "Advisor updated" toast is shared between
       // promote/demote, so the DB is the deterministic signal).
       await expect
@@ -277,6 +288,12 @@ test.describe("advisor permissions", () => {
       // Demote back to Advisor; claim and display role must both follow.
       await page.locator(`#role-${provisionedRow!.advisor_id}`).click();
       await page.getByRole("option", { name: "Advisor", exact: true }).click();
+      const demotionDialog = page.getByRole("alertdialog");
+      const demotionConfirm = demotionDialog.getByRole("button", { name: "Change to Advisor" });
+      await expect(demotionConfirm).toBeDisabled();
+      await demotionDialog.locator("#advisor-role-reason").fill("E2E demotion reason");
+      await expect(demotionConfirm).toBeEnabled();
+      await demotionConfirm.click();
       await expect
         .poll(async () => (await advisorRowByEmail(email))?.role, { timeout: 10_000 })
         .toBe("Advisor");
@@ -313,6 +330,13 @@ test.describe("advisor permissions", () => {
       const card = advisorCard(page, name);
       await expect(card).toBeVisible();
       await card.getByRole("button", { name: "Deactivate" }).click();
+      const lifecycleDialog = page.getByRole("alertdialog");
+      const lifecycleConfirm = lifecycleDialog.getByRole("button", { name: "Deactivate" });
+      await expect(lifecycleDialog.getByText("Reason *", { exact: false })).toBeVisible();
+      await expect(lifecycleConfirm).toBeDisabled();
+      await lifecycleDialog.locator("#advisor-lifecycle-reason").fill("E2E deactivation reason");
+      await expect(lifecycleConfirm).toBeEnabled();
+      await lifecycleConfirm.click();
       // Wait on the lifecycle RPC result (the "Advisor updated" toast is
       // shared with every management action, so the DB is the deterministic
       // signal); then assert the card reflects the deactivated state.
@@ -396,6 +420,12 @@ test.describe("advisor permissions", () => {
       const card = advisorCard(page, name);
       await expect(card).toBeVisible();
       await card.getByRole("button", { name: "Deactivate" }).click();
+      const lifecycleDialog = page.getByRole("alertdialog");
+      const lifecycleConfirm = lifecycleDialog.getByRole("button", { name: "Deactivate" });
+      await expect(lifecycleConfirm).toBeDisabled();
+      await lifecycleDialog.locator("#advisor-lifecycle-reason").fill("E2E historical deactivation reason");
+      await expect(lifecycleConfirm).toBeEnabled();
+      await lifecycleConfirm.click();
       await expect
         .poll(async () => (await advisorRowByEmail(email))?.is_active, { timeout: 10_000 })
         .toBe(false);

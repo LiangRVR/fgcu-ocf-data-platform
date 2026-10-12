@@ -110,13 +110,28 @@ administration is the immutable Auth claim **plus** an active, pre-bound
 advisor (`public.is_effective_admin()`), and direct authenticated role writes
 are rejected (42501). Role changes run through the atomic `set_advisor_role`
 RPC (migration `20261007000001`), which updates the claim and the display in
-one transaction.
+one transaction; `set_advisor_role` is the **single role-changing writer**
+(migration `20261013000001` decommissioned the legacy lease/fencing
+direct-write display-role RPCs `fenced_write_advisor_role_display` and
+`reconcile_advisor_role_display`, which wrote only the mutable display
+projection with no human actor/reason).
 
 **Operating rule:** keep `advisor_name` UNIQUE, keep `advisor_id` as the integer
 business PK, and set `is_active = false` instead of deleting former staff.
 Advisor-row creation, peer UPDATE, and DELETE are denied to authenticated
 clients; advisor accounts are created and bound only through the trusted
-server-only provisioning path.
+server-only provisioning path — the service-role-only `public.provision_advisor`
+RPC (migration `20261013000001`), which validates the initiating effective Admin
+and writes the advisor row and its `created` audit event in one transaction.
+
+**Email is read-only in ordinary profile editing (change
+`advisor-admin-immutable-history`).** An advisor's login email is an Auth
+identity field. Ordinary profile PATCH accepts `advisor_name` only; any supplied
+`email` is rejected rather than updating one identity source in isolation, so
+`advisor.email` and the Supabase Auth email cannot silently diverge. Changing a
+login email requires a future explicit trusted account-management workflow that
+updates Auth and the advisor projection together. No such self-service flow
+exists in this handoff.
 
 ---
 
@@ -275,3 +290,132 @@ backfilled, and displays render unknown context as "date unknown" / "year
 unknown" rather than a guess. Once OCF decides, the field would be added in a
 future forward-only migration together with a matching amendment model — never
 by mutating existing rows.
+
+---
+
+## 10. Immutable audit trail is database-authored, append-only, and never backfilled
+
+**Current state (migrations `20261012000001` + `20261013000001`):** the database
+maintains an immutable audit trail in `public.audit_event`. The core writer
+covers the three current-state business tables (`student`, `fellowship`,
+`application`); the extension covers `advisor`. Every INSERT and every
+meaningful UPDATE writes exactly one database-authored event inside the source
+mutation's own transaction, through an internal `SECURITY DEFINER` trigger
+helper in the unexposed `private` schema.
+
+**Why this design:** the audit trail must be trustworthy evidence. If client
+code (or an RPC reachable by a client) could write audit rows, history could be
+forged or shaped by the very actors it is meant to hold accountable. If the
+event were written outside the business transaction, a committed mutation could
+silently lack its audit record. If the actor's display name were looked up at
+read time, a later rename would rewrite the meaning of a past event.
+
+**Enforcement:**
+
+- **Database-authored only.** No product role has
+  INSERT/UPDATE/DELETE/TRUNCATE on `audit_event` or USAGE on its sequence, and
+  there is no INSERT/UPDATE policy — so neither staff nor Admin can write or
+  alter an audit row. The only writer is the internal trigger, invoked by the
+  source mutation itself.
+- **Transaction-atomic.** The `AFTER INSERT/UPDATE` trigger writes the event in
+  the same transaction; an audit failure aborts the business write (fail
+  closed), so a committed mutation always has its audit record.
+- **Frozen snapshots.** `actor_name_snapshot` copies the advisor's name at event
+  time, and `old_values`/`new_values`/`changes` are explicit whitelisted
+  snapshots/diffs, so a later rename or schema change cannot rewrite a prior
+  event. The `entity_id` and `subject_*_id` context columns are stored without
+  foreign keys precisely so history is never cascaded or nulled.
+- **Least-privilege reads.** Active authenticated advisors get `SELECT` only,
+  gated by `public.is_active_advisor()`; the helper function and the `private`
+  schema are not reachable by any client role.
+- **No fabricated baseline.** `baseline_captured` and the `migration` origin are
+  reserved in the CHECK vocabularies but have **no writer** in this rollout; no
+  event is created for pre-existing rows. A baseline may only be captured by a
+  future, explicitly authorized operation.
+
+**Operating rule:** never add a client-callable writer for `audit_event`, never
+look up actor identity or values at read time, and never backfill history by
+guessing. If the audited entity/action vocabulary must grow, extend the CHECK
+constraint in a new forward-only migration and update the snapshot/diff
+whitelist — do not normalize or rewrite existing events.
+
+---
+
+## 11. Advisor/admin immutable history, attribution, required reasons, and the durable last-Admin invariant
+
+**Current state (change `advisor-admin-immutable-history`, migration
+`20261013000001`):** the immutable-audit core is extended to advisor and
+administrator operations without a second audit table or a second authorization
+system. `public.audit_event` remains the single protected history surface.
+
+**Advisor audit coverage and sensitive-field exclusion.** A dedicated internal
+trigger helper (`private.audit_advisor_change`, trigger
+`trg_audit_advisor_current_state` on `public.advisor`) writes exactly one event
+per advisor INSERT or meaningful UPDATE. Its snapshot/diff allowlist is exactly
+`advisor_name`, `email`, `role`, and `is_active`. Binding, authentication,
+credential, token, claim, service-role, login-time, and role-lock data
+(`auth_user_id`, `last_login_at`, timestamps, the legacy `advisor_role_lock`
+infrastructure, and any future column) can never be audited. A change limited to
+a non-allowlisted/technical field such as `last_login_at` writes no event.
+Classification: INSERT → `created`; an allowlisted profile edit → `updated`; an
+`is_active` transition → `deactivated`/`reactivated`; a role change →
+`role_changed`.
+
+**Human attribution across trusted operations.** Service-role operations lose
+the browser session, so the server passes its already-authorized effective-Admin
+advisor id to a service-only routine. The database revalidates that id as a
+current, ACTIVE, pre-bound advisor whose durable Auth metadata
+(`auth.users.raw_app_meta_data.ocf_admin`) is the strict JSON boolean `true` —
+the same durable authority the last-Admin invariant uses, never the mutable
+display role and never a possibly-stale JWT. The verified id and frozen name are
+stored in transaction-local context (`private.set_audit_actor`), which cannot
+leak across requests and is not client-addressable (no client EXECUTE grant).
+`public.provision_advisor` (service-role only) writes the advisor row and its
+single `created` event attributed to the initiating Admin in the same
+transaction, so normal provisioning is never attributed to `System`. Ordinary
+authenticated profile/lifecycle writes continue to derive the actor from
+`auth.uid()`.
+
+**Required reasons for role and lifecycle actions.** `set_advisor_role` now
+takes `(p_advisor_id, p_role, p_reason, p_actor_id)` and
+`lifecycle_transition` takes `(p_entity, p_action, p_entity_id, p_reason)`; both
+reject a NULL or blank reason (`22023`). The prior 2-arg and 3-arg signatures
+are explicitly dropped so the reason cannot be bypassed through the legacy
+arity. The one `role_changed` event carries the reason, the role diff, the
+verified actor, and the frozen name; student/fellowship lifecycle events receive
+the reason through the existing current-state helper without expanding their
+allowlist.
+
+**Atomic audit + state.** Every state change and its audit event commit in one
+transaction; an audit or validation failure rolls back both, so a committed
+meaningful mutation always has exactly one event. The atomic role change sets
+`auth.users.raw_app_meta_data.ocf_admin` and `public.advisor.role` in the same
+transaction as its single explicit `role_changed` event, and suppresses the
+generic advisor trigger for that one write so no duplicate event is produced.
+
+**Durable, concurrency-safe last-active-bound-Admin invariant.** Role demotion
+and advisor deactivation acquire the same fixed transaction-scoped advisory lock
+(`hashtextextended('ocf.advisor_admin_membership', 0)`) before reading
+membership, then count ACTIVE, bound advisors joined to
+`auth.users.raw_app_meta_data.ocf_admin = true` (strict JSON boolean; the display
+role is never the authority). A transition that would take a nonzero membership
+to zero is rejected (`42501`); competing final-Admin reductions serialize on the
+lock and cannot interleave. The check deliberately does not repair a
+pre-existing zero-Admin state — break-glass/DBA recovery stays outside normal
+product paths.
+
+**Legacy display-role writers decommissioned (migration `20261013000001`).**
+The earlier per-advisor lease/fencing display-role RPCs
+`fenced_write_advisor_role_display` and `reconcile_advisor_role_display` are
+dropped: each wrote only the mutable `advisor.role` display projection (never
+the durable Auth claim), carried no human actor or reason, and performed no
+last-active-Admin check, so a service-role caller could land a claim/display
+mismatch or remove the last effective Admin without a human-attributed audit
+event. `set_advisor_role` is therefore the **single role-changing writer**. The
+`advisor_role_lock` lease (`acquire_advisor_role_lock` /
+`release_advisor_role_lock`) and the read-only `verify_advisor_role_lock` /
+`fenced_read_advisor_role_display` primitives are retained as
+infrastructure-only, unaudited primitives that write no advisor state; the
+legacy `recoverAdvisorRoleChange` adapter recovery path no longer exists.
+
+**Email is read-only in ordinary profile editing** — see §3.

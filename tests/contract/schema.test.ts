@@ -1031,9 +1031,9 @@ describe("entity lifecycle archiving steady state (migration 20260930000005)", (
   it("creates lifecycle_transition as SECURITY DEFINER with empty search_path; technical sessions are rejected by the actor check", async () => {
     const rows = await query(
       `SELECT p.prosecdef, p.proconfig, p.proacl::text[] AS acl,
-              has_function_privilege('authenticated', 'public.lifecycle_transition(text, text, integer)', 'EXECUTE') AS auth_exec,
-              has_function_privilege('anon', 'public.lifecycle_transition(text, text, integer)', 'EXECUTE') AS anon_exec,
-              has_function_privilege('service_role', 'public.lifecycle_transition(text, text, integer)', 'EXECUTE') AS sr_exec
+              has_function_privilege('authenticated', 'public.lifecycle_transition(text, text, integer, text)', 'EXECUTE') AS auth_exec,
+              has_function_privilege('anon', 'public.lifecycle_transition(text, text, integer, text)', 'EXECUTE') AS anon_exec,
+              has_function_privilege('service_role', 'public.lifecycle_transition(text, text, integer, text)', 'EXECUTE') AS sr_exec
          FROM pg_proc p
          JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public'

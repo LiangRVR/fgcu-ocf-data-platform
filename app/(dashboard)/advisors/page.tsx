@@ -199,6 +199,9 @@ function AdvisorManagement() {
   const [busy, setBusy] = useState<Busy>(null);
   const [searchInput, setSearchInput] = useState(query.search);
   const [form, setForm] = useState({ email: "", displayName: "", role: "Advisor" as Role });
+  const [lifecycleTarget, setLifecycleTarget] = useState<{ id: number; isActive: boolean } | null>(null);
+  const [roleTarget, setRoleTarget] = useState<{ id: number; role: Role } | null>(null);
+  const [lifecycleReason, setLifecycleReason] = useState("");
 
   const navigate = useCallback(
     (patch: AdvisorQueryPatch) => {
@@ -306,7 +309,7 @@ function AdvisorManagement() {
     }
   }
 
-  async function updateAdvisor(id: number, update: { role?: Role; isActive?: boolean }) {
+  async function updateAdvisor(id: number, update: { role?: Role; isActive?: boolean; reason?: string }) {
     setBusy(id);
     try {
       const response = await fetch(`/api/advisors/${id}`, {
@@ -477,9 +480,65 @@ function AdvisorManagement() {
         onPageChange={(page) => navigate({ page })}
         onPageSizeChange={(pageSize) => navigate({ pageSize })}
         onRetry={() => void load()}
-        onRoleChange={(id, role) => void updateAdvisor(id, { role })}
-        onToggleActive={(id, isActive) => void updateAdvisor(id, { isActive })}
+        onRoleChange={(id, role) => {
+          setRoleTarget({ id, role });
+          setLifecycleReason("");
+        }}
+        onToggleActive={(id, isActive) => {
+          setLifecycleTarget({ id, isActive });
+          setLifecycleReason("");
+        }}
       />
+      {lifecycleTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4" role="presentation">
+          <section role="alertdialog" aria-modal="true" aria-labelledby="advisor-lifecycle-title" className="w-full max-w-md space-y-4 rounded-xl bg-white p-6 shadow-xl">
+            <div>
+              <h2 id="advisor-lifecycle-title" className="text-lg font-semibold text-slate-900">
+                {lifecycleTarget.isActive ? "Activate advisor" : "Deactivate advisor"}
+              </h2>
+              <p className="mt-1 text-sm text-slate-600">Confirm this advisor access change.</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="advisor-lifecycle-reason">Reason <span aria-hidden="true">*</span></Label>
+              <textarea id="advisor-lifecycle-reason" value={lifecycleReason} onChange={(event) => setLifecycleReason(event.target.value)} rows={3} required aria-required="true" className="flex min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" disabled={busy === lifecycleTarget.id} onClick={() => setLifecycleTarget(null)}>Cancel</Button>
+              <Button type="button" disabled={busy === lifecycleTarget.id || !lifecycleReason.trim()} onClick={async () => {
+                const target = lifecycleTarget;
+                const reason = lifecycleReason.trim();
+                if (!reason) return;
+                await updateAdvisor(target.id, { isActive: target.isActive, reason });
+                setLifecycleTarget(null);
+              }}>{busy === lifecycleTarget.id ? "Saving…" : lifecycleTarget.isActive ? "Activate" : "Deactivate"}</Button>
+            </div>
+          </section>
+        </div>
+      )}
+      {roleTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4" role="presentation">
+          <section role="alertdialog" aria-modal="true" aria-labelledby="advisor-role-title" className="w-full max-w-md space-y-4 rounded-xl bg-white p-6 shadow-xl">
+            <div>
+              <h2 id="advisor-role-title" className="text-lg font-semibold text-slate-900">Confirm role change</h2>
+              <p className="mt-1 text-sm text-slate-600">Changing an advisor role updates their access.</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="advisor-role-reason">Reason <span aria-hidden="true">*</span></Label>
+              <textarea id="advisor-role-reason" value={lifecycleReason} onChange={(event) => setLifecycleReason(event.target.value)} rows={3} required aria-required="true" className="flex min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" disabled={busy === roleTarget.id} onClick={() => setRoleTarget(null)}>Cancel</Button>
+              <Button type="button" disabled={busy === roleTarget.id || !lifecycleReason.trim()} onClick={async () => {
+                const target = roleTarget;
+                const reason = lifecycleReason.trim();
+                if (!reason) return;
+                await updateAdvisor(target.id, { role: target.role, reason });
+                setRoleTarget(null);
+              }}>{busy === roleTarget.id ? "Saving…" : `Change to ${roleTarget.role}`}</Button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

@@ -37,6 +37,22 @@ describe("profileUpdateSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts a name without any email field (email is read-only, R4)", () => {
+    const result = profileUpdateSchema.safeParse({ advisorName: "Ada Lovelace" });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.email).toBeUndefined();
+    }
+  });
+
+  it("accepts an empty email string (null-email handoff echo is tolerated)", () => {
+    const result = profileUpdateSchema.safeParse({
+      advisorName: "Ada Lovelace",
+      email: "",
+    });
+    expect(result.success).toBe(true);
+  });
+
   it("rejects a name shorter than 2 characters", () => {
     const result = profileUpdateSchema.safeParse({
       advisorName: "A",
@@ -56,7 +72,7 @@ describe("profileUpdateSchema", () => {
     expect(messages(result)).toContain("Name must be 120 characters or fewer");
   });
 
-  it("rejects an invalid email", () => {
+  it("rejects an invalid non-empty email (the route then refuses any change)", () => {
     const result = profileUpdateSchema.safeParse({
       advisorName: "Ada Lovelace",
       email: "not-an-email",
@@ -64,15 +80,6 @@ describe("profileUpdateSchema", () => {
     expect(result.success).toBe(false);
     expect(messages(result)).toContain("Please enter a valid email address");
     expect(paths(result)).toContainEqual(["email"]);
-  });
-
-  it("rejects an empty email", () => {
-    const result = profileUpdateSchema.safeParse({
-      advisorName: "Ada Lovelace",
-      email: "",
-    });
-    expect(result.success).toBe(false);
-    expect(messages(result)).toContain("Email is required");
   });
 });
 

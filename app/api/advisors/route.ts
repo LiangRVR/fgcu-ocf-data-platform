@@ -12,7 +12,10 @@
  * session with the boolean `app_metadata.ocf_admin` claim AND a current,
  * active, pre-bound advisor row. No service key ever reaches the client; all
  * privileged operations run through the server-only provisioning adapter or
- * the admin's own server session.
+ * the admin's own server session. Provisioning and role changes forward the
+ * SERVER-RESOLVED actor advisor id (`admin.advisor_id`) into the trusted
+ * database operations, which revalidate it and attribute the audit event to
+ * that administrator — the id is never read from the request payload.
  */
 import { NextResponse } from "next/server";
 import { getEffectiveAdmin, getSessionUser } from "@/lib/auth/session";
@@ -172,6 +175,10 @@ export async function POST(request: Request) {
       name: parsed.data.displayName,
       role: parsed.data.role,
       method: parsed.data.method,
+      // Server-resolved effective-Admin actor id (never a payload field): the
+      // trusted provisioning insert revalidates it and attributes the
+      // `created` audit event to this administrator, not to System.
+      actorAdvisorId: admin.advisor_id,
     });
 
     if (!result.ok) {

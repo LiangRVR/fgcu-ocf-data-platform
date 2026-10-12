@@ -7,7 +7,9 @@
  * The migration replaces destructive deletes with a secure, reversible
  * lifecycle model: nullable `student.archived_at`/`fellowship.archived_at`,
  * the trusted `is_ocf_admin()` JWT-claim predicate, the migration-owned
- * SECURITY DEFINER `lifecycle_transition(entity, action, entity_id)` RPC, and
+ * SECURITY DEFINER `lifecycle_transition` RPC (the reason-required
+ * `(entity, action, entity_id, reason)` form; migration 20261013000001 drops
+ * the legacy 3-arg overload so a reason can never be bypassed), and
  * invoker-security column-scoped triggers guarding the lifecycle fields.
  *
  * This suite proves, against the isolated Docker-local contract lane:
@@ -304,12 +306,17 @@ async function transition(
   client: SupabaseClient,
   entity: string,
   action: string,
-  entityId: number | null | undefined
+  entityId: number | null | undefined,
+  reason: string = `contract ${entity}.${action} ${Date.now().toString(36)}`
 ): Promise<{ data: LifecycleResult[] | null; error: { code?: string; message?: string } | null }> {
+  // The lifecycle RPC requires a valid non-blank human reason for every
+  // transition. Always supply one so the exercised behavior is the
+  // transition itself, never a missing-reason rejection.
   const { data, error } = await client.rpc("lifecycle_transition", {
     p_entity: entity,
     p_action: action,
     p_entity_id: entityId ?? null,
+    p_reason: reason,
   });
   return { data: data as LifecycleResult[] | null, error };
 }

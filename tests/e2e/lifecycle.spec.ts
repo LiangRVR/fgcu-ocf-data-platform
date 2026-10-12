@@ -58,6 +58,27 @@ async function signInAsActive(page: Page): Promise<void> {
   await expect(page).toHaveURL(/\/dashboard/);
 }
 
+/**
+ * Confirm a lifecycle action from the open AlertDialog. The change requires a
+ * non-blank `Reason *` for every lifecycle action (archive, restore,
+ * deactivate, reactivate); the confirm control stays disabled until one is
+ * supplied.
+ */
+async function confirmLifecycleReason(page: Page, actionName: string, reason: string): Promise<void> {
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toBeVisible();
+  const reasonBox = dialog.locator("#lifecycle-reason");
+  await expect(reasonBox, "the lifecycle reason control is shown").toBeVisible();
+  // R8: the action cannot be confirmed without a reason.
+  await expect(
+    dialog.getByRole("button", { name: actionName }),
+    "confirm is disabled until a reason is entered",
+  ).toBeDisabled();
+  await reasonBox.fill(reason);
+  await dialog.getByRole("button", { name: actionName }).click();
+  await expect(dialog).toBeHidden();
+}
+
 /** Service-role client for synthetic fixture setup/cleanup only. */
 function serviceClient(): SupabaseClient {
   const apiUrl = requireEnv("SUPABASE_URL");
@@ -204,6 +225,8 @@ test.describe("entity lifecycle", () => {
       await expect(dialog).toBeVisible();
       await expect(dialog.getByRole("heading", { name: "Archive Student" })).toBeVisible();
       await expect(dialog).toContainText(name);
+      // R8: the confirm control requires a reason; Cancel does not.
+      await expect(dialog.getByRole("button", { name: "Archive Student" })).toBeDisabled();
       await dialog.getByRole("button", { name: "Cancel" }).click();
       await expect(dialog).toBeHidden();
 
@@ -216,8 +239,7 @@ test.describe("entity lifecycle", () => {
         .locator("table tbody tr", { hasText: name })
         .getByRole("button", { name: "Archive Student" })
         .click();
-      await page.getByRole("alertdialog").getByRole("button", { name: "Archive Student" }).click();
-      await expect(page.getByRole("alertdialog")).toBeHidden();
+      await confirmLifecycleReason(page, "Archive Student", `E2E archive ${name}`);
       await page.goto("/students");
       await expect(page.locator("table tbody tr", { hasText: name })).toHaveCount(0);
 
@@ -231,8 +253,7 @@ test.describe("entity lifecycle", () => {
 
       // Restore from the archive view returns the student to the active roster.
       await archivedRow.getByRole("button", { name: "Restore Student" }).click();
-      await page.getByRole("alertdialog").getByRole("button", { name: "Restore Student" }).click();
-      await expect(page.getByRole("alertdialog")).toBeHidden();
+      await confirmLifecycleReason(page, "Restore Student", `E2E restore ${name}`);
       await page.goto("/students?view=archived");
       await expect(page.locator("table tbody tr", { hasText: name })).toHaveCount(0);
 
@@ -271,8 +292,7 @@ test.describe("entity lifecycle", () => {
         .locator("table tbody tr", { hasText: name })
         .getByRole("button", { name: "Archive Fellowship" })
         .click();
-      await page.getByRole("alertdialog").getByRole("button", { name: "Archive Fellowship" }).click();
-      await expect(page.getByRole("alertdialog")).toBeHidden();
+      await confirmLifecycleReason(page, "Archive Fellowship", `E2E archive ${name}`);
       await page.goto("/fellowships");
       await expect(page.locator("table tbody tr", { hasText: name })).toHaveCount(0);
 
@@ -285,8 +305,7 @@ test.describe("entity lifecycle", () => {
 
       // Restore from the archive view returns the fellowship to the active catalog.
       await archivedRow.getByRole("button", { name: "Restore Fellowship" }).click();
-      await page.getByRole("alertdialog").getByRole("button", { name: "Restore Fellowship" }).click();
-      await expect(page.getByRole("alertdialog")).toBeHidden();
+      await confirmLifecycleReason(page, "Restore Fellowship", `E2E restore ${name}`);
       await page.goto("/fellowships?view=archived");
       await expect(page.locator("table tbody tr", { hasText: name })).toHaveCount(0);
 
@@ -388,7 +407,7 @@ test.describe("entity lifecycle", () => {
       // (the page renders both the header action and the empty/section
       // affordance, so scope to the first visible occurrence).
       await page.getByRole("button", { name: "Restore Student" }).click();
-      await page.getByRole("alertdialog").getByRole("button", { name: "Restore Student" }).click();
+      await confirmLifecycleReason(page, "Restore Student", `E2E detail restore ${name}`);
       await expect(page.getByRole("link", { name: "Add Application" }).first()).toBeVisible();
       await expect(page.getByText(/Archived since/)).toHaveCount(0);
 

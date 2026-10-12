@@ -251,11 +251,11 @@ describe("getScholarshipHistory", () => {
     expect(result.records).toHaveLength(1); // page slice only
   });
 
-  it("applies search and fellowship filters to the page and the aggregate summary", async () => {
+  it("applies search and the validated list filter to the page and the aggregate summary", async () => {
     const client = makeClient(route({}));
     createServerClient.mockReturnValue(client);
 
-    await getScholarshipHistory({ search: "  Katherine ", fellowship_id: "7" });
+    await getScholarshipHistory({ search: "  Katherine ", filter: "7" });
 
     for (const query of listQueries(client)) {
       expect(query.filters).toContainEqual({
@@ -272,13 +272,61 @@ describe("getScholarshipHistory", () => {
     });
   });
 
-  it("accepts the legacy `filter` alias for the fellowship selector", async () => {
+  it("never treats the contextual `fellowship_id` add-default as a list filter", async () => {
+    const client = makeClient(route({}));
+    createServerClient.mockReturnValue(client);
+
+    // The Fellowship Detail link emits `?add=1&fellowship_id=<id>`; the list
+    // must stay unfiltered while the add form receives the contextual default.
+    await getScholarshipHistory({ fellowship_id: "7" });
+
+    expect(pageQuery(client)?.filters.some((f) => f.column === "fellowship_id")).toBe(false);
+    expect(operationalQuery(client)?.rpcArgs).toEqual({
+      p_search: null,
+      p_fellowship_id: null,
+    });
+  });
+
+  it("drops malformed list-filter values instead of forwarding them", async () => {
+    const client = makeClient(route({}));
+    createServerClient.mockReturnValue(client);
+
+    await getScholarshipHistory({ filter: "abc" });
+
+    expect(pageQuery(client)?.filters.some((f) => f.column === "fellowship_id")).toBe(false);
+    expect(operationalQuery(client)?.rpcArgs).toEqual({
+      p_search: null,
+      p_fellowship_id: null,
+    });
+  });
+
+  it("treats `filter=all` as no list filter", async () => {
     const client = makeClient(route({}));
     createServerClient.mockReturnValue(client);
 
     await getScholarshipHistory({ filter: "all" });
 
     expect(pageQuery(client)?.filters.some((f) => f.column === "fellowship_id")).toBe(false);
+  });
+
+  it("escapes the PostgREST `*` wildcard in the literal search pattern", async () => {
+    const client = makeClient(route({}));
+    createServerClient.mockReturnValue(client);
+
+    await getScholarshipHistory({ search: "A*B" });
+
+    for (const query of listQueries(client)) {
+      expect(query.filters).toContainEqual({
+        column: "student_name",
+        op: "ilike",
+        value: "%A\\*B%",
+      });
+    }
+    // The aggregate receives the SAME escaped pattern.
+    expect(operationalQuery(client)?.rpcArgs).toEqual({
+      p_search: "%A\\*B%",
+      p_fellowship_id: null,
+    });
   });
 
   it("returns an empty result with the error surfaced when the page query fails", async () => {
@@ -334,12 +382,22 @@ describe("getScholarshipHistory", () => {
 });
 
 describe("normalizeFellowshipFilter", () => {
-  it("normalizes valid ids and ignores `all`/invalid/missing values", () => {
-    expect(normalizeFellowshipFilter({ fellowship_id: "7" })).toBe("7");
+  it("reads only the dedicated `filter` list key and validates it", () => {
     expect(normalizeFellowshipFilter({ filter: "9" })).toBe("9");
+    expect(normalizeFellowshipFilter({ filter: "  7 " })).toBe("7");
+    expect(normalizeFellowshipFilter({ filter: "all" })).toBeNull();
+    expect(normalizeFellowshipFilter({ filter: "abc" })).toBeNull();
+    expect(normalizeFellowshipFilter({ filter: "-3" })).toBeNull();
+    expect(normalizeFellowshipFilter({ filter: "2.5" })).toBeNull();
+    expect(normalizeFellowshipFilter({ filter: "0" })).toBeNull();
+    expect(normalizeFellowshipFilter({})).toBeNull();
+  });
+
+  it("ignores the contextual `fellowship_id` add-default entirely", () => {
+    // Regression: `?add=1&fellowship_id=<id>` must not filter the list.
+    expect(normalizeFellowshipFilter({ fellowship_id: "7" })).toBeNull();
     expect(normalizeFellowshipFilter({ fellowship_id: "all" })).toBeNull();
     expect(normalizeFellowshipFilter({ fellowship_id: "abc" })).toBeNull();
-    expect(normalizeFellowshipFilter({})).toBeNull();
   });
 });
 

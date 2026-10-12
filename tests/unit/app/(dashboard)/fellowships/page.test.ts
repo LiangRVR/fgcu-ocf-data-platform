@@ -88,4 +88,16 @@ describe("FellowshipsPage canonicalization", () => {
 
     expect(markup).toContain("Fellowships");
   });
+
+  it("escapes the PostgREST `*` wildcard in the fellowship-name search", async () => {
+    const { client, calls } = makeClient({ data: [], error: null, count: 0 });
+    createServerClient.mockReturnValue(client);
+
+    await renderToStaticMarkup(
+      await FellowshipsPage({ searchParams: Promise.resolve({ search: "OCF*" }) })
+    );
+
+    const ilike = calls.find((c) => c.op === "ilike");
+    expect(ilike?.args).toEqual(["fellowship_name", "%OCF\\*%"]);
+  });
 });

@@ -40,7 +40,7 @@ export default async function FellowshipsPage({ searchParams }: { searchParams: 
   if (safeView === "archived") query = query.not("archived_at", "is", null);
   else query = query.is("archived_at", null);
   if (safeView === "no-applicants") query = query.eq("has_applications", false);
-  if (search) query = query.ilike("fellowship_name", `%${search.replace(/[\%_]/g, "\\$&")}%`);
+  if (search) query = query.ilike("fellowship_name", `%${search.replace(/[%_*]/g, "\\$&")}%`);
   query = query.order(safeSort, { ascending: true }).order("fellowship_id", { ascending: true });
   const { data, count, error } = await query.range(pagination.offset, pagination.to);
   if (error) throw new Error("Unable to load fellowships");
