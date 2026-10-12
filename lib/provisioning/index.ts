@@ -24,7 +24,6 @@ export type {
   ProvisionResult,
   ProvisionRoleSuccess,
   ProvisionSuccess,
-  RecoverAdvisorRoleChangeResult,
   RoleAwareProvisionInput,
   SetAdvisorRoleInput,
   SetRoleFailure,
