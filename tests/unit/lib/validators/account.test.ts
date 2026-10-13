@@ -19,12 +19,14 @@ describe("profileUpdateSchema", () => {
     const result = profileUpdateSchema.safeParse({
       advisorName: "  Ada  Lovelace ",
       email: "  ADA@EXAMPLE.com ",
+      expectedVersion: 3,
     });
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data).toEqual({
         advisorName: "Ada  Lovelace",
         email: "ada@example.com",
+        expectedVersion: 3,
       });
     }
   });
@@ -33,15 +35,20 @@ describe("profileUpdateSchema", () => {
     const result = profileUpdateSchema.safeParse({
       advisorName: "Ab",
       email: "ada@example.com",
+      expectedVersion: 3,
     });
     expect(result.success).toBe(true);
   });
 
   it("accepts a name without any email field (email is read-only, R4)", () => {
-    const result = profileUpdateSchema.safeParse({ advisorName: "Ada Lovelace" });
+    const result = profileUpdateSchema.safeParse({
+      advisorName: "Ada Lovelace",
+      expectedVersion: 3,
+    });
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.email).toBeUndefined();
+      expect(result.data.expectedVersion).toBe(3);
     }
   });
 
@@ -49,6 +56,7 @@ describe("profileUpdateSchema", () => {
     const result = profileUpdateSchema.safeParse({
       advisorName: "Ada Lovelace",
       email: "",
+      expectedVersion: 3,
     });
     expect(result.success).toBe(true);
   });
@@ -57,6 +65,7 @@ describe("profileUpdateSchema", () => {
     const result = profileUpdateSchema.safeParse({
       advisorName: "A",
       email: "ada@example.com",
+      expectedVersion: 3,
     });
     expect(result.success).toBe(false);
     expect(messages(result)).toContain("Name must be at least 2 characters");
@@ -67,6 +76,7 @@ describe("profileUpdateSchema", () => {
     const result = profileUpdateSchema.safeParse({
       advisorName: "A".repeat(121),
       email: "ada@example.com",
+      expectedVersion: 3,
     });
     expect(result.success).toBe(false);
     expect(messages(result)).toContain("Name must be 120 characters or fewer");
@@ -76,10 +86,56 @@ describe("profileUpdateSchema", () => {
     const result = profileUpdateSchema.safeParse({
       advisorName: "Ada Lovelace",
       email: "not-an-email",
+      expectedVersion: 3,
     });
     expect(result.success).toBe(false);
     expect(messages(result)).toContain("Please enter a valid email address");
     expect(paths(result)).toContainEqual(["email"]);
+  });
+
+  // ── expectedVersion contract (optimistic concurrency) ────────────────────
+
+  it("rejects a MISSING expectedVersion (stale writes must fail closed)", () => {
+    const result = profileUpdateSchema.safeParse({ advisorName: "Ada Lovelace" });
+    expect(result.success).toBe(false);
+    // Zod reports the missing required field at the expectedVersion path.
+    expect(paths(result)).toContainEqual(["expectedVersion"]);
+  });
+
+  it("rejects a ZERO expectedVersion", () => {
+    const result = profileUpdateSchema.safeParse({
+      advisorName: "Ada Lovelace",
+      expectedVersion: 0,
+    });
+    expect(result.success).toBe(false);
+    expect(messages(result)).toContain("A valid row version is required.");
+  });
+
+  it("rejects a NEGATIVE expectedVersion", () => {
+    const result = profileUpdateSchema.safeParse({
+      advisorName: "Ada Lovelace",
+      expectedVersion: -1,
+    });
+    expect(result.success).toBe(false);
+    expect(messages(result)).toContain("A valid row version is required.");
+  });
+
+  it("rejects a NON-INTEGER expectedVersion", () => {
+    const result = profileUpdateSchema.safeParse({
+      advisorName: "Ada Lovelace",
+      expectedVersion: 2.5,
+    });
+    expect(result.success).toBe(false);
+    expect(messages(result)).toContain("A valid row version is required.");
+  });
+
+  it("rejects a NON-NUMBER expectedVersion", () => {
+    const result = profileUpdateSchema.safeParse({
+      advisorName: "Ada Lovelace",
+      expectedVersion: "3",
+    });
+    expect(result.success).toBe(false);
+    expect(paths(result)).toContainEqual(["expectedVersion"]);
   });
 });
 

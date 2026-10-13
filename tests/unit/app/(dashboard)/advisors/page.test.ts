@@ -51,6 +51,7 @@ function renderPanel(overrides: Record<string, unknown> = {}) {
       onRetry: vi.fn(),
       onRoleChange: vi.fn(),
       onToggleActive: vi.fn(),
+      onEditName: vi.fn(),
       ...overrides,
     })
   );
@@ -91,6 +92,7 @@ describe("AdvisorAccountsPanel", () => {
       meta: { page: 1, pageSize: 25, totalCount: 40, totalPages: 2 },
     });
     expect(markup).toContain("Jordan Lee");
+    expect(markup).toContain("Edit name");
     expect(markup).toContain("Showing 1–25 of 40");
     expect(markup).toContain("Page 1 of 2");
     expect(markup).toContain('aria-label="Pagination"');

@@ -3,6 +3,36 @@
 Open design questions settled before adding create/edit forms.
 These choices are intentional — not oversights.
 
+## Core invariant: no history change without an immutable audit record
+
+One durable rule sits behind every decision below: **at the database boundary,
+no normal application access may change business history without an atomic,
+immutable, database-authored record.** A meaningful change to a current-state
+business entity must run through that entity's expected-`row_version` database
+writer and commit exactly one immutable `public.audit_event` in the same
+transaction (an audit failure aborts the write); `audit_event` cannot be directly
+changed, deleted, or truncated by a normal product role; corrections to
+historical records use append-only amendments. The schema classifies entities
+into three categories:
+
+- **Current-state / audited** — `student`, `advisor`, `fellowship`,
+  `application`: mutable only through the versioned database writer, each
+  meaningful mutation audited (`created`, `updated`, `archived`, `restored`,
+  `deactivated`, `reactivated`, `role_changed`).
+- **Immutable base** — `advising_meeting`, `fellowship_thursday`,
+  `scholarship_history`: `SELECT`/`INSERT` only for normal roles, audited
+  `created`.
+- **Append-only amendment** — `advising_meeting_amendment`,
+  `fellowship_thursday_amendment`, `scholarship_history_amendment`: appended
+  corrections, audited `correction_added` (a Scholarship `Void` is `voided`);
+  effective-value views apply them without rewriting base facts.
+
+The product `Admin` role is **not** a PostgreSQL superuser; effective
+administration is the immutable Auth `app_metadata.ocf_admin = true` claim plus
+an active, pre-bound advisor. A `service_role`/DBA session is a separate
+technical trust boundary, never a normal application path. Decisions 10–15
+record how each part is enforced.
+
 ---
 
 ## 1. `student.email` — Not Unique (current decision: defer)
@@ -328,6 +358,10 @@ read time, a later rename would rewrite the meaning of a past event.
 - **Least-privilege reads.** Active authenticated advisors get `SELECT` only,
   gated by `public.is_active_advisor()`; the helper function and the `private`
   schema are not reachable by any client role.
+- **Privacy.** Payloads are allowlisted business data only; credentials,
+  passwords, tokens/JWTs, raw Auth metadata/IDs, technical identifiers, the
+  advisor role-lock state, and narrative free-text (advising `notes`, amendment
+  `reason`/`details`) are structurally excluded, not redacted at read time.
 - **No fabricated baseline.** `baseline_captured` and the `migration` origin are
   reserved in the CHECK vocabularies but have **no writer** in this rollout; no
   event is created for pre-existing rows. A baseline may only be captured by a
@@ -419,3 +453,279 @@ infrastructure-only, unaudited primitives that write no advisor state; the
 legacy `recoverAdvisorRoleChange` adapter recovery path no longer exists.
 
 **Email is read-only in ordinary profile editing** — see §3.
+
+---
+
+## 12. Effective-Admin peer display-name update is an authenticated RPC
+
+**Current state (change `advisor-admin-immutable-history`, migration
+`20261014000001`):** the only supported path for an effective Admin to change
+another advisor's permitted profile data used to be a private SQL session
+(technical trusted-actor context), never a production server operation.
+Migration `20261014000001` closes that review gap with the authenticated-only,
+hardened SECURITY DEFINER RPC
+`public.update_advisor_profile_name(p_advisor_id, p_advisor_name)`
+(`SET search_path = ''`, fully qualified references, EXECUTE revoked from
+`PUBLIC`/`anon`/`service_role` and granted to `authenticated` only — the same
+ACL posture as `lifecycle_transition`). It is consumed by
+`PATCH /api/advisors/[id]` with a sole `advisorName` field through the admin's
+own cookie-backed session client.
+
+**Design decisions, in contract form:**
+
+- **Actor derived from `auth.uid()` only.** The RPC signature has no actor
+  parameter. The acting administrator is the authenticated JWT subject; a
+  technical/service-role or DBA session has no `auth.uid()` and is rejected
+  fail-closed (`42501`). The actor is validated with the existing
+  `public.is_effective_admin()` boundary (immutable Auth app_metadata
+  `ocf_admin = true` **AND** a current ACTIVE pre-bound advisor row) — never the
+  mutable `advisor.role` display column and never a possibly-stale JWT.
+  `auth.uid()` also resolves the actor's own advisor row so the self-write
+  rejection below is exact.
+- **No email change, ever.** The RPC signature has no email parameter and the
+  existing column-scoped invoker-security email guard
+  (`trg_advisor_email_direct_write`, migration `20261013000001`) still rejects
+  every non-trusted email change, so this API path cannot create or weaken an
+  Auth-identity divergence route. `email` remains read-only (§3, §11).
+- **No reason required or recorded.** A peer display-name edit is an ordinary
+  profile edit (R8), not a privileged role/lifecycle action, so no
+  `ocf.audit_reason` context is set and lifecycle/role reason semantics are
+  unaffected.
+- **Peer only.** The RPC refuses the caller's own row (`22023`): ordinary
+  self-service name updates stay on the existing self-service profile path, so
+  this Admin path never becomes a second self-write route and the profile PATCH
+  keeps emitting the self-attributed event for one's own row.
+- **Attributed audit, exactly once.** The write is a single
+  `UPDATE public.advisor SET advisor_name = btrim(p_advisor_name)` in the
+  authenticated session. The existing advisor audit trigger
+  (`trg_audit_advisor_current_state` / `private.audit_advisor_change`) therefore
+  emits exactly ONE `advisor/updated` event inside the same transaction,
+  attributed to the acting Admin (`origin = 'user'`, frozen
+  `actor_name_snapshot`); a no-op restatement diffs internally to an empty
+  changes set and records no event (existing no-op suppression preserved). An
+  audit failure still aborts the write; the transaction remains atomic with a
+  duplicate-name `unique_violation` rollback.
+- **Still a single constrained column.** Only `advisor_name` is written; the
+  target row must exist (`P0002`), the name must be non-blank, trimmed, ≤120
+  characters, and not collide with another advisor's UNIQUE name (`23505`).
+  `role`, `is_active`, `auth_user_id`, and `email` are unreachable.
+
+**Why this design:** peer profile maintenance is an administrative duty that
+must be attributable and must not bypass the existing immutable-audit boundary.
+Routing it as an authenticated RPC that derives the actor from `auth.uid()`
+keeps the event human-attributed without introducing a client-reachable actor
+parameter, keeps `email` read-only, and lets the RPC use the existing effective-
+Admin predicate and audit trigger unchanged. No second authorization system,
+no second audit table, and no new Audit vocabulary were needed.
+
+**Operating rule:** do not add an email parameter or any actor parameter to this
+RPC, do not grant EXECUTE beyond `authenticated`, and do not broaden the write
+beyond `advisor.advisor_name`. Peer display-name edits never require a reason;
+do not make the reason required here, because that would conflate ordinary
+profile edits with the privileged role/lifecycle actions of §11.
+
+---
+
+## 13. Protected current-state writers: database-enforced optimistic concurrency
+
+**Current state (change `historical-audit-timeline`, migration
+`20261015000001`):** normal client updates of `student`, `fellowship`,
+`application`, and `advisor` previously used direct PostgREST `UPDATE` calls
+(last-write-wins). Direct authenticated `UPDATE` is now revoked at the grant and
+RLS policy layers, and every normal mutation must pass the caller's expected
+`row_version` at the database mutation boundary.
+
+**Design decisions, in contract form:**
+
+- **Technical metadata is database-owned and semantically guarded.** Each of the
+  four current-state tables carries `row_version integer NOT NULL DEFAULT 1` and
+  `updated_at timestamptz NOT NULL DEFAULT now()`. A `BEFORE UPDATE` trigger
+  (`private.set_current_state_row_version`, SECURITY INVOKER, empty
+  `search_path`) compares a strict per-entity allowlist of meaningful
+  business/lifecycle fields; only a real change increments `row_version`
+  exactly once and stamps `updated_at`. No-op and technical-only restatements
+  preserve both values, and the columns are deliberately absent from every audit
+  snapshot/diff allowlist so their technical maintenance never creates a visible
+  `audit_event` change.
+- **The comparison happens in database code, never in a browser predicate.** A
+  client `.eq('row_version', expected)` filter was rejected because direct
+  authenticated PostgREST `UPDATE` would still bypass it; the expected-version
+  comparison lives inside each SECURITY DEFINER writer after the target row is
+  locked.
+- **Narrow entity-specific RPCs, not a generic dispatcher.** `update_student_profile`,
+  `update_fellowship`, `update_application`, `update_my_advisor_profile`, and the
+  versioned `lifecycle_transition` / `set_advisor_role` /
+  `update_advisor_profile_name` signatures mirror the existing workflows and
+  write only permitted explicit fields; a generic JSON mutation dispatcher was
+  rejected because it conflates distinct student/advisor/lifecycle/role authority
+  rules and makes strict field validation harder to audit.
+- **Stale outcome is a fixed non-sensitive `PT409`.** A mismatched expected
+  version raises `RAISE SQLSTATE 'PT409'` with a fixed message before any state
+  change: no business mutation, no version increment, no timestamp update, and no
+  audit event. Malformed expected versions use `22023`; authorization (`42501`)
+  and missing-row (`P0002`) outcomes remain distinguishable from a conflict.
+- **Forward-only boundary.** Old un-versioned signatures
+  (`lifecycle_transition(text,text,integer,text)`,
+  `set_advisor_role(integer,text,text,integer)`,
+  `update_advisor_profile_name(integer,text)`) are dropped in the same forward
+  migration so a caller can never bypass the precondition through legacy arity.
+  Provisioning stays insert-only (`provision_advisor`, no expected version) and
+  returns the created row's version 1.
+
+**Operating rule:** never restore a direct authenticated `UPDATE` grant or
+policy on the four current-state tables, and never add an un-versioned writer
+signature. A stale rejection must never be auto-retried by the client; the
+expected-version precondition is the database's optimistic-lock, not a
+usability nicety.
+
+## 14. Historical base/amendment audit and the activity read model
+
+**Current state (change `historical-audit-timeline`, migration
+`20261015000002`):** `audit_event` covered only current-state inserts/updates.
+Historical base/amendment records (`advising_meeting`, `fellowship_thursday`,
+`scholarship_history`, and their `*_amendment` tables) produced no timeline
+events, and there was no safe aggregate read surface for a global activity log.
+
+**Design decisions, in contract form:**
+
+- **Exactly one classified event per historical insert.** `private.audit_historical_record()`
+  (SECURITY DEFINER, empty `search_path`, no client EXECUTE) is attached
+  `AFTER INSERT` to the three base tables (`created`) and their amendment tables
+  (`correction_added`; a Scholarship `Void` is `voided`). Event timestamps and
+  the actor use the same trusted provenance logic and transaction atomicity as
+  the current-state helpers, so a base row without its event is impossible.
+- **Structural-only payloads.** Each snapshot is an explicit whitelist of
+  identifiers/structural context; narrative `notes`, amendment `reason`/
+  `details`, credentials, Auth claims, tokens, and passwords are structurally
+  excluded. No historical row is backfilled (no fabricated provenance).
+- **The activity read model is an explicit-column `security_invoker` view.** A
+  direct `audit_event` read was rejected for activity lists because the invoker
+  view centralizes safe label projection and avoids per-row lookups; the base
+  table remains the immutable source of truth. `public.audit_activity` exposes
+  only audit-safe event fields plus `student_name`/`fellowship_name` labels
+  resolved by correlated scalar subqueries, uses `actor_name_snapshot` rather
+  than current advisor joins, exposes no Auth-binding column, is `SELECT`-only
+  for `authenticated`, and stays governed by the underlying active-advisor audit
+  RLS. No speculative index is added: the existing chronology indexes (all with
+  the `audit_id DESC` tie-breaker) serve the documented entity/actor/subject/
+  global access paths.
+
+**Operating rule:** never widen an audit payload with narrative amendment
+content, never let the activity view multiply audit rows, and never add a
+materialized/service-role activity path.
+
+---
+
+## 15. Concurrency metadata is database-authored on insert, and expected versions must be positive
+
+**Current state (migration `20261016000001`, closing two review findings on
+`historical-audit-timeline`):** migration `20261015000001` added
+`row_version integer NOT NULL DEFAULT 1` and `updated_at timestamptz NOT NULL
+DEFAULT now()` to `student`, `fellowship`, `application`, and `advisor`, but a
+DEFAULT only applies when a column is **omitted** — a caller (an authenticated
+INSERT, or a trusted/service-role INSERT) could supply an arbitrary
+`row_version` (e.g. `999`) or a forged `updated_at` and poison the
+optimistic-concurrency metadata. Separately, the protected writers required
+`p_expected_version` to be non-NULL but accepted `0` and negative values, which
+could only ever surface as a stale `PT409` rather than a malformed-input
+`22023`.
+
+**Design decisions, in contract form:**
+
+- **Insert metadata is database-authored, always.** The existing
+  `private.set_current_state_row_version` trigger helper was extended with an
+  INSERT branch (`row_version := 1`, `updated_at := now()`) and its four
+  triggers were re-created as `BEFORE INSERT OR UPDATE`. Any supplied value is
+  overridden, so a created row always starts at version 1 with a
+  database-authored timestamp; the UPDATE branch (strict meaningful-field
+  allowlist, exactly one increment per semantic change, no-op/technical
+  restatement preserves both) is unchanged. The columns remain absent from every
+  audit snapshot/diff allowlist.
+- **A positive expected version is the single validator.** A new internal
+  helper `private.assert_expected_version(p_expected_version)` raises `22023`
+  unless the value is a positive integer (`>= 1`), and it is called **first** by
+  every protected existing-row writer — the four entity writers, both
+  advisor-profile paths, the trusted role change, and the lifecycle transition.
+  NULL, `0`, and negative inputs are malformed input, distinct from a genuine
+  stale conflict (`PT409`).
+- **No behavioral drift.** The seven public function bodies are otherwise
+  identical to migration `20261015000001` (the helper call is the only added
+  statement), so authorization (`42501`), missing-row (`P0002`), stale (`PT409`),
+  last-Admin, lock, audit, and atomicity behavior are all preserved.
+
+**Operating rule:** never let a client (or a technical/service-role caller)
+supply the concurrency metadata on insert; the version/timestamp are always the
+database's. Never relax `assert_expected_version` — a non-positive expected
+version is malformed input, and a stale one must never be auto-retried.
+
+---
+
+## 16. Advising history also revokes TRUNCATE, not just row-level UPDATE/DELETE
+
+**Current state (migration `20261017000001`):** the append-only hardening of
+`advising_meeting` and `advising_meeting_amendment` (migrations
+`20260930000003`/`20260930000004`) denied row-level `UPDATE`/`DELETE` but never
+revoked `TRUNCATE`. `TRUNCATE` is a destructive SQL path the local Supabase
+default privileges grant to `authenticated` (and `anon`) for newly created
+objects, so a normal PostgREST-role session could have wiped the entire advising
+history even though row-level changes were denied. The sibling historical tables
+(`fellowship_thursday`, `scholarship_history`, and their amendment tables)
+already closed this exact gap in `20261008000001`.
+
+**Design decision:** `20261017000001_revoke_advising_meeting_truncate.sql`
+applies the same closure to the two advising tables —
+`REVOKE TRUNCATE ON public.advising_meeting, public.advising_meeting_amendment
+FROM PUBLIC, anon, authenticated`. `PUBLIC`/`anon` are revoked defensively in
+case a default/legacy grant exists; the trusted technical `service_role` grant
+is left untouched. The change is privilege-only and forward-only: no append-only
+`SELECT`/`INSERT` behavior, RLS policy, audit trigger, business row, or audit row
+is changed, and there is no down migration.
+
+**Operating rule:** an append-only table is not append-only until `TRUNCATE` is
+also revoked — treat the row-level `UPDATE`/`DELETE` denial and the `TRUNCATE`
+revoke as one closure, and apply both to every future append-only table.
+
+---
+
+## 17. An application re-link locks the prospective parent against a concurrent archive
+
+**Current state (migration `20261018000001`):** `public.update_application` (the
+expected-version writer introduced by `20261015000001` and carried forward by
+`20261016000001`) validated an actual parent re-link against the ACTIVE-parent
+boundary by reading `student.archived_at` / `fellowship.archived_at` with a
+plain, unlocked `NOT EXISTS` check. Because the definer path bypasses the
+invoker-security `guard_application_archive_parents` trigger, nothing serialized
+that read against a concurrent `public.lifecycle_transition` archive. A
+concurrent archive could therefore commit AFTER the active-parent check but
+BEFORE the application `UPDATE` committed, leaving the application re-linked to
+a parent that was archived at commit time (a time-of-check/time-of-use race).
+
+**Design decision:** `20261018000001_lock_application_relink_parents.sql`
+replaces the function so that, **only when an actual re-link changes the parent
+reference**, the prospective parent row is locked `FOR UPDATE` and its
+`archived_at` is read under that lock BEFORE the check. A concurrent
+`lifecycle_transition` archive takes `FOR UPDATE` on the same parent row, so the
+two paths now serialize: the archive either commits first (the re-link observes
+the archived parent and is rejected `42501`) or waits until the re-link commits
+(at which point the parent was still active). The re-link acquires its locks in
+one fixed order — application row first, then prospective student, then
+prospective fellowship. The only other parent writer, `lifecycle_transition`,
+locks exactly one parent row and never touches the application row, and no code
+path locks a parent before an application; there is therefore no lock cycle, so
+the added parent locks cannot deadlock.
+
+**Preserved unchanged:** only the parent-validation block changes. The
+expected-version precondition (`private.assert_expected_version`, `22023`),
+authorization (`public.is_active_advisor`, `42501`), the stale conflict
+(`PT409`), the no-relink historical re-save that keeps an archived parent
+reference, the missing-row outcome (`P0002`), the permitted writable fields, the
+return projection, the revoked direct authenticated UPDATE boundary, and every
+ACL/RLS policy are identical to `20261016000001`. The migration is forward-only
+and additive/replacement: no existing business row, policy, grant, or audit row
+is edited, deleted, or reset, and there is no down migration.
+
+**Operating rule:** when a definer-path writer enforces a parent-child boundary
+that an invoker-security trigger normally protects, it must take the same row
+lock the parent writer takes (here `FOR UPDATE` on the parent) so the check and
+the write are serialized against a concurrent parent mutation — do not rely on
+an unlocked re-read to close the race.

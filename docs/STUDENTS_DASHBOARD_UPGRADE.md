@@ -96,8 +96,12 @@ in Place)" were subsequently implemented and are no longer placeholders:
   scholarship history in parallel.
 
 Still open / out of scope (see the "What Is Not Done Yet" table in
-`docs/quickstart.md`): server-side pagination (currently client-side), bulk
-actions (multi-select), and advanced filters such as date/GPA ranges.
+`docs/quickstart.md`): bulk actions (multi-select) and advanced filters such as
+date/GPA ranges. Server-side pagination — originally listed here as
+client-side-only — has since been implemented: the students list now uses
+URL-backed, server-side pagination (`page`/`pageSize` limited to `25`/`50`/`100`,
+backed by the read-only `student_list` view), as do the other operational lists
+and the `/activity` audit view. Reports remain intentionally full-dataset.
 
 ## Technical Implementation (historical)
 

@@ -323,6 +323,7 @@ test.describe("advisor permissions", () => {
     const name = uniqueName("E2E Deactivated Advisor");
     const email = uniqueEmail("e2e-deactivated");
     const seeded = await seedActiveAdvisor(name, email);
+    const service = serviceClient();
     try {
       await signInAsActive(page);
       await page.goto("/advisors");
@@ -363,6 +364,55 @@ test.describe("advisor permissions", () => {
 
       await page.goto("/dashboard");
       await expect(page).toHaveURL(/\/login/);
+    } finally {
+      await cleanupAdvisor(seeded.advisorId, seeded.authUserId);
+    }
+  });
+
+  test("an Admin edits a peer advisor's display name without changing their email", async ({ page }) => {
+    const name = uniqueName("E2E Name Edit Advisor");
+    const updatedName = uniqueName("E2E Updated Advisor");
+    const email = uniqueEmail("e2e-name-edit");
+    const seeded = await seedActiveAdvisor(name, email);
+    const service = serviceClient();
+    try {
+      await signInAsActive(page);
+      await page.goto("/advisors");
+
+      const card = advisorCard(page, name);
+      await expect(card).toBeVisible();
+      await card.getByRole("button", { name: "Edit name" }).click();
+
+      const dialog = page.getByRole("dialog", { name: "Edit advisor name" });
+      const nameInput = dialog.locator("#advisor-display-name");
+      await expect(nameInput).toHaveValue(name);
+      await expect(dialog.getByLabel("Email address")).toHaveCount(0);
+      await nameInput.fill(updatedName);
+      await dialog.getByRole("button", { name: "Save name" }).click();
+
+      await expect
+        .poll(async () => {
+          const { data, error } = await service
+            .from("advisor")
+            .select("advisor_id, advisor_name, email")
+            .eq("advisor_id", seeded.advisorId)
+            .maybeSingle();
+          if (error) throw new Error(`read edited advisor: ${error.message}`);
+          return data;
+        }, { timeout: 10_000 })
+        .toMatchObject({ advisor_name: updatedName, email });
+
+      await page.reload();
+      await expect(advisorCard(page, updatedName)).toBeVisible();
+      await expect(advisorCard(page, updatedName)).toContainText(email);
+      const { data: row, error } = await service
+        .from("advisor")
+        .select("advisor_id, advisor_name, email")
+        .eq("advisor_id", seeded.advisorId)
+        .maybeSingle();
+      if (error) throw new Error(`read edited advisor: ${error.message}`);
+      expect(row?.advisor_name).toBe(updatedName);
+      expect(row?.email).toBe(email);
     } finally {
       await cleanupAdvisor(seeded.advisorId, seeded.authUserId);
     }

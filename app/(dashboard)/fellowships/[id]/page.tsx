@@ -17,6 +17,8 @@ import {
 import Link from "next/link";
 import { createServerClient } from "@/lib/supabase/server";
 import type { Database } from "@/types/database";
+import { EntityHistory } from "@/components/history/audit-history";
+import { ENTITY_HISTORY_PAGE_SIZE, getEntityHistoryPage } from "@/lib/audit/read";
 
 type Fellowship = Database["public"]["Tables"]["fellowship"]["Row"];
 type Application = Database["public"]["Tables"]["application"]["Row"] & {
@@ -132,10 +134,11 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
     notFound();
   }
 
-  const [fellowship, applications, scholarshipHistory] = await Promise.all([
+  const [fellowship, applications, scholarshipHistory, entityHistory] = await Promise.all([
     getFellowship(fellowshipId),
     getApplications(fellowshipId),
     getScholarshipHistory(fellowshipId),
+    getEntityHistoryPage("fellowship", fellowshipId),
   ]);
 
   if (!fellowship) {
@@ -218,6 +221,7 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
       />
 
       <div className="space-y-6">
+        <EntityHistory items={entityHistory.items} hasMore={entityHistory.hasMore} nextCursor={entityHistory.nextCursor} highWatermark={entityHistory.highWatermark} pageSize={ENTITY_HISTORY_PAGE_SIZE} query={{ kind: "entity", entityType: "fellowship", entityId: fellowshipId }} title="Fellowship change history" />
         <DetailSection
           title="Applications"
           description="Current application activity attached to this fellowship."

@@ -447,11 +447,13 @@ describe("compensation lease re-securing (latest P1 compensation race)", () => {
 describe("atomic advisor role change (migration 20261007000001, final P1)", () => {
   let atomicAdvisorId: number;
   let atomicAuthUserId: string;
-  // The final set_advisor_role signature (migration 20261013000001) is
-  // (p_advisor_id, p_role, p_reason, p_actor_id): the service-supplied actor
-  // must be a CURRENT, ACTIVE, BOUND advisor whose durable Auth metadata
-  // carries the strict boolean ocf_admin=true claim. These atomicity tests
-  // therefore drive the RPC through a seeded durable effective-Admin actor.
+  // The final set_advisor_role signature (migration 20261015000001 replaces
+  // the 20261013000001 arity) is (p_advisor_id, p_role, p_reason, p_actor_id,
+  // p_expected_version): the service-supplied actor must be a CURRENT, ACTIVE,
+  // BOUND advisor whose durable Auth metadata carries the strict boolean
+  // ocf_admin=true claim, and the target row's CURRENT `row_version` must be
+  // supplied. These atomicity tests therefore drive the RPC through a seeded
+  // durable effective-Admin actor and the persisted-state version oracle.
   let roleActorId: number;
   let roleActorAuthUserId: string;
 
@@ -528,13 +530,27 @@ describe("atomic advisor role change (migration 20261007000001, final P1)", () =
     await cleanupRoleActor();
   }, 30_000);
 
-  const setRole = (advisorId: number, role: string) =>
-    service.rpc("set_advisor_role", {
+  const setRole = async (advisorId: number, role: string, expectedVersion?: number) => {
+    // The atomic role RPC requires the target's CURRENT row_version
+    // (migration 20261015000001). Read it from the persisted state unless the
+    // caller pinned one (e.g. the missing-advisor case, where the RPC's own
+    // P0002 check decides the outcome).
+    let version = expectedVersion;
+    if (version === undefined) {
+      const { rows } = await pool.query<{ row_version: number }>(
+        "SELECT row_version FROM public.advisor WHERE advisor_id = $1",
+        [advisorId]
+      );
+      version = rows[0]?.row_version ?? 1;
+    }
+    return service.rpc("set_advisor_role", {
       p_advisor_id: advisorId,
       p_role: role,
       p_reason: "contract atomic role change",
       p_actor_id: roleActorId,
+      p_expected_version: version,
     });
+  };
 
   const advisorRow = async (advisorId: number) => {
     const { data, error } = await service
@@ -614,22 +630,46 @@ describe("atomic advisor role change (migration 20261007000001, final P1)", () =
     }
   });
 
-  it("CONCURRENCY/ATOMICITY: concurrent role changes are serialized by the transaction and the final claim/display NEVER diverge", async () => {
+  it("CONCURRENCY/ATOMICITY: serialized expected-version role changes keep the claim/display consistent and reject a genuinely stale version", async () => {
     await seedAtomicAdvisor(false);
     try {
+      // Both writers race from the SAME base version 1. The row lock and the
+      // shared membership advisory lock serialize the two atomic transactions.
+      // Only the meaningful promotion (Advisor -> Admin) advances the version;
+      // the "demote to Advisor" is a NO-OP restatement (the row is already
+      // Advisor), which the version trigger deliberately does NOT bump — so it
+      // may either commit as a no-op first or observe the committed version and
+      // be rejected PT409. Either way the claim/display can never diverge.
       const [promote, demote] = await Promise.all([
-        setRole(atomicAdvisorId, "Admin"),
-        setRole(atomicAdvisorId, "Advisor"),
+        setRole(atomicAdvisorId, "Admin", 1),
+        setRole(atomicAdvisorId, "Advisor", 1),
       ]);
-      // Both atomic transactions succeed (the last writer wins).
-      expect(promote.error, "concurrent promote").toBeNull();
-      expect(demote.error, "concurrent demote").toBeNull();
 
-      // FINAL CONSISTENCY: display ⇔ claim always match, whichever won.
+      expect(promote.error, "the meaningful promotion from base version 1 commits").toBeNull();
+      if (demote.error) {
+        expect(demote.error.code, "a rejected no-op competitor uses the stale-version code").toBe(
+          "PT409"
+        );
+      }
+
+      // FINAL CONSISTENCY: display ⇔ claim always match, and exactly one
+      // meaningful change landed (the no-op restatement never bumps the version).
       const role = (await advisorRow(atomicAdvisorId))?.role;
       const claim = await authClaim(atomicAuthUserId);
-      expect(role, "final display role").toBe(claim === true ? "Admin" : "Advisor");
-      expect(claim, "final claim").toBe(role === "Admin");
+      expect(role, "final display role").toBe("Admin");
+      expect(claim, "final claim").toBe(true);
+      expect(role, "display ⇔ claim never diverge").toBe(claim === true ? "Admin" : "Advisor");
+      const { rows } = await pool.query<{ row_version: number }>(
+        "SELECT row_version FROM public.advisor WHERE advisor_id = $1",
+        [atomicAdvisorId]
+      );
+      expect(rows[0].row_version, "the meaningful write advanced the version once").toBe(2);
+
+      // A genuinely stale write pinned to the superseded version 1 is rejected
+      // with the expected-version conflict code.
+      const stale = await setRole(atomicAdvisorId, "Advisor", 1);
+      expect(stale.error, "a stale expected version is rejected").not.toBeNull();
+      expect(stale.error?.code, "stale rejection code").toBe("PT409");
     } finally {
       await cleanupAtomicAdvisor();
     }
@@ -639,9 +679,9 @@ describe("atomic advisor role change (migration 20261007000001, final P1)", () =
     const rows = await pool.query<{ prosecdef: boolean; proconfig: string[] | null; sr: boolean; anon: boolean; auth: boolean }>(
       `SELECT p.prosecdef,
               p.proconfig,
-              has_function_privilege('service_role', 'public.set_advisor_role(integer, text, text, integer)', 'EXECUTE') AS sr,
-              has_function_privilege('anon', 'public.set_advisor_role(integer, text, text, integer)', 'EXECUTE') AS anon,
-              has_function_privilege('authenticated', 'public.set_advisor_role(integer, text, text, integer)', 'EXECUTE') AS auth
+              has_function_privilege('service_role', 'public.set_advisor_role(integer, text, text, integer, integer)', 'EXECUTE') AS sr,
+              has_function_privilege('anon', 'public.set_advisor_role(integer, text, text, integer, integer)', 'EXECUTE') AS anon,
+              has_function_privilege('authenticated', 'public.set_advisor_role(integer, text, text, integer, integer)', 'EXECUTE') AS auth
          FROM pg_proc p
          JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public'
@@ -659,6 +699,7 @@ describe("atomic advisor role change (migration 20261007000001, final P1)", () =
       p_role: "Admin",
       p_reason: "anon attempt",
       p_actor_id: roleActorId ?? 1,
+      p_expected_version: 1,
     });
     expect(anonCall.data).toBeNull();
     expect(anonCall.error, "anon must be denied set_advisor_role").not.toBeNull();

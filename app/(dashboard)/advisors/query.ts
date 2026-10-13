@@ -62,6 +62,8 @@ export interface AdvisorListRow {
   is_active: boolean;
   last_login_at: string | null;
   created_at: string;
+  /** Loaded optimistic-concurrency version carried into expected-version writers. */
+  row_version: number;
 }
 
 /** Shared paginated metadata returned by the advisor list API. */

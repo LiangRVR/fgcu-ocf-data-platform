@@ -151,6 +151,139 @@ export interface RetryableTeardownOptions<T> {
  */
 export function completeRetryableTeardown<T>(options?: RetryableTeardownOptions<T>): Promise<void>;
 
+/** Options carrying an alternate repository project id (tests only). */
+export interface ProjectIdOptions {
+  repositoryProjectId?: string;
+}
+
+/** The repository's own Supabase project id — never a lane cleanup target. */
+export const REPOSITORY_PROJECT_ID: string;
+
+/** Docker label the Supabase CLI stamps on every resource it owns. */
+export const SUPABASE_PROJECT_LABEL: string;
+
+/**
+ * Validate a lane-generated project id before it scopes any cleanup command.
+ * Rejects empty/whitespace ids, the repository's own project id, and the CLI
+ * default project id. Returns the id for chaining; throws otherwise.
+ */
+export function assertSafeProjectId(projectId: unknown, options?: ProjectIdOptions): string;
+
+/** Non-throwing variant of `assertSafeProjectId`. */
+export function isSafeProjectId(projectId: unknown, options?: ProjectIdOptions): boolean;
+
+/** Scoped `docker … ls` args for one resource kind (label filter only). */
+export function dockerScopedListArgs(
+  kind: "container" | "network" | "volume",
+  projectId: string
+): string[];
+
+/** Scoped `docker … rm` args for the exact ids a scoped list returned. */
+export function dockerScopedRemoveArgs(
+  kind: "container" | "network" | "volume",
+  ids: string[]
+): string[];
+
+/** Split `docker … ls -q` output into trimmed, non-empty ids. */
+export function parseDockerIds(stdout: string | null | undefined): string[];
+
+/** Result shape a `run` function must return to the scoped reaper. */
+export interface DockerRunResult {
+  status: number | null;
+  stdout: string;
+  stderr?: string;
+}
+
+/** Options for `reapScopedDockerResources`. */
+export interface ReapScopedDockerOptions {
+  projectId: string;
+  run: (cmd: string, args: string[]) => DockerRunResult | Promise<DockerRunResult>;
+  repositoryProjectId?: string;
+  log?: (...args: unknown[]) => void;
+  warn?: (...args: unknown[]) => void;
+}
+
+/** Result of a label-scoped Docker fallback reap. */
+export interface DockerReapResult {
+  confirmed: boolean;
+  removed: { containers: number; networks: number; volumes: number };
+  errors: string[];
+}
+
+/**
+ * Label-scoped Docker fallback reaper: lists and removes ONLY resources
+ * carrying the lane's own `com.supabase.cli.project` value.
+ */
+export function reapScopedDockerResources(
+  options: ReapScopedDockerOptions
+): Promise<DockerReapResult>;
+
+/** Project-specific recovery text for a lane whose cleanup was unconfirmed. */
+export function laneRecoverySummary(
+  projectId: string,
+  lane?: { workdir?: string }
+): string;
+
+/** Result of a scoped lane teardown. */
+export interface ScopedTeardownResult {
+  confirmed: boolean;
+  projectId?: string;
+  workdir?: string;
+  command?: string;
+  skipped?: boolean;
+}
+
+/** Lane shape required by `createScopedLaneTeardown`. */
+export interface ScopedLane {
+  projectId: string;
+  workdir: string;
+  cleanup: () => void;
+}
+
+/** Options for `createScopedLaneTeardown`. */
+export interface CreateScopedLaneTeardownOptions<T = ScopedLane> {
+  /**
+   * Attempts the normal workdir-scoped stop (`supabase stop --no-backup
+   * --yes`, scoped to the isolated workdir). May return `true`, a
+   * `{ confirmed }` result, `undefined`/`false` (unconfirmed), or a promise of
+   * any of these.
+   */
+  stop?: (lane: T) => unknown;
+  /**
+   * Injected label-scoped Docker reaper; invoked only when the normal stop
+   * cannot be confirmed.
+   */
+  reap?: (lane: T) => unknown;
+  removeWorkdir?: (lane: T) => void;
+  recovery?: (projectId: string, lane: T) => string;
+  log?: (...args: unknown[]) => void;
+  warn?: (...args: unknown[]) => void;
+}
+
+/**
+ * Build a memoized, idempotent, scoped lane teardown: normal project-scoped
+ * stop first, the label-scoped Docker reaper only when that stop cannot be
+ * confirmed, workdir removal only after confirmed cleanup.
+ */
+export function createScopedLaneTeardown<T = ScopedLane>(
+  options?: CreateScopedLaneTeardownOptions<T>
+): (lane: T | null | undefined) => Promise<ScopedTeardownResult>;
+
+/** Options for `installSignalTeardown`. */
+export interface InstallSignalTeardownOptions {
+  terminate?: () => unknown;
+  teardown?: () => unknown;
+  signals?: NodeJS.Signals[];
+  exitCode?: number;
+  error?: (...args: unknown[]) => void;
+}
+
+/**
+ * Install one-time signal handlers that terminate lane children and then await
+ * the shared teardown promise before exiting. Returns a disposer.
+ */
+export function installSignalTeardown(options?: InstallSignalTeardownOptions): () => void;
+
 /** Graceful-kill options for `killChildGracefully`. */
 export interface KillOptions {
   signal?: NodeJS.Signals;
@@ -251,13 +384,18 @@ export interface StopIsolatedResult {
   output: string;
   /** True when the hard deadline fired and the stop child had to be terminated. */
   timedOut: boolean;
+  /** True only for a clean, non-timed-out exit. */
+  confirmed: boolean;
 }
 
 /**
- * Stop the isolated instance (no backup) as a TRACKED async child with the
+ * Stop the isolated instance (no backup) as a TRACKED async child, scoped to
+ * the isolated project THROUGH the `--workdir` argument (whose config.toml
+ * carries the lane's unique project id), with `--no-backup --yes`, the
  * sanitized child env, a hard deadline (`timeoutMs`, default 120s) with
  * SIGTERM→SIGKILL escalation (`killGraceMs`, default 3s), captured output, and
- * redacted return.
+ * redacted return. No `--project-id` flag is passed (the CLI's `stop` does not
+ * accept one); scope comes from the isolated workdir config.
  */
 export function stopIsolatedSupabase(
   supabaseBin: string,

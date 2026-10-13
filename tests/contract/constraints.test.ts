@@ -428,11 +428,14 @@ describe("application stage/flag invariant + year bounds (production CHECKs, mig
     // Pins that enforcement is by CHECK, not by a user trigger. The non-
     // internal user triggers on `application` are exactly:
     //   - `trg_application_archive_parents` (BEFORE, migration 20260930000007)
-    //     — the lifecycle archive-parent guard; and
+    //     — the lifecycle archive-parent guard;
+    //   - `trg_application_current_state_version` (BEFORE, migration
+    //     20261015000001) — the technical row-version/updated_at stamp (never
+    //     an invariant); and
     //   - `trg_audit_application_current_state` (AFTER, migration
     //     20261012000001) — the additive immutable-audit recorder.
-    // Neither trigger implements the stage/flag invariant or the year bound:
-    // that enforcement remains a production CHECK constraint.
+    // None of these triggers implements the stage/flag invariant or the year
+    // bound: that enforcement remains a production CHECK constraint.
     const triggers = await pool.query(
       `SELECT t.tgname, f.proname
          FROM pg_trigger t
@@ -446,14 +449,19 @@ describe("application stage/flag invariant + year bounds (production CHECKs, mig
     );
     expect(triggers.rows.map((row) => row.tgname as string)).toEqual([
       "trg_application_archive_parents",
+      "trg_application_current_state_version",
       "trg_audit_application_current_state",
     ]);
     // The lifecycle archive-parent guard is preserved and unchanged.
     expect(String(triggers.rows[0].proname)).toBe("guard_application_archive_parents");
+    // The version trigger is the technical optimistic-concurrency stamp from
+    // migration 20261015000001; it neither enforces nor implements the
+    // invariant (it only touches row_version/updated_at).
+    expect(String(triggers.rows[1].proname)).toBe("set_current_state_row_version");
     // The audit trigger is the additive AFTER INSERT/UPDATE recorder from
     // migration 20261012000001; it observes the committed row and never
     // enforces the invariant.
-    expect(String(triggers.rows[1].proname)).toBe("audit_current_state_change");
+    expect(String(triggers.rows[2].proname)).toBe("audit_current_state_change");
   });
 
   it("rejects an out-of-range application_year and accepts NULL for legacy rows", async () => {

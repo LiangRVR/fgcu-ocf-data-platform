@@ -10,18 +10,19 @@
 
 ### ✅ Database Schema
 
-The repository tracks a **forward-only chain of twenty-two migrations** ending with
-`supabase/migrations/20261009000001_scholarship_void_serialization.sql`. The chain
+The repository tracks a **forward-only chain of thirty-two migrations** ending with
+`supabase/migrations/20261018000001_lock_application_relink_parents.sql`. The chain
 is applied in order to a fresh, disposable **local Supabase (Docker)** instance
 via `supabase start` + `supabase db reset`; it must **not** be pushed to the
 hosted production database (see the production freeze below).
 
-- **11-table schema** with advisor-backed auth, applied via the Git migration chain:
+- **12-table schema** with advisor-backed auth, applied via the Git migration chain:
   - Core tables: `student`, `advisor`, `fellowship`, `application`,
     `advising_meeting`, `fellowship_thursday`, `scholarship_history`
   - Append-only corrections: `advising_meeting_amendment`,
     `fellowship_thursday_amendment`, `scholarship_history_amendment`
   - Server-only role-change lock: `advisor_role_lock` (never exposed to clients)
+  - Immutable audit trail: `audit_event` (read-only to active advisors)
   - Auth chain (migrations 1–6): `20260305000000_initial_schema.sql` →
     `20260305000001_allow_anon_read.sql` → `20260305000002_allow_anon_write.sql`
     (temporary bootstrap) → `20260317000003_advisor_auth.sql` →
@@ -45,8 +46,21 @@ hosted production database (see the production freeze below).
     `20261005000001_advisor_role_fenced_read.sql` →
     `20261006000001_advisor_role_display_reconcile.sql` →
     `20261007000001_atomic_advisor_role_change.sql`
-  - Historical integrity remediation: `20261008000001_historical_integrity_remediation.sql`
+  - Historical integrity remediation:
+    `20261008000001_historical_integrity_remediation.sql`
   - Scholarship terminal-Void serialization: `20261009000001_scholarship_void_serialization.sql`
+  - Read-only list views and the scholarship summary:
+    `20261010000001_security_invoker_list_views.sql` →
+    `20261011000001_scholarship_history_operational_summary.sql`
+  - Immutable audit + activity: `20261012000001_immutable_audit.sql` →
+    `20261013000001_advisor_admin_immutable_history.sql` →
+    `20261014000001_advisor_admin_profile_name.sql`
+  - Optimistic concurrency + historical audit:
+    `20261015000001_protected_current_state_writers.sql` →
+    `20261015000002_historical_audit_activity.sql` →
+    `20261016000001_insert_metadata_and_positive_version.sql` →
+    `20261017000001_revoke_advising_meeting_truncate.sql` →
+    `20261018000001_lock_application_relink_parents.sql` (final)
 - Documented in `docs/schema-reference.md` and `supabase/SCHEMA.md` (which
   contains the full ordered migration table)
 
@@ -61,15 +75,38 @@ hosted production database (see the production freeze below).
 > `advisor_id` on new authenticated advising meetings while preserving legacy
 > `NULL` rows.
 >
-> `20261009000001_scholarship_void_serialization.sql` is the current final
-> migration. It closes the terminal-`Void` race left by the bare `EXISTS` check
-> in the preceding migration: the amendment trigger now takes an exclusive lock
-> on the parent `scholarship_history` row before the guard, so concurrent
-> amendments for one award serialize (the loser re-evaluates against the
-> committed state and is rejected), and a partial unique index enforces at most
-> one `Void` per award as a declarative backstop. Amendment tables stay
-> append-only; the trigger, RLS, and effective-value views are otherwise
-> unchanged.
+> `20261015000001_protected_current_state_writers.sql` adds database-enforced
+> optimistic concurrency: `row_version`/`updated_at` on the four current-state
+> tables and expected-version writer RPCs replacing direct authenticated
+> `UPDATE` (a stale version raises `PT409` before any change), and
+> `20261015000002_historical_audit_activity.sql` audits historical
+> base/amendment inserts and adds the `audit_activity` read view.
+>
+> `20261016000001_insert_metadata_and_positive_version.sql` closes two review
+> findings: `row_version` (`= 1`) and `updated_at` (`= now()`) are now
+> database-authored on **every** INSERT (overriding any supplied value), and
+> every expected version must be a positive integer (`>= 1`; NULL/0/negative
+> raise `22023`). No existing business row, policy, grant, or audit row is
+> edited, deleted, or reset.
+>
+> `20261017000001_revoke_advising_meeting_truncate.sql` revokes `TRUNCATE` on
+> `advising_meeting` and `advising_meeting_amendment` from
+> `PUBLIC`/`anon`/`authenticated` (the trusted `service_role` grant is
+> untouched), closing the destructive SQL bypass on the append-only advising
+> history. It is privilege-only: no `SELECT`/`INSERT` behavior, RLS policy, audit
+> trigger, business row, or audit row changes, and there is no down migration.
+>
+> `20261018000001_lock_application_relink_parents.sql` is the current final
+> migration. It serializes an `update_application` parent re-link against a
+> concurrent `lifecycle_transition` parent archive by locking the prospective
+> parent row `FOR UPDATE` and reading `archived_at` under that lock before the
+> ACTIVE-parent check (only when an actual re-link changes the parent reference),
+> so a re-link can never commit pointing at a parent archived at commit time. The
+> lock order is fixed (application, then prospective student, then prospective
+> fellowship) and deadlock-free. Only the parent-validation block changes;
+> authorization, the `PT409` stale precondition, the `P0002` missing-row
+> outcome, the permitted fields, the return projection, and every ACL/RLS policy
+> are unchanged, and there is no down migration.
 
 ### ✅ Live Data and Auth Features
 
@@ -170,7 +207,7 @@ recovery links); it does not come from `supabase status -o env`.
 > the hosted **production** database while provenance is unresolved —
 > production is the physical-schema authority, its migration ledger records only
 > `20260924065221_advisor_self_activation_lockdown`, and the deployed schema
-> materially differs from this repository chain (which tracks twenty-two
+> materially differs from this repository chain (which tracks thirty-two
 > migrations). `supabase db push`, historical replay, and migration-history
 > repair against production are prohibited until a separately approved
 > reconciliation exists. See
@@ -180,7 +217,7 @@ recovery links); it does not come from `supabase status -o env`.
 
 #### Method A: Local Supabase (Docker) — recommended for development and testing
 
-This is the supported local workflow; it applies the **full twenty-two-migration
+This is the supported local workflow; it applies the **full thirty-two-migration
 chain** to a disposable Docker instance and requires no hosted project:
 
 ```bash
@@ -198,7 +235,7 @@ pnpm exec supabase stop --no-backup
 ```
 
 `supabase db reset` applies every file in `supabase/migrations/` in order,
-ending with `20261009000001_scholarship_void_serialization.sql`. Migrations 2 and 3
+ending with `20261018000001_lock_application_relink_parents.sql`. Migrations 2 and 3
 (`allow_anon_read`, `allow_anon_write`) are temporary bootstrap steps only;
 after the full chain, authenticated active advisors are the intended steady
 state.
@@ -236,7 +273,17 @@ the repository's own `supabase/` project is never started, reset, or stopped.
    `20261006000001_advisor_role_display_reconcile.sql`,
    `20261007000001_atomic_advisor_role_change.sql`,
    `20261008000001_historical_integrity_remediation.sql`,
-   and `20261009000001_scholarship_void_serialization.sql` (last).
+   `20261009000001_scholarship_void_serialization.sql`,
+   `20261010000001_security_invoker_list_views.sql`,
+   `20261011000001_scholarship_history_operational_summary.sql`,
+   `20261012000001_immutable_audit.sql`,
+   `20261013000001_advisor_admin_immutable_history.sql`,
+   `20261014000001_advisor_admin_profile_name.sql`,
+   `20261015000001_protected_current_state_writers.sql`,
+   `20261015000002_historical_audit_activity.sql`,
+   `20261016000001_insert_metadata_and_positive_version.sql`,
+   `20261017000001_revoke_advising_meeting_truncate.sql`,
+   and `20261018000001_lock_application_relink_parents.sql` (last).
 10. **Only after the full chain is applied (steps 2–9):** provision each advisor
     before first sign-in via the server-only provisioning module
     (`lib/provisioning/*`): it invites/creates the auth account and
@@ -266,8 +313,8 @@ the repository's own `supabase/` project is never started, reset, or stopped.
 > ❗ Do **not** use `npx supabase link` + `npx supabase db push` against the
 > hosted **production** project: the production migration ledger records only
 > `20260924065221_advisor_self_activation_lockdown`, while this repository
-> tracks twenty-two migrations ending with
-> `20261009000001_scholarship_void_serialization.sql`, and the deployed schema
+> tracks thirty-two migrations ending with
+> `20261018000001_lock_application_relink_parents.sql`, and the deployed schema
 > differs materially. Generic `db push`, historical replay, and
 > migration-history repair against production are prohibited until a separately
 > approved reconciliation exists.
@@ -344,7 +391,7 @@ Before relying on the app day to day:
   are effective-Admin-only by design and cannot create the first Admin.
 - Confirm the advisor row is **pre-bound**: `public.advisor.auth_user_id` must already equal the sign-in user's auth UUID. Binding is admin-only and one-time; it happens before first sign-in via the server-only provisioning module, never by email match or auto-linking.
 - Confirm the advisor row has `is_active = true`.
-- Confirm the complete migration chain through `20261009000001_scholarship_void_serialization.sql` was applied **before** any advisor was provisioned/pre-bound.
+- Confirm the complete migration chain through `20261018000001_lock_application_relink_parents.sql` was applied **before** any advisor was provisioned/pre-bound.
 - Confirm the chain order: `20260318000001_advisor_self_activation_lockdown.sql`
   after `20260317000004_active_advisor_rls.sql`; then
   `20260929000001_advising_application_link.sql` … `20260930000004_advising_meeting_amendments.sql`;
@@ -353,8 +400,9 @@ Before relying on the app day to day:
   `20261001000001`–`20261002000001`; then the role-change lease/fencing
   migrations `20261003000001`–`20261006000001`; then
   `20261007000001_atomic_advisor_role_change.sql`; then
-  `20261008000001_historical_integrity_remediation.sql`; and finally
-  `20261009000001_scholarship_void_serialization.sql` last.
+  `20261008000001_historical_integrity_remediation.sql`; then the immutable-audit
+  and concurrency migrations `20261009000001`–`20261018000001`; and finally
+  `20261018000001_lock_application_relink_parents.sql` last.
 
 ### Connection failed
 
@@ -373,19 +421,28 @@ Before relying on the app day to day:
 
 ## 🎓 What You Have Now
 
-1. **11 database tables** — 10 business tables (students, advisors,
+1. **12 database tables** — 10 business tables (students, advisors,
    fellowships, applications, advising meetings, advising amendments,
    Thursday attendance, Thursday attendance corrections, scholarship history,
-   scholarship amendments) plus the server-only role-change lock table.
-2. **10 sidebar destinations** — 9 for active advisors (Dashboard, My Account,
-   Students, Fellowships, Applications, Advising, Fellowship Thursday,
-   Scholarship History, Reports) plus the admin-only **Advisor Management** page.
+   scholarship amendments), the server-only role-change lock table, and the
+   immutable `audit_event` trail (read-only to active advisors).
+2. **11 sidebar destinations** — 10 for active advisors (Dashboard, Reports,
+   Activity, My Account, Students, Advising, Fellowships, Applications,
+   Fellowship Thursday, Scholarship History) plus the admin-only **Advisor
+   Management** page.
 3. **Advisor-backed auth** with protected dashboard routes, password recovery,
    and exactly two operational roles: `Admin` and `Advisor`.
-4. **Append-only history** across advising, Fellowship Thursday, and
-   Scholarship History with amendment-based corrections (and scholarship
-   `Void` for wrongly recorded awards), plus an archive/deactivate lifecycle
-   instead of deletion.
+4. **Immutable history invariant** — current-state edits run through
+   database-owned expected-version writers and commit an atomic `audit_event`;
+   advising, Fellowship Thursday, and Scholarship History base records are
+   append-only with amendment-based corrections (and scholarship `Void` for
+   wrongly recorded awards); `audit_event`/history cannot be directly changed,
+   deleted, or truncated by a normal product role — the append-only
+   `advising_meeting`/`advising_meeting_amendment` tables explicitly revoke
+   `TRUNCATE` from `PUBLIC`/`anon`/`authenticated` (migration
+   `20261017000001`); the `/activity` page is a
+   server-paginated read of the `audit_activity` view; archive/deactivate is the
+   only removal path for current-state entities.
 5. **Type-safe Supabase access** with generated database types.
 6. **Operational docs** covering schema, setup, and verification.
 
@@ -394,7 +451,7 @@ Before relying on the app day to day:
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Hosted/production setup | Deferred | Running the app against a hosted project, real FGCU email backfill, and email delivery verification require a live Supabase environment; the production provenance freeze also blocks applying this chain to the hosted production database until a separate reconciliation is approved |
-| Server-side pagination | Not started | All pagination is currently client-side |
+| Server-side pagination | Implemented | All operational lists and the `/activity` audit view are authenticated, URL-backed server-side pagination (`page`/`pageSize` with `pageSize` limited to 25/50/100); reports remain intentionally full-dataset |
 | Bulk actions | Not started | Multi-select and bulk operations are planned |
 | Institutional deployment/SSO/backups/monitoring | Excluded | Real production-data import, university deployment/networking/domains/secrets, university SSO, institutional backups, and institutional monitoring are out of scope and remain OCF/FGCU IT responsibilities after source-code handoff (see the [root README](../README.md)) |
 
@@ -407,7 +464,9 @@ and the Fellowship Thursday → application funnel), and add/edit/delete
 operations on the mutable main tables (advising meetings, Fellowship Thursday,
 and Scholarship History base rows plus their amendments are append-only
 history; corrections are recorded as amendment rows, and scholarship `Void`
-amendments exclude an award from operational counts).
+amendments exclude an award from operational counts). The immutable audit trail,
+the `/activity` view, and the expected-version concurrency writers are covered
+by contract/RLS tests against a Docker-local instance.
 
 ## ✨ Recommended Next Steps
 
@@ -416,5 +475,5 @@ amendments exclude an award from operational counts).
 2. Provision advisor auth users in a real Supabase environment (fresh project
    only; never production) once FGCU emails are confirmed.
 3. Verify profile updates and password recovery end to end.
-4. Build server-side pagination and bulk actions.
+4. Build bulk actions (server-side pagination is already implemented).
 5. Plan a `student_advisor` table only if OCF later wants formal caseload assignment.

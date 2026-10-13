@@ -161,6 +161,8 @@ export type Database = {
           is_active: boolean
           last_login_at: string | null
           role: string
+          row_version: number
+          updated_at: string
         }
         Insert: {
           advisor_id?: number
@@ -171,6 +173,8 @@ export type Database = {
           is_active?: boolean
           last_login_at?: string | null
           role?: string
+          row_version?: number
+          updated_at?: string
         }
         Update: {
           advisor_id?: number
@@ -181,6 +185,8 @@ export type Database = {
           is_active?: boolean
           last_login_at?: string | null
           role?: string
+          row_version?: number
+          updated_at?: string
         }
         Relationships: []
       }
@@ -221,8 +227,10 @@ export type Database = {
           fellowship_id: number
           is_finalist: boolean
           is_semi_finalist: boolean
+          row_version: number
           stage_of_application: string
           student_id: number
+          updated_at: string
         }
         Insert: {
           application_id?: number
@@ -231,8 +239,10 @@ export type Database = {
           fellowship_id: number
           is_finalist?: boolean
           is_semi_finalist?: boolean
+          row_version?: number
           stage_of_application: string
           student_id: number
+          updated_at?: string
         }
         Update: {
           application_id?: number
@@ -241,8 +251,10 @@ export type Database = {
           fellowship_id?: number
           is_finalist?: boolean
           is_semi_finalist?: boolean
+          row_version?: number
           stage_of_application?: string
           student_id?: number
+          updated_at?: string
         }
         Relationships: [
           {
@@ -320,16 +332,22 @@ export type Database = {
           archived_at: string | null
           fellowship_id: number
           fellowship_name: string
+          row_version: number
+          updated_at: string
         }
         Insert: {
           archived_at?: string | null
           fellowship_id?: number
           fellowship_name: string
+          row_version?: number
+          updated_at?: string
         }
         Update: {
           archived_at?: string | null
           fellowship_id?: number
           fellowship_name?: string
+          row_version?: number
+          updated_at?: string
         }
         Relationships: []
       }
@@ -518,7 +536,9 @@ export type Database = {
           minor: string | null
           pronouns: string | null
           race_ethnicity: string | null
+          row_version: number
           student_id: number
+          updated_at: string
           us_citizen: boolean
         }
         Insert: {
@@ -537,7 +557,9 @@ export type Database = {
           minor?: string | null
           pronouns?: string | null
           race_ethnicity?: string | null
+          row_version?: number
           student_id?: number
+          updated_at?: string
           us_citizen: boolean
         }
         Update: {
@@ -556,7 +578,9 @@ export type Database = {
           minor?: string | null
           pronouns?: string | null
           race_ethnicity?: string | null
+          row_version?: number
           student_id?: number
+          updated_at?: string
           us_citizen?: boolean
         }
         Relationships: []
@@ -753,6 +777,28 @@ export type Database = {
           },
         ]
       }
+      audit_activity: {
+        Row: {
+          action: string
+          actor_advisor_id: number | null
+          actor_name_snapshot: string
+          audit_id: number
+          changes: Json | null
+          entity_id: number
+          entity_type: string
+          fellowship_name: string | null
+          new_values: Json | null
+          occurred_at: string
+          old_values: Json | null
+          origin: string
+          reason: string | null
+          student_name: string | null
+          subject_application_id: number | null
+          subject_fellowship_id: number | null
+          subject_student_id: number | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       acquire_advisor_role_lock: {
@@ -775,6 +821,7 @@ export type Database = {
           p_action: string
           p_entity: string
           p_entity_id: number
+          p_expected_version: number
           p_reason: string
         }
         Returns: {
@@ -784,6 +831,7 @@ export type Database = {
           entity: string
           entity_id: number
           is_active: boolean
+          row_version: number
         }[]
       }
       provision_advisor: {
@@ -798,6 +846,7 @@ export type Database = {
           advisor_id: number
           auth_user_id: string
           role: string
+          row_version: number
         }[]
       }
       release_advisor_role_lock: {
@@ -815,6 +864,7 @@ export type Database = {
         Args: {
           p_actor_id: number
           p_advisor_id: number
+          p_expected_version: number
           p_reason: string
           p_role: string
         }
@@ -822,6 +872,112 @@ export type Database = {
           advisor_id: number
           auth_user_id: string
           role: string
+          row_version: number
+        }[]
+      }
+      update_advisor_profile_name: {
+        Args: {
+          p_advisor_id: number
+          p_advisor_name: string
+          p_expected_version: number
+        }
+        Returns: {
+          advisor_id: number
+          advisor_name: string
+          row_version: number
+          updated_at: string
+        }[]
+      }
+      update_application: {
+        Args: {
+          p_application_id: number
+          p_application_year: number
+          p_destination_country: string
+          p_expected_version: number
+          p_fellowship_id: number
+          p_is_finalist: boolean
+          p_is_semi_finalist: boolean
+          p_stage_of_application: string
+          p_student_id: number
+        }
+        Returns: {
+          application_id: number
+          application_year: number
+          destination_country: string
+          is_finalist: boolean
+          is_semi_finalist: boolean
+          row_version: number
+          stage_of_application: string
+          student_id: number
+          updated_at: string
+        }[]
+      }
+      update_fellowship: {
+        Args: {
+          p_expected_version: number
+          p_fellowship_id: number
+          p_fellowship_name: string
+        }
+        Returns: {
+          archived_at: string
+          fellowship_id: number
+          fellowship_name: string
+          row_version: number
+          updated_at: string
+        }[]
+      }
+      update_my_advisor_profile: {
+        Args: {
+          p_advisor_name: string
+          p_expected_version: number
+        }
+        Returns: {
+          advisor_id: number
+          advisor_name: string
+          row_version: number
+          updated_at: string
+        }[]
+      }
+      update_student_profile: {
+        Args: {
+          p_age: number
+          p_class_standing: string
+          p_email: string
+          p_expected_version: number
+          p_first_gen: boolean
+          p_full_name: string
+          p_gender: string
+          p_gpa: number
+          p_honors_college: boolean
+          p_is_ch_student: boolean
+          p_languages: string
+          p_major: string
+          p_minor: string
+          p_pronouns: string
+          p_race_ethnicity: string
+          p_student_id: number
+          p_us_citizen: boolean
+        }
+        Returns: {
+          age: number
+          archived_at: string
+          class_standing: string
+          email: string
+          first_gen: boolean
+          full_name: string
+          gender: string
+          gpa: number
+          honors_college: boolean
+          is_ch_student: boolean
+          languages: string
+          major: string
+          minor: string
+          pronouns: string
+          race_ethnicity: string
+          row_version: number
+          student_id: number
+          updated_at: string
+          us_citizen: boolean
         }[]
       }
       verify_advisor_role_lock: {

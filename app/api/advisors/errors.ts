@@ -33,6 +33,8 @@ function setRoleStatus(code: SetRoleFailureCode): number {
       return 404;
     case "not_bound":
       return 409;
+    case "stale_version":
+      return 409;
     default:
       // role_update_failed (atomic transaction: nothing changed, or fully
       // applied and consistent)

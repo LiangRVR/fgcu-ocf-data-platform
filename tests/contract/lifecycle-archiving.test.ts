@@ -8,9 +8,10 @@
  * lifecycle model: nullable `student.archived_at`/`fellowship.archived_at`,
  * the trusted `is_ocf_admin()` JWT-claim predicate, the migration-owned
  * SECURITY DEFINER `lifecycle_transition` RPC (the reason-required
- * `(entity, action, entity_id, reason)` form; migration 20261013000001 drops
- * the legacy 3-arg overload so a reason can never be bypassed), and
- * invoker-security column-scoped triggers guarding the lifecycle fields.
+ * `(entity, action, entity_id, reason)` form, later extended by migration
+ * 20261015000001 to the versioned `(entity, action, entity_id, reason,
+ * expected_version)` signature), and invoker-security column-scoped triggers
+ * guarding the lifecycle fields.
  *
  * This suite proves, against the isolated Docker-local contract lane:
  *
@@ -302,6 +303,24 @@ interface LifecycleResult {
   is_active: boolean | null;
 }
 
+/**
+ * Read the CURRENT `row_version` of a current-state row — the expected-version
+ * oracle required by the versioned `lifecycle_transition` signature (migration
+ * 20261015000001). Falls back to 1 for an unknown entity, a missing id, or a
+ * nonexistent row (the RPC's own fail-closed checks decide those outcomes).
+ */
+async function currentRowVersion(entity: string, entityId: number | null | undefined): Promise<number> {
+  const table =
+    entity === "student" || entity === "fellowship" || entity === "advisor" ? entity : null;
+  if (!table || entityId == null) return 1;
+  const idColumn = table === "student" ? "student_id" : table === "fellowship" ? "fellowship_id" : "advisor_id";
+  const { rows } = await pool.query<{ row_version: number }>(
+    `SELECT row_version FROM public.${table} WHERE ${idColumn} = $1`,
+    [entityId]
+  );
+  return rows[0]?.row_version ?? 1;
+}
+
 async function transition(
   client: SupabaseClient,
   entity: string,
@@ -310,15 +329,94 @@ async function transition(
   reason: string = `contract ${entity}.${action} ${Date.now().toString(36)}`
 ): Promise<{ data: LifecycleResult[] | null; error: { code?: string; message?: string } | null }> {
   // The lifecycle RPC requires a valid non-blank human reason for every
-  // transition. Always supply one so the exercised behavior is the
-  // transition itself, never a missing-reason rejection.
+  // transition AND (migration 20261015000001) the target's CURRENT
+  // `row_version` as the expected version. Always supply a live reason and the
+  // auto-read current version so the exercised behavior is the transition
+  // itself, never a missing-reason/rejection-version outcome.
   const { data, error } = await client.rpc("lifecycle_transition", {
     p_entity: entity,
     p_action: action,
     p_entity_id: entityId ?? null,
     p_reason: reason,
+    p_expected_version: await currentRowVersion(entity, entityId),
   });
   return { data: data as LifecycleResult[] | null, error };
+}
+
+/**
+ * Protected full-replacement student writer (migration 20261015000001 replaced
+ * the direct authenticated student UPDATE): keeps every current field, applies
+ * the p_-prefixed overrides in `changes`. Used to prove ordinary non-lifecycle
+ * writes still pass through without touching `archived_at`.
+ */
+async function updateStudentViaWriter(
+  actor: BoundActor,
+  studentId: number,
+  changes: Record<string, unknown>
+): Promise<{ error: { code?: string; message?: string } | null }> {
+  const { rows } = await pool.query<Record<string, unknown>>(
+    `SELECT row_version, full_name, email, is_ch_student, major, minor,
+            gpa::float8 AS gpa, class_standing, us_citizen, age, gender,
+            pronouns, race_ethnicity, languages, first_gen, honors_college
+       FROM public.student WHERE student_id = $1`,
+    [studentId]
+  );
+  const row = rows[0];
+  const { data, error } = await actor.client.rpc("update_student_profile", {
+    p_student_id: studentId,
+    p_expected_version: row.row_version,
+    p_full_name: row.full_name,
+    p_email: row.email,
+    p_is_ch_student: row.is_ch_student,
+    p_major: row.major,
+    p_minor: row.minor,
+    p_gpa: row.gpa,
+    p_class_standing: row.class_standing,
+    p_us_citizen: row.us_citizen,
+    p_age: row.age,
+    p_gender: row.gender,
+    p_pronouns: row.pronouns,
+    p_race_ethnicity: row.race_ethnicity,
+    p_languages: row.languages,
+    p_first_gen: row.first_gen,
+    p_honors_college: row.honors_college,
+    ...changes,
+  });
+  return { error: (error as { code?: string; message?: string } | null) ?? null };
+}
+
+/**
+ * Protected full-replacement application writer: keeps every current field,
+ * applies the p_-prefixed overrides in `changes`. The RPC re-link guard only
+ * fires when the student/fellowship reference actually changes (migration
+ * 20261015000001), so non-reference edits and re-links to ACTIVE parents pass
+ * while re-links to archived parents are denied.
+ */
+async function updateApplicationViaWriter(
+  actor: BoundActor,
+  applicationId: number,
+  changes: Record<string, unknown>
+): Promise<{ error: { code?: string; message?: string } | null }> {
+  const { rows } = await pool.query<Record<string, unknown>>(
+    `SELECT row_version, student_id, fellowship_id, application_year,
+            destination_country, stage_of_application, is_semi_finalist, is_finalist
+       FROM public.application WHERE application_id = $1`,
+    [applicationId]
+  );
+  const row = rows[0];
+  const { data, error } = await actor.client.rpc("update_application", {
+    p_application_id: applicationId,
+    p_expected_version: row.row_version,
+    p_student_id: row.student_id,
+    p_fellowship_id: row.fellowship_id,
+    p_application_year: row.application_year,
+    p_destination_country: row.destination_country,
+    p_stage_of_application: row.stage_of_application,
+    p_is_semi_finalist: row.is_semi_finalist,
+    p_is_finalist: row.is_finalist,
+    ...changes,
+  });
+  return { error: (error as { code?: string; message?: string } | null) ?? null };
 }
 
 /** Service-role re-read of a row; used to prove "denied + unchanged". */
@@ -947,31 +1045,25 @@ describe("ordinary non-lifecycle writes and no-op restatements pass through", ()
 
   it("lets an active advisor update non-lifecycle student columns without touching archived_at", async () => {
     const { studentId } = await seedArchivePair("ordinary-update", adminOne.advisorId!);
-    const { data, error } = await staffActive.client
-      .from("student")
-      .update({ major: "Chemistry" })
-      .eq("student_id", studentId)
-      .select("student_id");
-    expect(error, "ordinary student UPDATE must succeed").toBeNull();
-    expect(data ?? []).toHaveLength(1);
+    const result = await updateStudentViaWriter(staffActive, studentId, {
+      p_major: "Chemistry",
+    });
+    expect(result.error, "ordinary student write through the protected writer succeeds").toBeNull();
 
     const row = await readRow("student", "student_id", studentId);
     expect(row?.major).toBe("Chemistry");
     expect(row?.archived_at).toBeNull();
   });
 
-  it("lets an active advisor pass a no-op UPDATE that restates the current archived_at NULL", async () => {
+  it("lets an active advisor pass an ordinary write that keeps archived_at NULL (no lifecycle touch)", async () => {
     const { studentId } = await seedArchivePair("noop-restate", adminOne.advisorId!);
-    const { data, error } = await staffActive.client
-      .from("student")
-      .update({ archived_at: null, major: "Biology" })
-      .eq("student_id", studentId)
-      .select("student_id");
-    expect(error, "no-op lifecycle restatement must pass through").toBeNull();
-    expect(data ?? []).toHaveLength(1);
+    const result = await updateStudentViaWriter(staffActive, studentId, {
+      p_major: "Biology",
+    });
+    expect(result.error, "ordinary write through the protected writer succeeds").toBeNull();
 
     const row = await readRow("student", "student_id", studentId);
-    expect(row?.archived_at, "no-op restatement keeps active state").toBeNull();
+    expect(row?.archived_at, "the write keeps the active lifecycle state").toBeNull();
     expect(row?.major).toBe("Biology");
   });
 
@@ -1427,7 +1519,9 @@ describe("archived students/fellowships reject new and re-linked operational chi
     const { archivedStudentId } = await seedArchivedParents();
 
     // The seeded application references the archived student; updating a
-    // non-reference column (stage) does not fire the FK-scoped guard.
+    // non-reference column (stage) does not change the reference, so the
+    // protected writer's re-link guard (which only fires on an actual
+    // student/fellowship change) passes it through.
     const { data: seeded, error: selectError } = await service
       .from("application")
       .select("application_id")
@@ -1436,13 +1530,10 @@ describe("archived students/fellowships reject new and re-linked operational chi
     expect(selectError).toBeNull();
     expect(seeded).not.toBeNull();
 
-    const { data, error } = await staffActive.client
-      .from("application")
-      .update({ stage_of_application: "Under Review" })
-      .eq("application_id", seeded!.application_id as number)
-      .select("application_id");
-    expect(error, "non-reference application UPDATE must succeed").toBeNull();
-    expect(data ?? [], "non-reference application UPDATE must affect one row").toHaveLength(1);
+    const result = await updateApplicationViaWriter(staffActive, seeded!.application_id as number, {
+      p_stage_of_application: "Under Review",
+    });
+    expect(result.error, "non-reference application write must succeed").toBeNull();
 
     const row = await readRow("application", "application_id", seeded!.application_id as number);
     expect(row?.stage_of_application).toBe("Under Review");
@@ -1460,13 +1551,10 @@ describe("archived students/fellowships reject new and re-linked operational chi
     expect(selectError).toBeNull();
     expect(seeded).not.toBeNull();
 
-    const { data, error } = await staffActive.client
-      .from("application")
-      .update({ student_id: activeStudentId })
-      .eq("application_id", seeded!.application_id as number)
-      .select("application_id");
-    expect(error, "re-link to an ACTIVE parent must succeed").toBeNull();
-    expect(data ?? [], "re-link to an ACTIVE parent must affect one row").toHaveLength(1);
+    const result = await updateApplicationViaWriter(staffActive, seeded!.application_id as number, {
+      p_student_id: activeStudentId,
+    });
+    expect(result.error, "re-link to an ACTIVE parent must succeed").toBeNull();
 
     const row = await readRow("application", "application_id", seeded!.application_id as number);
     expect(row?.student_id).toBe(activeStudentId);

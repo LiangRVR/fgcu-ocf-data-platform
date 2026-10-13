@@ -17,6 +17,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
+import {
+  STALE_VERSION_GUIDANCE,
+  isVersionConflict,
+} from "@/lib/supabase/errors";
 import { toast } from "sonner";
 
 /**
@@ -253,6 +257,13 @@ export function LifecycleAction({
   const [reason, setReason] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
   const [isPending, startTransition] = useTransition();
+  /**
+   * The target's loaded `row_version`, captured when the confirmation dialog
+   * opens. The versioned `lifecycle_transition` RPC rejects a stale value with
+   * `PT409` before any change, so a stale confirmation can never overwrite
+   * newer work.
+   */
+  const [expectedVersion, setExpectedVersion] = useState<number | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -261,6 +272,24 @@ export function LifecycleAction({
     });
     return () => { alive = false; };
   }, []);
+
+  // Load the target's current version when the dialog opens (never at submit
+  // time — that would defeat the optimistic-concurrency check).
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    const query =
+      entity === "student"
+        ? supabaseBrowserClient.from("student").select("row_version").eq("student_id", entityId)
+        : entity === "fellowship"
+          ? supabaseBrowserClient.from("fellowship").select("row_version").eq("fellowship_id", entityId)
+          : supabaseBrowserClient.from("advisor").select("row_version").eq("advisor_id", entityId);
+    query.single().then(({ data, error }) => {
+      if (!alive) return;
+      if (!error && data) setExpectedVersion(data.row_version);
+    });
+    return () => { alive = false; };
+  }, [open, entity, entityId]);
 
   // Lifecycle controls are admin-only affordances. Server/RLS remains authoritative.
   if (!isAdmin) return null;
@@ -276,6 +305,11 @@ export function LifecycleAction({
   const handleConfirm = () => {
     const trimmedReason = reason.trim();
     if (!trimmedReason) return;
+    if (expectedVersion == null) {
+      // Fail closed: the target's loaded version is not available yet.
+      toast.error(STALE_VERSION_GUIDANCE);
+      return;
+    }
     const params = resolveRpcParams(entity, action);
     if (!params) {
       // Cross-axis call. Fail closed with a visible toast.
@@ -289,8 +323,14 @@ export function LifecycleAction({
         p_action: params.p_action,
         p_entity_id: entityId,
         p_reason: trimmedReason,
-      } as never);
+        p_expected_version: expectedVersion,
+      });
       if (error) {
+        if (isVersionConflict(error)) {
+          // Required refresh-and-review guidance: no retry, no overwrite.
+          toast.error(STALE_VERSION_GUIDANCE);
+          return;
+        }
         toast.error(error.message ?? "Lifecycle transition failed.");
         return;
       }
@@ -322,6 +362,7 @@ export function LifecycleAction({
         size={effectiveSize}
         onClick={(event) => {
           if (stopPropagation) event.stopPropagation();
+          setExpectedVersion(null);
           setOpen(true);
         }}
         className={className}
@@ -336,7 +377,10 @@ export function LifecycleAction({
         onOpenChange={(nextOpen) => {
           if (!isPending) {
             setOpen(nextOpen);
-            if (nextOpen) setReason("");
+            if (nextOpen) {
+              setReason("");
+              setExpectedVersion(null);
+            }
           }
         }}
       >

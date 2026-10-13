@@ -5,13 +5,16 @@
  *
  *   GET   /api/advisors/[id] → read one advisor (effective-Admin only)
  *   PATCH /api/advisors/[id] → update the target's role (trusted provisioning
- *                              adapter) and/or active state (established
+ *                              adapter) AND/OR active state (established
  *                              `lifecycle_transition` RPC through the admin's
- *                              own server session)
+ *                              own server session) OR advisor name (new
+ *                              authenticated `update_advisor_profile_name`
+ *                              RPC through the same session client) — exactly
+ *                              one mutation per request
  *
  * `auth_user_id` is never accepted by PATCH, so no API path can rebind an
  * existing binding. The route gate is the shared server effective-Admin
- * predicate; `createProvisioningClient` and the RPC are mocked.
+ * predicate; `createProvisioningClient` and the RPCs are mocked.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -57,6 +60,7 @@ const ADMIN_ADVISOR = {
   auth_user_id: "user-admin",
   last_login_at: null,
   created_at: "2026-01-01T00:00:00.000Z",
+  row_version: 1,
 };
 
 function createMockSupabase() {
@@ -181,7 +185,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
     getSessionUser.mockResolvedValue({ id: "user-admin" });
     getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
 
-    const response = await PATCH(patchRequest({ role: "Admin" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", expectedVersion: 7 }), CONTEXT);
     expect(response.status).toBe(400);
     expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
     expect(client.rpc).not.toHaveBeenCalled();
@@ -192,7 +196,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
     getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
 
     const response = await PATCH(
-      patchRequest({ isActive: false, reason: "   \n  " }),
+      patchRequest({ isActive: false, reason: "   \n  ", expectedVersion: 7 }),
       CONTEXT
     );
     expect(response.status).toBe(400);
@@ -205,7 +209,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
     getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
 
     const response = await PATCH(
-      patchRequest({ role: "Admin", reason: "Promotion", actorAdvisorId: 999 }),
+      patchRequest({ role: "Admin", reason: "Promotion", actorAdvisorId: 999, expectedVersion: 7 }),
       CONTEXT
     );
     expect(response.status).toBe(400);
@@ -214,7 +218,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
 
   it("returns 400 when the payload accepts auth_user_id (no rebinding via the API)", async () => {
     const response = await PATCH(
-      patchRequest({ role: "Admin", auth_user_id: "00000000-0000-4000-8000-000000000000" }),
+      patchRequest({ role: "Admin", auth_user_id: "00000000-0000-4000-8000-000000000000", expectedVersion: 7 }),
       CONTEXT
     );
     expect(response.status).toBe(400);
@@ -223,7 +227,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
   it("returns 401 when there is no session", async () => {
     getSessionUser.mockResolvedValue(null);
 
-    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason", expectedVersion: 7 }), CONTEXT);
     expect(response.status).toBe(401);
   });
 
@@ -231,7 +235,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
     getSessionUser.mockResolvedValue({ id: "user-1" });
     getEffectiveAdmin.mockResolvedValue(null);
 
-    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason", expectedVersion: 7 }), CONTEXT);
     expect(response.status).toBe(403);
     expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
   });
@@ -240,7 +244,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
     getSessionUser.mockResolvedValue({ id: "user-admin" });
     getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
 
-    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), {
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason", expectedVersion: 7 }), {
       params: Promise.resolve({ id: "abc" }),
     } as never);
     expect(response.status).toBe(400);
@@ -251,7 +255,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
     getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
     query.maybeSingle.mockResolvedValue({ data: null, error: null });
 
-    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason", expectedVersion: 7 }), CONTEXT);
     expect(response.status).toBe(404);
     expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
   });
@@ -270,7 +274,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
       authUserId: "user-7",
     });
 
-    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason", expectedVersion: 7 }), CONTEXT);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ advisor: target });
     expect(provisioner.setAdvisorRole).toHaveBeenCalledWith({
@@ -279,6 +283,9 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
       // The route injects the server-resolved effective-Admin actor id.
       actorAdvisorId: ADMIN_ADVISOR.advisor_id,
       reason: "Test reason",
+      // The caller's loaded target row_version propagates into the versioned
+      // writer so a stale form is rejected with PT409 (R3).
+      expectedVersion: 7,
     });
     expect(client.rpc).not.toHaveBeenCalled();
   });
@@ -286,6 +293,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
   it.each([
     { code: "advisor_not_found", status: 404 },
     { code: "not_bound", status: 409 },
+    { code: "stale_version", status: 409 },
     { code: "role_update_failed", status: 502 },
   ] as const)("maps a $code role-change failure to HTTP $status", async ({ code, status }) => {
     getSessionUser.mockResolvedValue({ id: "user-admin" });
@@ -297,7 +305,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
       message: "Generic role failure.",
     });
 
-    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason", expectedVersion: 7 }), CONTEXT);
     expect(response.status).toBe(status);
     await expect(response.json()).resolves.toEqual({ error: "Generic role failure." });
   });
@@ -311,13 +319,14 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
       .mockResolvedValueOnce({ data: target, error: null });
     client.rpc.mockResolvedValue({ data: null, error: null });
 
-    const response = await PATCH(patchRequest({ isActive: true, reason: "Test reason" }), CONTEXT);
+    const response = await PATCH(patchRequest({ isActive: true, reason: "Test reason", expectedVersion: 7 }), CONTEXT);
     expect(response.status).toBe(200);
     expect(client.rpc).toHaveBeenCalledWith("lifecycle_transition", {
       p_entity: "advisor",
       p_action: "reactivate",
       p_entity_id: 7,
       p_reason: "Test reason",
+      p_expected_version: 7,
     });
     expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
   });
@@ -330,13 +339,14 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
       .mockResolvedValueOnce({ data: { ...ADMIN_ADVISOR, advisor_id: 7, is_active: false }, error: null });
     client.rpc.mockResolvedValue({ data: null, error: null });
 
-    const response = await PATCH(patchRequest({ isActive: false, reason: "Test reason" }), CONTEXT);
+    const response = await PATCH(patchRequest({ isActive: false, reason: "Test reason", expectedVersion: 7 }), CONTEXT);
     expect(response.status).toBe(200);
     expect(client.rpc).toHaveBeenCalledWith("lifecycle_transition", {
       p_entity: "advisor",
       p_action: "deactivate",
       p_entity_id: 7,
       p_reason: "Test reason",
+      p_expected_version: 7,
     });
   });
 
@@ -349,7 +359,7 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
       error: { code: "42501", message: "cannot deactivate own account" },
     });
 
-    const response = await PATCH(patchRequest({ isActive: false, reason: "Test reason" }), CONTEXT);
+    const response = await PATCH(patchRequest({ isActive: false, reason: "Test reason", expectedVersion: 7 }), CONTEXT);
     expect(response.status).toBe(403);
   });
 
@@ -362,21 +372,245 @@ describe("PATCH /api/advisors/[id] (admin-only role / active-state update)", () 
       error: { code: "P0002", message: "advisor does not exist" },
     });
 
-    const response = await PATCH(patchRequest({ isActive: false, reason: "Test reason" }), CONTEXT);
+    const response = await PATCH(patchRequest({ isActive: false, reason: "Test reason", expectedVersion: 7 }), CONTEXT);
     expect(response.status).toBe(409);
+  });
+
+  it("returns 409 with the refresh-and-review guidance when the lifecycle RPC reports a stale version (PT409)", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-admin" });
+    getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
+    query.maybeSingle.mockResolvedValue({ data: { advisor_id: 7 }, error: null });
+    // A concurrent writer advanced the row: `lifecycle_transition` rejects
+    // the stale expected version with PT409 BEFORE any active-state change.
+    client.rpc.mockResolvedValue({
+      data: null,
+      error: { code: "PT409", message: "version conflict" },
+    });
+
+    const response = await PATCH(patchRequest({ isActive: false, reason: "Test reason", expectedVersion: 7 }), CONTEXT);
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        "This record was changed by another session. Refresh and review the latest information before saving.",
+    });
+    // No retry: the RPC ran exactly once with the stale version, and no
+    // re-read/patch of the changed row followed.
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+    expect(query.maybeSingle).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a combined role + isActive payload with 400 BEFORE any state change (review blocker 3)", async () => {
     getSessionUser.mockResolvedValue({ id: "user-admin" });
     getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
 
-    const response = await PATCH(patchRequest({ role: "Admin", isActive: true, reason: "Test reason" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", isActive: true, reason: "Test reason", expectedVersion: 7 }), CONTEXT);
 
     expect(response.status).toBe(400);
     // Nothing was touched: no advisor read, no role change, no lifecycle RPC.
     expect(query.maybeSingle).not.toHaveBeenCalled();
     expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
     expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  // ── Advisor-name edits (new authenticated profile-name RPC) ──────────────
+
+  it("updates the advisor name through the authenticated RPC without a reason and returns the refreshed advisor", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-admin" });
+    getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
+    const target = { ...ADMIN_ADVISOR, advisor_id: 7, advisor_name: "New Name" };
+    query.maybeSingle
+      .mockResolvedValueOnce({ data: { advisor_id: 7 }, error: null }) // existence
+      .mockResolvedValueOnce({ data: target, error: null }); // re-read
+    client.rpc.mockResolvedValue({ data: null, error: null });
+
+    // The name is sent with surrounding whitespace; the schema trims it before
+    // it reaches the RPC, and NO reason accompanies an ordinary profile edit.
+    const response = await PATCH(patchRequest({ advisorName: "  New Name  ", expectedVersion: 7 }), CONTEXT);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ advisor: target });
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+    expect(client.rpc).toHaveBeenCalledWith("update_advisor_profile_name", {
+      p_advisor_id: 7,
+      p_advisor_name: "New Name",
+      p_expected_version: 7,
+    });
+    // Name edits must not fall through to the role adapter or lifecycle RPC.
+    expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
+    expect(client.rpc).not.toHaveBeenCalledWith("lifecycle_transition", expect.anything());
+  });
+
+  it("returns 401 for a name edit when there is no session", async () => {
+    getSessionUser.mockResolvedValue(null);
+
+    const response = await PATCH(patchRequest({ advisorName: "New Name", expectedVersion: 7 }), CONTEXT);
+    expect(response.status).toBe(401);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 for a name edit from a session that is not an effective Admin", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-1" });
+    getEffectiveAdmin.mockResolvedValue(null);
+
+    const response = await PATCH(patchRequest({ advisorName: "New Name", expectedVersion: 7 }), CONTEXT);
+    expect(response.status).toBe(403);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for a non-numeric advisor id on a name edit", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-admin" });
+    getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
+
+    const response = await PATCH(patchRequest({ advisorName: "New Name", expectedVersion: 7 }), {
+      params: Promise.resolve({ id: "abc" }),
+    } as never);
+    expect(response.status).toBe(400);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when the target advisor does not exist on a name edit", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-admin" });
+    getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
+    query.maybeSingle.mockResolvedValue({ data: null, error: null });
+
+    const response = await PATCH(patchRequest({ advisorName: "New Name", expectedVersion: 7 }), CONTEXT);
+    expect(response.status).toBe(404);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("rejects email on an advisor-name edit (email is read-only, R4)", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-admin" });
+    getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
+
+    const response = await PATCH(
+      patchRequest({ advisorName: "New Name", email: "updated@example.com", expectedVersion: 7 }),
+      CONTEXT
+    );
+    expect(response.status).toBe(400);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("rejects a client-supplied actor id alongside the advisor-name edit", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-admin" });
+    getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
+
+    const response = await PATCH(
+      patchRequest({ advisorName: "New Name", actorAdvisorId: 999, expectedVersion: 7 }),
+      CONTEXT
+    );
+    expect(response.status).toBe(400);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("rejects auth_user_id on an advisor-name edit (no rebinding via the API)", async () => {
+    const response = await PATCH(
+      patchRequest({
+        advisorName: "New Name",
+        auth_user_id: "00000000-0000-4000-8000-000000000000",
+        expectedVersion: 7,
+      }),
+      CONTEXT
+    );
+    expect(response.status).toBe(400);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("rejects a combined role + advisorName payload with 400 BEFORE any state change", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-admin" });
+    getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
+
+    const response = await PATCH(
+      patchRequest({ role: "Admin", advisorName: "New Name", reason: "Test reason", expectedVersion: 7 }),
+      CONTEXT
+    );
+    expect(response.status).toBe(400);
+    expect(query.maybeSingle).not.toHaveBeenCalled();
+    expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("rejects a combined isActive + advisorName payload with 400 BEFORE any state change", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-admin" });
+    getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
+
+    const response = await PATCH(
+      patchRequest({ isActive: true, advisorName: "New Name", reason: "Test reason", expectedVersion: 7 }),
+      CONTEXT
+    );
+    expect(response.status).toBe(400);
+    expect(query.maybeSingle).not.toHaveBeenCalled();
+    expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("maps a 42501 name-update RPC rejection (e.g. non-Admin caller) to 403", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-admin" });
+    getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
+    query.maybeSingle.mockResolvedValue({ data: { advisor_id: 7 }, error: null });
+    client.rpc.mockResolvedValue({
+      data: null,
+      error: { code: "42501", message: "permission denied for rpc" },
+    });
+
+    const response = await PATCH(patchRequest({ advisorName: "New Name", expectedVersion: 7 }), CONTEXT);
+    expect(response.status).toBe(403);
+    expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
+  });
+
+  it("maps other name-update RPC failures to 409", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-admin" });
+    getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
+    query.maybeSingle.mockResolvedValue({ data: { advisor_id: 7 }, error: null });
+    client.rpc.mockResolvedValue({
+      data: null,
+      error: { code: "P0002", message: "invalid target" },
+    });
+
+    const response = await PATCH(patchRequest({ advisorName: "New Name", expectedVersion: 7 }), CONTEXT);
+    expect(response.status).toBe(409);
+    expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 with the refresh-and-review guidance when the name RPC reports a stale version (PT409)", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-admin" });
+    getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
+    query.maybeSingle.mockResolvedValue({ data: { advisor_id: 7 }, error: null });
+    client.rpc.mockResolvedValue({
+      data: null,
+      error: { code: "PT409", message: "version conflict" },
+    });
+
+    const response = await PATCH(patchRequest({ advisorName: "New Name", expectedVersion: 7 }), CONTEXT);
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        "This record was changed by another session. Refresh and review the latest information before saving.",
+    });
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 400 when the payload omits expectedVersion (stale writes fail closed)", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-admin" });
+    getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
+
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
+
+    expect(response.status).toBe(400);
+    // Validation rejects the stale form BEFORE any state change.
+    expect(query.maybeSingle).not.toHaveBeenCalled();
+    expect(provisioner.setAdvisorRole).not.toHaveBeenCalled();
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("masks a thrown name-update RPC as a generic 500", async () => {
+    getSessionUser.mockResolvedValue({ id: "user-admin" });
+    getEffectiveAdmin.mockResolvedValue(ADMIN_ADVISOR);
+    query.maybeSingle.mockResolvedValue({ data: { advisor_id: 7 }, error: null });
+    client.rpc.mockRejectedValue(new Error("profile rpc exploded"));
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await PATCH(patchRequest({ advisorName: "New Name", expectedVersion: 7 }), CONTEXT);
+    expect(response.status).toBe(500);
+    expect(consoleSpy).toHaveBeenCalled();
   });
 });
 describe("PATCH /api/advisors/[id] — failure paths of the final re-read", () => {
@@ -394,7 +628,7 @@ describe("PATCH /api/advisors/[id] — failure paths of the final re-read", () =
     });
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason", expectedVersion: 7 }), CONTEXT);
     expect(response.status).toBe(500);
     expect(consoleSpy).toHaveBeenCalled();
   });
@@ -412,7 +646,7 @@ describe("PATCH /api/advisors/[id] — failure paths of the final re-read", () =
       authUserId: "user-7",
     });
 
-    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason", expectedVersion: 7 }), CONTEXT);
     expect(response.status).toBe(404);
   });
 
@@ -423,7 +657,7 @@ describe("PATCH /api/advisors/[id] — failure paths of the final re-read", () =
     provisioner.setAdvisorRole.mockRejectedValue(new Error("role change exploded"));
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason", expectedVersion: 7 }), CONTEXT);
     expect(response.status).toBe(500);
     expect(consoleSpy).toHaveBeenCalled();
   });
@@ -434,7 +668,7 @@ describe("PATCH /api/advisors/[id] — failure paths of the final re-read", () =
     query.maybeSingle.mockResolvedValue({ data: null, error: { name: "PostgrestError", message: "boom" } });
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason" }), CONTEXT);
+    const response = await PATCH(patchRequest({ role: "Admin", reason: "Test reason", expectedVersion: 7 }), CONTEXT);
     expect(response.status).toBe(500);
     expect(consoleSpy).toHaveBeenCalled();
   });

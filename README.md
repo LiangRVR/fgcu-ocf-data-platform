@@ -110,7 +110,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 ├── lib/                    # Server-side auth/session helpers, config, Supabase clients
 ├── types/                  # TypeScript types (auto-generated database + app-level)
 ├── supabase/
-│   ├── migrations/         # Forward-only migration chain (22 migrations)
+│   ├── migrations/         # Forward-only migration chain (32 migrations)
 │   ├── SCHEMA.md           # One-page schema reference
 │   └── README.md           # Supabase setup guide
 ├── docs/                   # Project documentation
@@ -144,14 +144,54 @@ Management page) and the reports surface, see the
   and `scholarship_history_amendment` rows, never as edits or deletes.
   Scholarship `Void` amendments keep the original award in the audit trail
   while excluding it from operational counts.
+- **Activity** — `/activity` is an authenticated, server-paginated read of the
+  `public.audit_activity` view over the immutable `audit_event` trail, with
+  filters for record type, change, actor, student, fellowship, and date range.
 
-> **Architectural rule:** Historical records (advising meetings, Fellowship
-> Thursday attendance, scholarship awards) are append-only. Existing base rows
-> must not be directly edited or deleted through normal application workflows.
-> Corrections are represented as separate amendment records (and `Void` for
-> wrongly recorded awards), never as edits or deletes.
+### Immutable history invariant
 
-See [docs/schema-reference.md](docs/schema-reference.md) and
+> **At the database boundary, current-state business entities may change, but
+> no meaningful prior state may be lost.** Every business mutation commits
+> atomically with an immutable, database-authored history record identifying
+> the actor, timestamp, previous state, new state, and actual changed fields.
+> Historical/event records are never directly modified or deleted; corrections
+> are represented through append-only amendment records. No normal application
+> role, including Admin, may alter audit history. Current-state business
+> entities (`student`, `advisor`, `fellowship`, `application`) must use their
+> database-owned versioned writer; audit failure aborts the business write.
+
+The schema classifies entities into exactly three categories:
+
+| Category | Entities | Rule |
+| --- | --- | --- |
+| **Current-state / audited** | `student`, `advisor`, `fellowship`, `application` | Mutable only through the expected-`row_version` database writer for that entity; each meaningful mutation writes exactly one immutable `audit_event`. Direct authenticated `UPDATE` is revoked. |
+| **Immutable base** | `advising_meeting`, `fellowship_thursday`, `scholarship_history` | Append-only history: normal roles may `SELECT`/`INSERT` only; rows are never updated or deleted. Inserts are audited (`created`). |
+| **Append-only amendment** | `advising_meeting_amendment`, `fellowship_thursday_amendment`, `scholarship_history_amendment` | Correction records appended (never edited); `scholarship_history_amendment` also carries a terminal `Void`. Inserts are audited (`correction_added`; a `Void` is `voided`). |
+
+Corrections are represented as separate amendment records (and `Void` for
+wrongly recorded awards), never as edits or deletes. Effective-value views
+(`effective_fellowship_thursday`, `effective_scholarship_history`) apply the
+newest amendment without rewriting the base facts.
+
+> **Advising-history privilege closure.** The append-only `advising_meeting`
+> and `advising_meeting_amendment` tables also revoke the destructive
+> `TRUNCATE` privilege from `PUBLIC`, `anon`, and `authenticated` (migration
+> `20261017000001_revoke_advising_meeting_truncate.sql`), matching the sibling
+> historical tables already closed in `20261008000001`. A normal product role
+> therefore cannot wipe the entire advising history through the `TRUNCATE`
+> path even though row-level `UPDATE`/`DELETE` were already denied; the trusted
+> `service_role` grant is untouched.
+
+> **DBA / service-role trust boundary.** OCF product `Admin` is **not** a
+> PostgreSQL superuser and has no special table privileges: the Admin privilege
+> is the immutable Auth `app_metadata.ocf_admin = true` claim plus an active,
+> pre-bound advisor row. A PostgreSQL `service_role`/DBA session is a separate
+> technical trust boundary used only for trusted provisioning, first-Admin
+> bootstrap, and synthetic test fixtures — it is not a normal application path
+> and must never be exposed to the browser.
+
+See [docs/schema-reference.md](docs/schema-reference.md),
+[docs/schema-decisions.md](docs/schema-decisions.md), and
 [supabase/SCHEMA.md](supabase/SCHEMA.md) for the full model.
 
 ---

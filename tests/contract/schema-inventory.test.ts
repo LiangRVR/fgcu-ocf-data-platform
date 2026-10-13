@@ -19,7 +19,7 @@
  *     is stored, only a body hash;
  *   - COMPLETE – every documented catalog section is present as an array, and
  *     the key expected local-chain catalog facts hold:
- *       * twenty-six local migration-ledger rows (the exact Git chain);
+ *       * thirty-two local migration-ledger rows (the exact Git chain);
  *       * RLS enabled on all eight operational tables;
  *       * application foreign keys keep the default NO ACTION semantics;
  *       * the advisor identity/RLS lockdown trigger and policies are present;
@@ -122,7 +122,7 @@ const OPERATIONAL_TABLES = [
   "scholarship_history_amendment",
 ] as const;
 
-/** The exact Git migration chain recorded in the local ledger (twenty-six rows). */
+/** The exact Git migration chain recorded in the local ledger (thirty-two rows). */
 const EXPECTED_LEDGER = [
   { version: "20260305000000", name: "initial_schema" },
   { version: "20260305000001", name: "allow_anon_read" },
@@ -150,6 +150,12 @@ const EXPECTED_LEDGER = [
   { version: "20261011000001", name: "scholarship_history_operational_summary" },
   { version: "20261012000001", name: "immutable_audit" },
   { version: "20261013000001", name: "advisor_admin_immutable_history" },
+  { version: "20261014000001", name: "advisor_admin_profile_name" },
+  { version: "20261015000001", name: "protected_current_state_writers" },
+  { version: "20261015000002", name: "historical_audit_activity" },
+  { version: "20261016000001", name: "insert_metadata_and_positive_version" },
+  { version: "20261017000001", name: "revoke_advising_meeting_truncate" },
+  { version: "20261018000001", name: "lock_application_relink_parents" },
 ] as const;
 
 /** One shared capture: read-only catalog queries against the lane database. */
@@ -211,7 +217,7 @@ describe("schema inventory packet shape (local/schema-only/complete)", () => {
 });
 
 describe("migration ledger", () => {
-  it("records exactly the twenty-six local-chain migrations", () => {
+  it("records exactly the thirty-two local-chain migrations", () => {
     const ledger = packet.catalog.migrationLedger;
     expect(ledger).toHaveLength(EXPECTED_LEDGER.length);
     const byVersion = new Map(ledger.map((record) => [record.fields.version, record.fields.name]));
@@ -480,7 +486,7 @@ describe("entity lifecycle archiving catalog (migration 20260930000005)", () => 
 });
 
 describe("core-history DELETE lockdown catalog (migration 20260930000006)", () => {
-  it("captures no authenticated DELETE table grant on advisor, student, fellowship, or application", () => {
+  it("captures no authenticated DELETE or UPDATE table grant on advisor, student, fellowship, or application", () => {
     const grants = packet.catalog.grants.filter(
       (record) =>
         record.fields.objectType === "TABLE" &&
@@ -490,10 +496,13 @@ describe("core-history DELETE lockdown catalog (migration 20260930000006)", () =
     expect(grants.length, "core tables must carry authenticated table grants").toBeGreaterThan(0);
     for (const grant of grants) {
       expect(grant.fields.privilege, `${grant.fields.objectName} authenticated grant`).not.toBe("DELETE");
+      // Migration 20261015000001 also revokes direct authenticated UPDATE on
+      // all four current-state tables; the versioned RPCs are the only writers.
+      expect(grant.fields.privilege, `${grant.fields.objectName} authenticated grant`).not.toBe("UPDATE");
     }
   });
 
-  it("captures explicit SELECT/INSERT/UPDATE active-advisor policies and no DELETE policy on the core tables", () => {
+  it("captures explicit SELECT/INSERT active-advisor policies and no UPDATE/DELETE policy on the core tables", () => {
     const policies = packet.catalog.policies.filter(
       (record) =>
         ["advisor", "student", "fellowship", "application"].includes(String(record.fields.table)) &&
@@ -511,14 +520,18 @@ describe("core-history DELETE lockdown catalog (migration 20260930000006)", () =
       list.push(String(record.fields.command).toUpperCase());
       byTable.set(String(record.fields.table), list);
     }
+    // Migration 20261015000001 removes the direct authenticated UPDATE
+    // policies: every normal authenticated mutation now flows through the
+    // expected-version SECURITY DEFINER writer RPCs, so only the SELECT/INSERT
+    // surfaces remain.
     for (const table of ["student", "fellowship", "application"]) {
-      expect(byTable.get(table)?.sort(), `${table} policy commands`).toEqual(["INSERT", "SELECT", "UPDATE"]);
+      expect(byTable.get(table)?.sort(), `${table} policy commands`).toEqual(["INSERT", "SELECT"]);
     }
-    // Migration 20261002000001: advisor keeps only its self-or-active-staff
-    // SELECT and its self-scoped UPDATE policy (advisor_update_own_profile);
-    // the broad authenticated INSERT policy is dropped (advisor rows are
-    // created only through the trusted service-role provisioning path).
-    expect(byTable.get("advisor")?.sort(), "advisor policy commands").toEqual(["SELECT", "UPDATE"]);
+    // Migration 20261002000001 + 20261015000001: advisor keeps only its
+    // self-or-active-staff SELECT policy; both its broad authenticated INSERT
+    // policy and its self-scoped UPDATE policy are gone (rows are created only
+    // through trusted provisioning and mutated only through versioned RPCs).
+    expect(byTable.get("advisor")?.sort(), "advisor policy commands").toEqual(["SELECT"]);
   });
 
   it("revokes authenticated DELETE on the base-history rows fellowship_thursday and scholarship_history", () => {
@@ -1036,16 +1049,19 @@ describe("advisor identity/RLS lockdown (migration ...001)", () => {
     expect(String(trigger!.fields.definitionHash)).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it("records the lockdown SELECT/UPDATE policies on public.advisor", () => {
+  it("records the lockdown SELECT policy and no authenticated UPDATE/INSERT policy on public.advisor", () => {
     const policyNames = packet.catalog.policies.map((record) => record.fields.name);
     expect(policyNames, "self-or-active-staff SELECT policy").toContain(
       "advisor_select_self_or_active_staff"
     );
-    // Migration 20261002000001 replaced the broad active-staff UPDATE policy
-    // with the self-scoped own-profile UPDATE policy.
-    expect(policyNames, "self-scoped own-profile UPDATE policy").toContain(
-      "advisor_update_own_profile"
-    );
+    // Migration 20261015000001 removes the self-scoped own-profile UPDATE
+    // policy: an advisor display-name edit now flows through the
+    // expected-version `update_my_advisor_profile` / `update_advisor_profile_name`
+    // SECURITY DEFINER RPCs, so no direct authenticated UPDATE policy remains.
+    expect(
+      policyNames,
+      "the direct own-profile UPDATE policy is removed (versioned RPCs only)"
+    ).not.toContain("advisor_update_own_profile");
     // No authenticated advisor INSERT policy exists (trusted provisioning only).
     expect(policyNames, "no advisor_insert_active_staff policy").not.toContain(
       "advisor_insert_active_staff"
@@ -1127,5 +1143,30 @@ describe("expanded catalog sections (sequences/views/extensions/privileges)", ()
     expect(objectTypes.has("TABLE"), "TABLE grants present").toBe(true);
     expect(objectTypes.has("SEQUENCE"), "SEQUENCE grants present").toBe(true);
     expect(objectTypes.has("FUNCTION"), "FUNCTION grants present").toBe(true);
+  });
+});
+
+describe("advisor admin profile-name RPC catalog (migration 20261014000001)", () => {
+  it("captures update_advisor_profile_name as SECURITY DEFINER with authenticated-only EXECUTE (no PUBLIC/anon/service_role)", () => {
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "update_advisor_profile_name"
+    );
+    expect(fn, "update_advisor_profile_name function").toBeDefined();
+    expect(fn!.fields.securityMode, "update_advisor_profile_name security mode").toBe("DEFINER");
+    expect(fn!.fields.searchPath, "update_advisor_profile_name search path").toEqual([]);
+    expect(String(fn!.fields.signature), "update_advisor_profile_name signature").toContain("integer");
+    expect(String(fn!.fields.signature), "update_advisor_profile_name signature").toContain("text");
+    expect(String(fn!.fields.bodyHash)).toMatch(/^[0-9a-f]{64}$/);
+
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "update_advisor_profile_name must carry an effective ACL").toBe(true);
+    expect(acl, "authenticated EXECUTE on update_advisor_profile_name").toContain("authenticated=X");
+    const exposed = acl.filter((entry) =>
+      ["=X", "=X*", "anon=X", "anon=X*", "service_role=X", "service_role=X*"].includes(entry)
+    );
+    expect(
+      exposed,
+      "no PUBLIC/anon/service_role EXECUTE on update_advisor_profile_name (actor must be an authenticated auth.uid())"
+    ).toHaveLength(0);
   });
 });

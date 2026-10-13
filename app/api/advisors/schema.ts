@@ -39,32 +39,80 @@ export const provisionAdvisorSchema = z.strictObject({
 export type ProvisionAdvisorValues = z.infer<typeof provisionAdvisorSchema>;
 
 /**
- * Update: change the target's role OR active state — exactly one mutation per
- * request — with a REQUIRED non-blank human reason. A combined
- * `role` + `isActive` payload is rejected fail-closed with 400 BEFORE any
- * state change, so a partial application can never occur; a missing/blank
- * `reason` is also rejected before any privileged operation (role changes and
- * advisor activate/deactivate both require a human-attributable reason per
- * the approved plan, design points 4–5). The actor identity is never part of
- * the payload: the route injects the server-resolved effective-Admin id into
- * the trusted operations. Unknown keys — most importantly `auth_user_id` (no
- * rebinding via the API) — are rejected fail-closed with 400.
+ * Update: change the target's role OR active state OR advisor name — exactly
+ * one mutation per request — fail-closed with 400. A combined payload
+ * (`role` + `isActive`, `role` + `advisorName`, `isActive` + `advisorName`) is
+ * rejected BEFORE any state change, so a partial application can never occur.
+ *
+ * The `reason` is a REQUIRED non-blank human reason only for the privileged
+ * role and active-state mutations (role changes and advisor
+ * activate/deactivate both require a human-attributable reason per the
+ * approved plan, design points 4–5). An advisor-name edit — the trusted
+ * effective-Admin profile change for another advisor (review remediation) —
+ * is an ordinary profile edit: it records one `updated` event attributed to
+ * the acting Admin and does NOT require a reason (R8).
+ *
+ * `email` is deliberately NOT accepted: advisor login email is read-only for
+ * ordinary profile editing (R4) and can diverge from Auth only through a
+ * future explicit trusted account-management workflow. The actor identity is
+ * never part of the payload: the route injects the server-resolved
+ * effective-Admin id into the trusted operations, and the profile RPC derives
+ * the actor from the authenticated session. Unknown keys — most importantly
+ * `auth_user_id` (no rebinding via the API) and client actor fields — are
+ * rejected fail-closed with 400.
  */
 export const updateAdvisorSchema = z
   .strictObject({
     role: advisorRoleSchema.optional(),
     isActive: z.boolean().optional(),
+    advisorName: z
+      .string()
+      .trim()
+      .min(2, "Name must be at least 2 characters")
+      .max(120, "Name must be 120 characters or fewer")
+      .optional(),
     reason: z
       .string()
       .trim()
       .min(1, "A reason is required.")
-      .max(500, "Reason must be 500 characters or fewer"),
+      .max(500, "Reason must be 500 characters or fewer")
+      .optional(),
+    /**
+     * The caller's loaded target `advisor.row_version`. The versioned writers
+     * (`set_advisor_role`, `lifecycle_transition`,
+     * `update_advisor_profile_name`) reject a stale value with `PT409` before
+     * any change, so a stale admin form can never overwrite newer work.
+     */
+    expectedVersion: z
+      .number()
+      .int("A valid row version is required.")
+      .positive("A valid row version is required."),
   })
-  .refine((value) => value.role !== undefined || value.isActive !== undefined, {
-    message: "Provide role or isActive to update an advisor.",
-  })
-  .refine((value) => value.role === undefined || value.isActive === undefined, {
-    message: "Role and active-state cannot be updated in the same request.",
+  .refine(
+    (value) =>
+      value.role !== undefined ||
+      value.isActive !== undefined ||
+      value.advisorName !== undefined,
+    { message: "Provide role, isActive, or advisorName to update an advisor." }
+  )
+  .refine(
+    (value) =>
+      [value.role, value.isActive, value.advisorName].filter(
+        (field) => field !== undefined
+      ).length === 1,
+    { message: "Role, active-state, and advisor name cannot be updated in the same request." }
+  )
+  .superRefine((value, ctx) => {
+    if (
+      value.reason === undefined &&
+      (value.role !== undefined || value.isActive !== undefined)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["reason"],
+        message: "A reason is required.",
+      });
+    }
   });
 
 export type UpdateAdvisorValues = z.infer<typeof updateAdvisorSchema>;

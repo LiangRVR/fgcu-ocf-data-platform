@@ -203,6 +203,7 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
     event.preventDefault();
     const parsed = profileUpdateSchema.safeParse({
       ...profileForm,
+      expectedVersion: advisor.row_version,
       email: advisor.email ?? "",
     });
 
@@ -223,7 +224,11 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ advisorName: parsed.data.advisorName, email: advisor.email ?? "" }),
+        body: JSON.stringify({
+          advisorName: parsed.data.advisorName,
+          expectedVersion: parsed.data.expectedVersion,
+          email: advisor.email ?? "",
+        }),
       });
 
       const payload = (await response.json().catch(() => null)) as

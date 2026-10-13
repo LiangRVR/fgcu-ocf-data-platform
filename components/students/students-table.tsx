@@ -51,6 +51,10 @@ import {
 import { LifecycleAction } from "@/components/lifecycle";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
+import {
+  STALE_VERSION_GUIDANCE,
+  isVersionConflict,
+} from "@/lib/supabase/errors";
 import { Pagination } from "@/components/pagination/pagination";
 import {
   DEFAULT_PAGE,
@@ -193,6 +197,13 @@ export function StudentsTable({
   const [addStudentOpen, setAddStudentOpen] = useState(false);
   const [editStudentOpen, setEditStudentOpen] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
+  /**
+   * The edited row's loaded `row_version` (read from the base `student` table
+   * when the edit dialog opens; the read-only `student_list` view does not
+   * expose it). Carried unchanged through the form until save so a stale form
+   * is rejected by the writer with `PT409`.
+   */
+  const [editVersion, setEditVersion] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
@@ -330,7 +341,7 @@ export function StudentsTable({
     }
   };
 
-  const openEdit = (student: Student) => {
+  const openEdit = async (student: Student) => {
     setEditingStudent(student);
     setEditForm({
       ...EMPTY_STUDENT_FORM,
@@ -345,7 +356,17 @@ export function StudentsTable({
       us_citizen: student.us_citizen,
     });
     setEditFormErrors({});
+    setEditVersion(null);
     setEditStudentOpen(true);
+
+    // Load the optimistic-concurrency version now (not at save time) so a
+    // concurrent edit during the dialog's lifetime is detected on save.
+    const { data, error } = await supabaseBrowserClient
+      .from("student")
+      .select("row_version")
+      .eq("student_id", student.student_id)
+      .single();
+    if (!error && data) setEditVersion(data.row_version);
   };
 
   const handleEditSubmit = async () => {
@@ -353,27 +374,51 @@ export function StudentsTable({
     const errors = validateStudentForm(editForm);
     setEditFormErrors(errors);
     if (Object.keys(errors).length > 0) return;
+    if (editVersion == null) {
+      // Fail closed: the loaded version is not available.
+      toast.error(STALE_VERSION_GUIDANCE);
+      return;
+    }
 
     setIsLoading(true);
     try {
-      const { error } = await supabaseBrowserClient
-        .from("student")
-        .update({
-          full_name: editForm.full_name,
-          email: editForm.email,
-          major: editForm.major || null,
-          class_standing: editForm.class_standing || null,
-          gpa: editForm.gpa ? parseFloat(editForm.gpa) : null,
-          is_ch_student: editForm.is_ch_student,
-          first_gen: editForm.first_gen,
-          honors_college: editForm.honors_college,
-          us_citizen: editForm.us_citizen,
-        })
-        .eq("student_id", editingStudent.student_id)
-        .select()
-        .single();
+      // Full-replacement writer: unedited columns pass through from the loaded
+      // list row so only the edited fields change.
+      const { data, error } = await supabaseBrowserClient.rpc(
+        "update_student_profile",
+        {
+          p_student_id: editingStudent.student_id,
+          p_expected_version: editVersion,
+          p_full_name: editForm.full_name,
+          p_email: editForm.email,
+          p_is_ch_student: editForm.is_ch_student,
+          p_major: (editForm.major || null) as string,
+          p_minor: (editingStudent.minor ?? null) as string,
+          p_gpa: (editForm.gpa ? parseFloat(editForm.gpa) : null) as number,
+          p_class_standing: (editForm.class_standing || null) as string,
+          p_us_citizen: editForm.us_citizen,
+          p_age: (editingStudent.age ?? null) as number,
+          p_gender: (editingStudent.gender ?? null) as string,
+          p_pronouns: (editingStudent.pronouns ?? null) as string,
+          p_race_ethnicity: (editingStudent.race_ethnicity ?? null) as string,
+          p_languages: (editingStudent.languages ?? null) as string,
+          p_first_gen: editForm.first_gen,
+          p_honors_college: editForm.honors_college,
+        },
+      );
 
-      if (error) throw error;
+      if (error) {
+        if (isVersionConflict(error)) {
+          // Keep the edited values visible for review; require a manual
+          // refresh. No retry, no overwrite.
+          toast.error(STALE_VERSION_GUIDANCE);
+          return;
+        }
+        throw error;
+      }
+
+      const updated = Array.isArray(data) ? data[0] : data;
+      if (updated) setEditVersion(updated.row_version);
 
       // Re-run the server loader so the edited row's new sort position and
       // any filter membership are reflected on the current paged source.
@@ -383,6 +428,7 @@ export function StudentsTable({
       setEditingStudent(null);
       setEditForm(EMPTY_STUDENT_FORM);
       setEditFormErrors({});
+      setEditVersion(null);
     } catch (err) {
       console.error(err);
       toast.error("Failed to update student");
@@ -1184,6 +1230,7 @@ export function StudentsTable({
                 setEditingStudent(null);
                 setEditForm(EMPTY_STUDENT_FORM);
                 setEditFormErrors({});
+                setEditVersion(null);
               }}
             >
               Cancel

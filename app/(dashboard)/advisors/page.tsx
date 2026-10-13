@@ -14,6 +14,7 @@ import { LifecycleBadge } from "@/components/lifecycle";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Pagination } from "@/components/pagination";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
+import { STALE_VERSION_GUIDANCE } from "@/lib/supabase/errors";
 import {
   applyAdvisorQueryPatch,
   canonicalAdvisorSearchParams,
@@ -39,6 +40,7 @@ const EMPTY_META: AdvisorListMeta = { page: 1, pageSize: 25, totalCount: 0, tota
 function advisorErrorMessage(status: number, serverMessage?: string): string {
   if (status === 403) return "Administrator access is required.";
   if (status === 401) return "Your session has expired. Please sign in again.";
+  if (status === 409) return serverMessage || STALE_VERSION_GUIDANCE;
   return serverMessage || "Unable to load advisors.";
 }
 
@@ -59,6 +61,7 @@ export function AdvisorAccountsPanel({
   onRetry,
   onRoleChange,
   onToggleActive,
+  onEditName,
 }: {
   advisors: AdvisorListRow[];
   meta: AdvisorListMeta;
@@ -71,6 +74,7 @@ export function AdvisorAccountsPanel({
   onRetry: () => void;
   onRoleChange: (id: number, role: Role) => void;
   onToggleActive: (id: number, isActive: boolean) => void;
+  onEditName: (id: number, advisorName: string) => void;
 }) {
   return (
     <section className="space-y-4">
@@ -148,13 +152,18 @@ export function AdvisorAccountsPanel({
                       </SelectContent>
                     </Select>
                   </div>
-                  <Button
-                    variant="outline"
-                    disabled={busy === advisor.advisor_id}
-                    onClick={() => onToggleActive(advisor.advisor_id, !advisor.is_active)}
-                  >
-                    {busy === advisor.advisor_id ? "Saving…" : advisor.is_active ? "Deactivate" : "Activate"}
-                  </Button>
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="outline" disabled={busy === advisor.advisor_id} onClick={() => onEditName(advisor.advisor_id, advisor.advisor_name)}>
+                      Edit name
+                    </Button>
+                    <Button
+                      variant="outline"
+                      disabled={busy === advisor.advisor_id}
+                      onClick={() => onToggleActive(advisor.advisor_id, !advisor.is_active)}
+                    >
+                      {busy === advisor.advisor_id ? "Saving…" : advisor.is_active ? "Deactivate" : "Activate"}
+                    </Button>
+                  </div>
                 </div>
               </AppCardContent>
             </AppCard>
@@ -199,8 +208,10 @@ function AdvisorManagement() {
   const [busy, setBusy] = useState<Busy>(null);
   const [searchInput, setSearchInput] = useState(query.search);
   const [form, setForm] = useState({ email: "", displayName: "", role: "Advisor" as Role });
-  const [lifecycleTarget, setLifecycleTarget] = useState<{ id: number; isActive: boolean } | null>(null);
-  const [roleTarget, setRoleTarget] = useState<{ id: number; role: Role } | null>(null);
+  const [lifecycleTarget, setLifecycleTarget] = useState<{ id: number; isActive: boolean; expectedVersion: number | null } | null>(null);
+  const [roleTarget, setRoleTarget] = useState<{ id: number; role: Role; expectedVersion: number | null } | null>(null);
+  const [nameTarget, setNameTarget] = useState<{ id: number; advisorName: string; expectedVersion: number | null } | null>(null);
+  const [editedName, setEditedName] = useState("");
   const [lifecycleReason, setLifecycleReason] = useState("");
 
   const navigate = useCallback(
@@ -309,7 +320,11 @@ function AdvisorManagement() {
     }
   }
 
-  async function updateAdvisor(id: number, update: { role?: Role; isActive?: boolean; reason?: string }) {
+  async function updateAdvisor(id: number, update: { role?: Role; isActive?: boolean; reason?: string; advisorName?: string; expectedVersion: number | null }) {
+    if (update.expectedVersion == null) {
+      toast.error("Update failed", { description: STALE_VERSION_GUIDANCE });
+      return;
+    }
     setBusy(id);
     try {
       const response = await fetch(`/api/advisors/${id}`, {
@@ -481,14 +496,45 @@ function AdvisorManagement() {
         onPageSizeChange={(pageSize) => navigate({ pageSize })}
         onRetry={() => void load()}
         onRoleChange={(id, role) => {
-          setRoleTarget({ id, role });
+          const found = advisors.find((item) => item.advisor_id === id);
+          setRoleTarget({ id, role, expectedVersion: found?.row_version ?? null });
           setLifecycleReason("");
         }}
         onToggleActive={(id, isActive) => {
-          setLifecycleTarget({ id, isActive });
+          const found = advisors.find((item) => item.advisor_id === id);
+          setLifecycleTarget({ id, isActive, expectedVersion: found?.row_version ?? null });
           setLifecycleReason("");
         }}
+        onEditName={(id, advisorName) => {
+          const found = advisors.find((item) => item.advisor_id === id);
+          setNameTarget({ id, advisorName, expectedVersion: found?.row_version ?? null });
+          setEditedName(advisorName);
+        }}
       />
+      {nameTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4" role="presentation">
+          <section role="dialog" aria-modal="true" aria-labelledby="advisor-name-title" className="w-full max-w-md space-y-4 rounded-xl bg-white p-6 shadow-xl">
+            <div>
+              <h2 id="advisor-name-title" className="text-lg font-semibold text-slate-900">Edit advisor name</h2>
+              <p className="mt-1 text-sm text-slate-600">Update the display name shown across the workspace. Email is managed separately.</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="advisor-display-name">Display name</Label>
+              <Input id="advisor-display-name" value={editedName} onChange={(event) => setEditedName(event.target.value)} required />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" disabled={busy === nameTarget.id} onClick={() => setNameTarget(null)}>Cancel</Button>
+              <Button type="button" disabled={busy === nameTarget.id || !editedName.trim()} onClick={async () => {
+                const target = nameTarget;
+                const advisorName = editedName.trim();
+                if (!advisorName) return;
+                await updateAdvisor(target.id, { advisorName, expectedVersion: target.expectedVersion });
+                setNameTarget(null);
+              }}>{busy === nameTarget.id ? "Saving…" : "Save name"}</Button>
+            </div>
+          </section>
+        </div>
+      )}
       {lifecycleTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4" role="presentation">
           <section role="alertdialog" aria-modal="true" aria-labelledby="advisor-lifecycle-title" className="w-full max-w-md space-y-4 rounded-xl bg-white p-6 shadow-xl">
@@ -508,7 +554,7 @@ function AdvisorManagement() {
                 const target = lifecycleTarget;
                 const reason = lifecycleReason.trim();
                 if (!reason) return;
-                await updateAdvisor(target.id, { isActive: target.isActive, reason });
+                await updateAdvisor(target.id, { isActive: target.isActive, reason, expectedVersion: target.expectedVersion });
                 setLifecycleTarget(null);
               }}>{busy === lifecycleTarget.id ? "Saving…" : lifecycleTarget.isActive ? "Activate" : "Deactivate"}</Button>
             </div>
@@ -532,7 +578,7 @@ function AdvisorManagement() {
                 const target = roleTarget;
                 const reason = lifecycleReason.trim();
                 if (!reason) return;
-                await updateAdvisor(target.id, { role: target.role, reason });
+                await updateAdvisor(target.id, { role: target.role, reason, expectedVersion: target.expectedVersion });
                 setRoleTarget(null);
               }}>{busy === roleTarget.id ? "Saving…" : `Change to ${roleTarget.role}`}</Button>
             </div>

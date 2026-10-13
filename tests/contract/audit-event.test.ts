@@ -48,7 +48,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import {
   createAnonClient,
@@ -239,6 +239,121 @@ async function readAudit(entityType: string, entityId: number): Promise<AuditRow
   return rows;
 }
 
+// ---------------------------------------------------------------------------
+// Release-hardening oracles: authenticated-role TRUNCATE, database-authored
+// timestamps, and reserved-baseline evidence.
+// ---------------------------------------------------------------------------
+
+/** Current database wall-clock time as epoch milliseconds (bracket oracle). */
+async function dbNowMs(): Promise<number> {
+  const { rows } = await pool.query<{ now_ms: string }>(
+    "SELECT (extract(epoch from clock_timestamp()) * 1000)::bigint::text AS now_ms"
+  );
+  return Number(rows[0].now_ms);
+}
+
+/**
+ * Epoch milliseconds for an audit timestamp. node-postgres returns
+ * `timestamptz` as a `Date` whose `toString()` DROPS milliseconds, so
+ * `new Date(String(value))` would silently truncate the precision needed for a
+ * sub-second window check. Always take `Date#getTime()` directly.
+ */
+function auditEpochMs(value: string | Date): number {
+  return value instanceof Date ? value.getTime() : new Date(value).getTime();
+}
+
+/**
+ * Assert an audit `occurred_at` is DATABASE-authored: it must fall inside the
+ * [before, after] wall-clock window captured around the mutation, so it cannot
+ * be a client-supplied or fabricated value.
+ */
+function expectDbAuthoredTimestamp(
+  occurredAt: string | Date,
+  beforeMs: number,
+  afterMs: number,
+  label: string
+): number {
+  const value = auditEpochMs(occurredAt);
+  expect(Number.isFinite(value), `${label}: occurred_at parses`).toBe(true);
+  expect(value, `${label}: not before the pre-write database clock`).toBeGreaterThanOrEqual(beforeMs);
+  expect(value, `${label}: not after the post-write database clock`).toBeLessThanOrEqual(afterMs);
+  return value;
+}
+
+/**
+ * REAL authenticated TRUNCATE attempt. `SET LOCAL ROLE authenticated` mirrors
+ * the exact PostgREST request role, and the attempt runs inside a transaction
+ * that is ALWAYS rolled back — so even an unexpected TRUNCATE grant could never
+ * destroy history. Returns the rejection SQLSTATE (undefined when it was NOT
+ * denied, which is a failure the assertion surfaces).
+ */
+async function authenticatedTruncateCode(table: string): Promise<string | undefined> {
+  const client: PoolClient = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL ROLE authenticated");
+    const { rows } = await client.query<{ role: string }>("SELECT current_user AS role");
+    if (rows[0]?.role !== "authenticated") {
+      throw new Error(`could not assume the authenticated role (current_user=${rows[0]?.role})`);
+    }
+    try {
+      await client.query(`TRUNCATE TABLE public.${table}`);
+      return undefined;
+    } catch (error) {
+      return (error as { code?: string }).code;
+    }
+  } finally {
+    await client.query("ROLLBACK").catch(() => undefined);
+    client.release();
+  }
+}
+
+/** Read `row_version` and the raw `updated_at` epoch for one current-state row. */
+async function readVersionTimestamp(
+  table: "student" | "fellowship" | "application",
+  idColumn: string,
+  id: number
+): Promise<{ row_version: number; updated_at_epoch: number }> {
+  const { rows } = await pool.query<{ row_version: number; updated_at_epoch: number }>(
+    `SELECT row_version, extract(epoch from updated_at)::double precision AS updated_at_epoch
+       FROM public.${table} WHERE ${idColumn} = $1`,
+    [id]
+  );
+  if (rows.length !== 1) throw new Error(`no ${table} row ${id} for version/timestamp read`);
+  return { row_version: rows[0].row_version, updated_at_epoch: Number(rows[0].updated_at_epoch) };
+}
+
+/** Direct positional SQL call to the pinned `update_application` writer. */
+async function directUpdateApplicationViaSql(
+  client: PoolClient,
+  applicationId: number,
+  expectedVersion: number,
+  row: {
+    student_id: number;
+    fellowship_id: number;
+    application_year: number | null;
+    destination_country: string | null;
+    stage_of_application: string;
+    is_semi_finalist: boolean;
+    is_finalist: boolean;
+  }
+): Promise<void> {
+  await client.query(
+    `SELECT public.update_application($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [
+      applicationId,
+      expectedVersion,
+      row.student_id,
+      row.fellowship_id,
+      row.application_year,
+      row.destination_country,
+      row.stage_of_application,
+      row.is_semi_finalist,
+      row.is_finalist,
+    ]
+  );
+}
+
 // Whitelists asserted verbatim (sorted).
 const STUDENT_KEYS = [
   "age",
@@ -268,6 +383,138 @@ const APPLICATION_KEYS = [
   "stage_of_application",
   "student_id",
 ].sort();
+
+// ---------------------------------------------------------------------------
+// Versioned protected-writer helpers (migration 20261015000001)
+//
+// Migration 20261015000001 revokes direct authenticated UPDATE on the four
+// current-state tables; every normal mutation now flows through the narrow
+// expected-version SECURITY DEFINER writers (`update_student_profile`,
+// `update_fellowship`, `update_application`) and the versioned
+// `lifecycle_transition`. These helpers read the live `row_version` and write
+// through the RPCs so the audit-diff contract asserted below is exercised on
+// the PRODUCTION path, not a revoked table API.
+// ---------------------------------------------------------------------------
+
+/** Read the live `row_version` of a current-state row. */
+async function currentRowVersion(
+  table: "student" | "fellowship" | "application",
+  id: number
+): Promise<number> {
+  const idColumn =
+    table === "student" ? "student_id" : table === "fellowship" ? "fellowship_id" : "application_id";
+  const { rows } = await pool.query<{ row_version: number }>(
+    `SELECT row_version FROM public.${table} WHERE ${idColumn} = $1`,
+    [id]
+  );
+  if (rows.length !== 1) throw new Error(`no ${table} row ${id} for version read`);
+  return rows[0].row_version;
+}
+
+/** Full-replacement student writer: keeps every current field, applies `changes`. */
+async function updateStudentViaWriter(
+  actor: Actor,
+  studentId: number,
+  changes: Record<string, unknown>,
+  expectedVersion?: number
+): Promise<{ error: { code?: string; message?: string } | null }> {
+  const version = expectedVersion ?? (await currentRowVersion("student", studentId));
+  const { rows } = await pool.query<Record<string, unknown>>(
+    `SELECT full_name, email, is_ch_student, major, minor, gpa::float8 AS gpa,
+            class_standing, us_citizen, age, gender, pronouns, race_ethnicity,
+            languages, first_gen, honors_college
+       FROM public.student WHERE student_id = $1`,
+    [studentId]
+  );
+  const row = rows[0];
+  const { data, error } = await actor.client.rpc("update_student_profile", {
+    p_student_id: studentId,
+    p_expected_version: version,
+    p_full_name: row.full_name,
+    p_email: row.email,
+    p_is_ch_student: row.is_ch_student,
+    p_major: row.major,
+    p_minor: row.minor,
+    p_gpa: row.gpa,
+    p_class_standing: row.class_standing,
+    p_us_citizen: row.us_citizen,
+    p_age: row.age,
+    p_gender: row.gender,
+    p_pronouns: row.pronouns,
+    p_race_ethnicity: row.race_ethnicity,
+    p_languages: row.languages,
+    p_first_gen: row.first_gen,
+    p_honors_college: row.honors_college,
+    ...changes,
+  });
+  return { error: (error as { code?: string; message?: string } | null) ?? null };
+}
+
+/** Fellowship-name writer. */
+async function updateFellowshipViaWriter(
+  actor: Actor,
+  fellowshipId: number,
+  fellowshipName: string,
+  expectedVersion?: number
+): Promise<{ error: { code?: string; message?: string } | null }> {
+  const version = expectedVersion ?? (await currentRowVersion("fellowship", fellowshipId));
+  const { data, error } = await actor.client.rpc("update_fellowship", {
+    p_fellowship_id: fellowshipId,
+    p_expected_version: version,
+    p_fellowship_name: fellowshipName,
+  });
+  return { error: (error as { code?: string; message?: string } | null) ?? null };
+}
+
+/** Full-replacement application writer: keeps every current field, applies `changes`. */
+async function updateApplicationViaWriter(
+  actor: Actor,
+  applicationId: number,
+  changes: Record<string, unknown>,
+  expectedVersion?: number
+): Promise<{ error: { code?: string; message?: string } | null }> {
+  const version = expectedVersion ?? (await currentRowVersion("application", applicationId));
+  const { rows } = await pool.query<Record<string, unknown>>(
+    `SELECT student_id, fellowship_id, application_year,
+            destination_country, stage_of_application,
+            is_semi_finalist, is_finalist
+       FROM public.application WHERE application_id = $1`,
+    [applicationId]
+  );
+  const row = rows[0];
+  const { data, error } = await actor.client.rpc("update_application", {
+    p_application_id: applicationId,
+    p_expected_version: version,
+    p_student_id: row.student_id,
+    p_fellowship_id: row.fellowship_id,
+    p_application_year: row.application_year,
+    p_destination_country: row.destination_country,
+    p_stage_of_application: row.stage_of_application,
+    p_is_semi_finalist: row.is_semi_finalist,
+    p_is_finalist: row.is_finalist,
+    ...changes,
+  });
+  return { error: (error as { code?: string; message?: string } | null) ?? null };
+}
+
+/** Versioned lifecycle RPC wrapper (auto-reads the target's current version). */
+async function lifecycleRpc(
+  client: SupabaseClient,
+  entity: "student" | "fellowship",
+  action: string,
+  entityId: number,
+  reason: string
+): Promise<{ data: unknown; error: { code?: string; message?: string } | null }> {
+  const version = await currentRowVersion(entity, entityId);
+  const { data, error } = await client.rpc("lifecycle_transition", {
+    p_entity: entity,
+    p_action: action,
+    p_entity_id: entityId,
+    p_reason: reason,
+    p_expected_version: version,
+  });
+  return { data, error: (error as { code?: string; message?: string } | null) ?? null };
+}
 
 // ---------------------------------------------------------------------------
 // Suite state
@@ -435,12 +682,11 @@ describe("audit update diffs (R6/R7)", () => {
     expect(error).toBeNull();
     const studentId = data!.student_id as number;
 
-    const { error: updateError } = await staff.client
-      .from("student")
-      .update({ gpa: 3.85, class_standing: "Senior" })
-      .eq("student_id", studentId)
-      .select("student_id");
-    expect(updateError, "two-field student UPDATE").toBeNull();
+    const result = await updateStudentViaWriter(staff, studentId, {
+      p_gpa: 3.85,
+      p_class_standing: "Senior",
+    });
+    expect(result.error, "two-field student update through the protected writer").toBeNull();
 
     const events = await readAudit("student", studentId);
     expect(events.filter((e) => e.action === "created")).toHaveLength(1);
@@ -478,12 +724,11 @@ describe("audit update diffs (R6/R7)", () => {
     expect(error).toBeNull();
     const studentId = data!.student_id as number;
 
-    const { error: noopError } = await staff.client
-      .from("student")
-      .update({ gpa: 3.1, class_standing: "Sophomore" })
-      .eq("student_id", studentId)
-      .select("student_id");
-    expect(noopError, "no-op UPDATE must succeed").toBeNull();
+    const noop = await updateStudentViaWriter(staff, studentId, {
+      p_gpa: 3.1,
+      p_class_standing: "Sophomore",
+    });
+    expect(noop.error, "no-op UPDATE through the protected writer succeeds").toBeNull();
 
     const events = await readAudit("student", studentId);
     expect(events.filter((e) => e.action === "created")).toHaveLength(1);
@@ -492,12 +737,10 @@ describe("audit update diffs (R6/R7)", () => {
 
   it("records a single-field change with the {old,new} shape", async () => {
     const studentId = await seedStudent("single-field", { gpa: 3.0 });
-    const { error } = await staff.client
-      .from("student")
-      .update({ major: "Chemistry" })
-      .eq("student_id", studentId)
-      .select("student_id");
-    expect(error).toBeNull();
+    const single = await updateStudentViaWriter(staff, studentId, {
+      p_major: "Chemistry",
+    });
+    expect(single.error).toBeNull();
 
     const events = await readAudit("student", studentId);
     const update = events.find((e) => e.action === "updated");
@@ -516,12 +759,8 @@ describe("audit update diffs (R6/R7)", () => {
     const fellowshipId = data!.fellowship_id as number;
 
     const renamed = `${name} II`;
-    const { error: updateError } = await staff.client
-      .from("fellowship")
-      .update({ fellowship_name: renamed })
-      .eq("fellowship_id", fellowshipId)
-      .select("fellowship_id");
-    expect(updateError).toBeNull();
+    const rename = await updateFellowshipViaWriter(staff, fellowshipId, renamed);
+    expect(rename.error).toBeNull();
 
     const events = await readAudit("fellowship", fellowshipId);
     const update = events.find((e) => e.action === "updated");
@@ -538,12 +777,12 @@ describe("audit update diffs (R6/R7)", () => {
 describe("audit application stage history and subject context (R4/R8)", () => {
   it("records a stage transition with old/new values and full immutable context", async () => {
     const { applicationId, studentId, fellowshipId } = await seedApplication("stage-context");
-    const { error } = await staff.client
-      .from("application")
-      .update({ stage_of_application: "Finalist", is_semi_finalist: true, is_finalist: true })
-      .eq("application_id", applicationId)
-      .select("application_id");
-    expect(error).toBeNull();
+    const stage = await updateApplicationViaWriter(staff, applicationId, {
+      p_stage_of_application: "Finalist",
+      p_is_semi_finalist: true,
+      p_is_finalist: true,
+    });
+    expect(stage.error).toBeNull();
 
     const events = await readAudit("application", applicationId);
     const update = events.find((e) => e.action === "updated");
@@ -571,53 +810,83 @@ describe("audit application stage history and subject context (R4/R8)", () => {
 describe("audit lifecycle classification: one canonical archive/restore event (R7)", () => {
   it("emits exactly one archived and one restored event for a student via the lifecycle RPC, and none for idempotent repeats", async () => {
     const studentId = await seedStudent("lifecycle-student");
-    await expect(
-      admin.client.rpc("lifecycle_transition", { p_entity: "student", p_action: "archive", p_entity_id: studentId, p_reason: "contract lifecycle archive" })
-    ).resolves.toMatchObject({ data: [{ applied: true, action: "archive" }], error: null });
+    const archived = await lifecycleRpc(
+      admin.client,
+      "student",
+      "archive",
+      studentId,
+      "contract lifecycle archive"
+    );
+    expect(archived.error).toBeNull();
+    expect(archived.data).toMatchObject([{ applied: true, action: "archive" }]);
 
     let events = await readAudit("student", studentId);
     expect(events.filter((e) => e.action === "created"), "the original created event remains").toHaveLength(1);
     expect(events.filter((e) => e.action === "archived"), "exactly one archived event").toHaveLength(1);
     expect(events.filter((e) => e.action === "updated"), "no generic updated event for a lifecycle transition").toHaveLength(0);
-    const archived = events.find((e) => e.action === "archived")!;
-    expect(archived.origin, "lifecycle RPC still attributes the authenticated admin").toBe("user");
-    expect(archived.actor_advisor_id).toBe(admin.advisorId);
-    expect(archived.changes, "archive diff exposes the archived_at transition").toEqual({
+    const archivedEvent = events.find((e) => e.action === "archived")!;
+    expect(archivedEvent.origin, "lifecycle RPC still attributes the authenticated admin").toBe("user");
+    expect(archivedEvent.actor_advisor_id).toBe(admin.advisorId);
+    expect(archivedEvent.changes, "archive diff exposes the archived_at transition").toEqual({
       archived_at: { old: null, new: expect.any(String) },
     });
-    expect(archived.new_values).toMatchObject({ archived_at: expect.any(String) });
+    expect(archivedEvent.new_values).toMatchObject({ archived_at: expect.any(String) });
 
     // Idempotent re-application: applied=false means no row write, no event.
-    await expect(
-      admin.client.rpc("lifecycle_transition", { p_entity: "student", p_action: "archive", p_entity_id: studentId, p_reason: "contract lifecycle archive" })
-    ).resolves.toMatchObject({ data: [{ applied: false }], error: null });
+    const idempotent = await lifecycleRpc(
+      admin.client,
+      "student",
+      "archive",
+      studentId,
+      "contract lifecycle archive"
+    );
+    expect(idempotent.error).toBeNull();
+    expect(idempotent.data).toMatchObject([{ applied: false }]);
     events = await readAudit("student", studentId);
     expect(events.filter((e) => e.action === "archived"), "idempotent archive adds no event").toHaveLength(1);
 
     // Restore: one canonical restored event.
-    await expect(
-      admin.client.rpc("lifecycle_transition", { p_entity: "student", p_action: "restore", p_entity_id: studentId, p_reason: "contract lifecycle restore" })
-    ).resolves.toMatchObject({ data: [{ applied: true, action: "restore" }], error: null });
+    const restored = await lifecycleRpc(
+      admin.client,
+      "student",
+      "restore",
+      studentId,
+      "contract lifecycle restore"
+    );
+    expect(restored.error).toBeNull();
+    expect(restored.data).toMatchObject([{ applied: true, action: "restore" }]);
     events = await readAudit("student", studentId);
     expect(events.filter((e) => e.action === "restored"), "exactly one restored event").toHaveLength(1);
-    const restored = events.find((e) => e.action === "restored")!;
-    expect(restored.changes).toEqual({ archived_at: { old: expect.any(String), new: null } });
+    const restoredEvent = events.find((e) => e.action === "restored")!;
+    expect(restoredEvent.changes).toEqual({ archived_at: { old: expect.any(String), new: null } });
     expect(events.filter((e) => e.action === "updated"), "no generic updated event from the restore").toHaveLength(0);
   });
 
   it("emits exactly one archived and one restored event for a fellowship via the lifecycle RPC", async () => {
     const fellowshipId = await seedFellowship("lifecycle-fellowship");
-    await expect(
-      admin.client.rpc("lifecycle_transition", { p_entity: "fellowship", p_action: "archive", p_entity_id: fellowshipId, p_reason: "contract lifecycle archive" })
-    ).resolves.toMatchObject({ data: [{ applied: true, action: "archive" }], error: null });
+    const archived = await lifecycleRpc(
+      admin.client,
+      "fellowship",
+      "archive",
+      fellowshipId,
+      "contract lifecycle archive"
+    );
+    expect(archived.error).toBeNull();
+    expect(archived.data).toMatchObject([{ applied: true, action: "archive" }]);
 
     let events = await readAudit("fellowship", fellowshipId);
     expect(events.filter((e) => e.action === "archived"), "exactly one fellowship archived event").toHaveLength(1);
     expect(events.filter((e) => e.action === "updated"), "no generic updated event").toHaveLength(0);
 
-    await expect(
-      admin.client.rpc("lifecycle_transition", { p_entity: "fellowship", p_action: "restore", p_entity_id: fellowshipId, p_reason: "contract lifecycle restore" })
-    ).resolves.toMatchObject({ data: [{ applied: true, action: "restore" }], error: null });
+    const restored = await lifecycleRpc(
+      admin.client,
+      "fellowship",
+      "restore",
+      fellowshipId,
+      "contract lifecycle restore"
+    );
+    expect(restored.error).toBeNull();
+    expect(restored.data).toMatchObject([{ applied: true, action: "restore" }]);
     events = await readAudit("fellowship", fellowshipId);
     expect(events.filter((e) => e.action === "restored"), "exactly one fellowship restored event").toHaveLength(1);
     expect(events.filter((e) => e.action === "updated"), "no generic updated event from the restore").toHaveLength(0);
@@ -646,12 +915,8 @@ describe("audit actor id and name snapshot retention after rename (R5)", () => {
     expect(error).toBeNull();
     const studentId = data!.student_id as number;
 
-    const { error: updateOne } = await actor.client
-      .from("student")
-      .update({ gpa: 3.5 })
-      .eq("student_id", studentId)
-      .select("student_id");
-    expect(updateOne).toBeNull();
+    const firstWrite = await updateStudentViaWriter(actor, studentId, { p_gpa: 3.5 });
+    expect(firstWrite.error, "first student write through the protected writer").toBeNull();
 
     // A later advisor display-name change must not rewrite prior events.
     const { error: renameError } = await service
@@ -661,12 +926,8 @@ describe("audit actor id and name snapshot retention after rename (R5)", () => {
       .select("advisor_id");
     expect(renameError).toBeNull();
 
-    const { error: updateTwo } = await actor.client
-      .from("student")
-      .update({ major: "Biochemistry" })
-      .eq("student_id", studentId)
-      .select("student_id");
-    expect(updateTwo).toBeNull();
+    const secondWrite = await updateStudentViaWriter(actor, studentId, { p_major: "Biochemistry" });
+    expect(secondWrite.error, "second student write through the protected writer").toBeNull();
 
     const events = await readAudit("student", studentId);
     const updates = events.filter((e) => e.action === "updated");
@@ -688,11 +949,11 @@ describe("audit actor id and name snapshot retention after rename (R5)", () => {
 describe("audit snapshot and changes whitelist exclusions (R6)", () => {
   it("exposes only the whitelisted application fields and never the technical/binding keys", async () => {
     const { applicationId, studentId, fellowshipId } = await seedApplication("whitelist-app");
-    await staff.client
-      .from("application")
-      .update({ destination_country: "Ukraine", stage_of_application: "Under Review" })
-      .eq("application_id", applicationId)
-      .select("application_id");
+    const whitelistWrite = await updateApplicationViaWriter(staff, applicationId, {
+      p_destination_country: "Ukraine",
+      p_stage_of_application: "Under Review",
+    });
+    expect(whitelistWrite.error, "application update through the protected writer").toBeNull();
 
     const events = await readAudit("application", applicationId);
     for (const event of events) {
@@ -827,6 +1088,27 @@ describe("audit RLS and immutability boundary (R2)", () => {
     expect(after[0].n).toBe(1);
     expect(after[0].reason).toBeNull();
   });
+
+  it("denies a REAL authenticated TRUNCATE of audit history and preserves every row (R3)", async () => {
+    // A catalog grant check is necessary but not sufficient release evidence:
+    // execute the attempt as the exact `authenticated` request role.
+    const { rows: before } = await pool.query<{ n: number; min_id: number | null }>(
+      "SELECT count(*)::int AS n, min(audit_id) AS min_id FROM public.audit_event"
+    );
+    expect(before[0].n, "the suite has produced audit history to protect").toBeGreaterThan(0);
+
+    const code = await authenticatedTruncateCode("audit_event");
+    expect(code, "authenticated TRUNCATE of audit_event must be denied with 42501").toBe("42501");
+
+    // The rolled-back attempt removed nothing: history only grew (or held).
+    const { rows: after } = await pool.query<{ n: number; distinct_min: number | null }>(
+      "SELECT count(*)::int AS n, min(audit_id) AS distinct_min FROM public.audit_event"
+    );
+    expect(after[0].n, "no audit row was removed by the denied TRUNCATE").toBeGreaterThanOrEqual(
+      before[0].n
+    );
+    expect(after[0].distinct_min, "the first audit row still exists").toBe(before[0].min_id);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -862,6 +1144,310 @@ describe("audit writes are transaction-atomic with the source mutation (R3)", ()
     // No updated event was ever written for the failed mutation.
     const events = await readAudit("student", studentId);
     expect(events.filter((e) => e.action === "updated"), "failed mutation records nothing").toHaveLength(0);
+  });
+
+  it("rolls back the application row, version, timestamp, and event when the audit write fails (R5)", async () => {
+    const { applicationId, studentId, fellowshipId } = await seedApplication("atomic-app", {
+      stage_of_application: "Submitted",
+      destination_country: "Testland",
+    });
+    const before = await readVersionTimestamp("application", "application_id", applicationId);
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      // Transaction-local forced audit failure: the BEFORE INSERT trigger and
+      // the row/version writes it aborts are all confined to this transaction.
+      await client.query(
+        `CREATE OR REPLACE FUNCTION public._test_audit_application_fail()
+           RETURNS trigger LANGUAGE plpgsql AS $fn$
+           BEGIN
+             RAISE EXCEPTION 'forced audit failure' USING ERRCODE = 'P0001';
+           END;
+         $fn$`
+      );
+      await client.query(
+        `CREATE TRIGGER _test_audit_application_fail
+           BEFORE INSERT ON public.audit_event
+           FOR EACH ROW EXECUTE FUNCTION public._test_audit_application_fail()`
+      );
+      await client.query("SELECT set_config('request.jwt.claim.sub', $1, true)", [staff.userId]);
+      await client.query("SELECT set_config('request.jwt.claims', $1, true)", [
+        JSON.stringify({ email: staff.email }),
+      ]);
+
+      await expect(
+        directUpdateApplicationViaSql(client, applicationId, before.row_version, {
+          student_id: studentId,
+          fellowship_id: fellowshipId,
+          application_year: null,
+          destination_country: "Ukraine",
+          stage_of_application: "Under Review",
+          is_semi_finalist: false,
+          is_finalist: false,
+        })
+      ).rejects.toMatchObject({ code: "P0001" });
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+
+    // The business row, its version, and its timestamp are all untouched.
+    const after = await readVersionTimestamp("application", "application_id", applicationId);
+    expect(after.row_version, "application version rolled back").toBe(before.row_version);
+    expect(after.updated_at_epoch, "application timestamp rolled back").toBe(before.updated_at_epoch);
+    const { rows } = await pool.query<{ stage_of_application: string; destination_country: string | null }>(
+      "SELECT stage_of_application, destination_country FROM public.application WHERE application_id = $1",
+      [applicationId]
+    );
+    expect(rows[0].stage_of_application, "application stage rolled back").toBe("Submitted");
+    expect(rows[0].destination_country, "application destination rolled back").toBe("Testland");
+
+    // Neither an updated event nor a created event was committed by the failed write.
+    const events = await readAudit("application", applicationId);
+    expect(events.filter((e) => e.action === "updated"), "failed application write records nothing").toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R4: database-authored event timestamps across the mutation matrix
+// ---------------------------------------------------------------------------
+
+describe("audit event timestamps are database-authored across the mutation matrix (R4)", () => {
+  interface TimestampCase {
+    label: string;
+    entityType: "student" | "fellowship" | "application";
+    action: string;
+    /** Performs the mutation and returns the audited entity id. */
+    run: () => Promise<number>;
+    /** Current-state table whose `updated_at` shares the write transaction. */
+    rowTable: "student" | "fellowship" | "application";
+    rowIdColumn: string;
+  }
+
+  const cases: TimestampCase[] = [
+    {
+      label: "student/created",
+      entityType: "student",
+      action: "created",
+      run: () => seedStudent("ts-student-created", { gpa: 3.1 }),
+      rowTable: "student",
+      rowIdColumn: "student_id",
+    },
+    {
+      label: "student/updated",
+      entityType: "student",
+      action: "updated",
+      run: async () => {
+        const id = await seedStudent("ts-student-updated", { gpa: 3.1 });
+        const result = await updateStudentViaWriter(staff, id, { p_gpa: 3.85 });
+        expect(result.error, "student timestamp write").toBeNull();
+        return id;
+      },
+      rowTable: "student",
+      rowIdColumn: "student_id",
+    },
+    {
+      label: "student/archived",
+      entityType: "student",
+      action: "archived",
+      run: async () => {
+        const id = await seedStudent("ts-student-archived");
+        const result = await lifecycleRpc(admin.client, "student", "archive", id, "timestamp matrix archive");
+        expect(result.error, "student archive for timestamp matrix").toBeNull();
+        return id;
+      },
+      rowTable: "student",
+      rowIdColumn: "student_id",
+    },
+    {
+      label: "student/restored",
+      entityType: "student",
+      action: "restored",
+      run: async () => {
+        const id = await seedStudent("ts-student-restored");
+        const archived = await lifecycleRpc(admin.client, "student", "archive", id, "timestamp matrix pre-archive");
+        expect(archived.error, "student pre-archive for timestamp matrix").toBeNull();
+        const restored = await lifecycleRpc(admin.client, "student", "restore", id, "timestamp matrix restore");
+        expect(restored.error, "student restore for timestamp matrix").toBeNull();
+        return id;
+      },
+      rowTable: "student",
+      rowIdColumn: "student_id",
+    },
+    {
+      label: "fellowship/created",
+      entityType: "fellowship",
+      action: "created",
+      run: () => seedFellowship("ts-fellowship-created"),
+      rowTable: "fellowship",
+      rowIdColumn: "fellowship_id",
+    },
+    {
+      label: "fellowship/updated",
+      entityType: "fellowship",
+      action: "updated",
+      run: async () => {
+        const id = await seedFellowship("ts-fellowship-updated");
+        const result = await updateFellowshipViaWriter(
+          staff,
+          id,
+          syntheticName(nextUnique("ts-fellowship-renamed"))
+        );
+        expect(result.error, "fellowship timestamp write").toBeNull();
+        return id;
+      },
+      rowTable: "fellowship",
+      rowIdColumn: "fellowship_id",
+    },
+    {
+      label: "fellowship/archived",
+      entityType: "fellowship",
+      action: "archived",
+      run: async () => {
+        const id = await seedFellowship("ts-fellowship-archived");
+        const result = await lifecycleRpc(admin.client, "fellowship", "archive", id, "timestamp matrix archive");
+        expect(result.error, "fellowship archive for timestamp matrix").toBeNull();
+        return id;
+      },
+      rowTable: "fellowship",
+      rowIdColumn: "fellowship_id",
+    },
+    {
+      label: "fellowship/restored",
+      entityType: "fellowship",
+      action: "restored",
+      run: async () => {
+        const id = await seedFellowship("ts-fellowship-restored");
+        const archived = await lifecycleRpc(admin.client, "fellowship", "archive", id, "timestamp matrix pre-archive");
+        expect(archived.error, "fellowship pre-archive for timestamp matrix").toBeNull();
+        const restored = await lifecycleRpc(admin.client, "fellowship", "restore", id, "timestamp matrix restore");
+        expect(restored.error, "fellowship restore for timestamp matrix").toBeNull();
+        return id;
+      },
+      rowTable: "fellowship",
+      rowIdColumn: "fellowship_id",
+    },
+    {
+      label: "application/created",
+      entityType: "application",
+      action: "created",
+      run: async () => (await seedApplication("ts-application-created")).applicationId,
+      rowTable: "application",
+      rowIdColumn: "application_id",
+    },
+    {
+      label: "application/updated",
+      entityType: "application",
+      action: "updated",
+      run: async () => {
+        const { applicationId } = await seedApplication("ts-application-updated");
+        const result = await updateApplicationViaWriter(staff, applicationId, {
+          p_destination_country: "Ukraine",
+          p_stage_of_application: "Under Review",
+        });
+        expect(result.error, "application timestamp write").toBeNull();
+        return applicationId;
+      },
+      rowTable: "application",
+      rowIdColumn: "application_id",
+    },
+  ];
+
+  for (const testCase of cases) {
+    it(`stamps ${testCase.label} with the database transaction time and exactly one event`, async () => {
+      const beforeMs = await dbNowMs();
+      const entityId = await testCase.run();
+      const afterMs = await dbNowMs();
+
+      const events = await readAudit(testCase.entityType, entityId);
+      const matching = events.filter((e) => e.action === testCase.action);
+      expect(matching, `exactly one ${testCase.action} event`).toHaveLength(1);
+      const occurredAtMs = expectDbAuthoredTimestamp(
+        matching[0].occurred_at,
+        beforeMs,
+        afterMs,
+        testCase.label
+      );
+
+      // The event and the business row share ONE database transaction clock
+      // (both default/stamp `now()`), proving the timestamp is database-authored
+      // and the audit write is atomic with the row write.
+      const { rows } = await pool.query<{ same: boolean; seconds: number }>(
+        `SELECT extract(epoch from a.occurred_at) = extract(epoch from r.updated_at) AS same,
+                extract(epoch from a.occurred_at)::double precision AS seconds
+           FROM public.audit_event a
+           JOIN public.${testCase.rowTable} r ON r.${testCase.rowIdColumn} = a.entity_id
+          WHERE a.audit_id = $1`,
+        [matching[0].audit_id]
+      );
+      expect(rows[0].same, `${testCase.label}: event and row share one transaction timestamp`).toBe(true);
+      expect(
+        Math.abs(Number(rows[0].seconds) * 1000 - occurredAtMs),
+        `${testCase.label}: the bracketed timestamp is the shared transaction timestamp`
+      ).toBeLessThanOrEqual(1);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// R9: reserved baseline vocabulary and no fabricated migration history
+// ---------------------------------------------------------------------------
+
+describe("baseline_captured semantics: reserved, unwritten, and never fabricated (R9)", () => {
+  it("reserves baseline_captured and the migration origin without any audit writer", async () => {
+    const { rows: defs } = await pool.query<{ conname: string; def: string }>(
+      `SELECT conname, pg_get_constraintdef(oid) AS def
+         FROM pg_constraint
+        WHERE conrelid = 'public.audit_event'::regclass AND contype = 'c'`
+    );
+    const actionDef = String(defs.find((r) => r.conname === "audit_event_action_check")?.def ?? "");
+    const originDef = String(defs.find((r) => r.conname === "audit_event_origin_check")?.def ?? "");
+    expect(actionDef, "action vocabulary reserves baseline_captured").toContain("'baseline_captured'");
+    expect(originDef, "origin vocabulary reserves migration").toContain("'migration'");
+
+    // No audit helper function may emit the reserved baseline vocabulary: the
+    // values are vocabulary-only, never a writable path.
+    const { rows: fns } = await pool.query<{ nspname: string; proname: string; prosrc: string }>(
+      `SELECT n.nspname, p.proname, p.prosrc
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname IN ('public', 'private') AND p.proname LIKE '%audit%'`
+    );
+    expect(fns.length, "the audit helper functions exist").toBeGreaterThan(0);
+    for (const fn of fns) {
+      expect(
+        fn.prosrc,
+        `${fn.nspname}.${fn.proname} must not write baseline_captured`
+      ).not.toContain("baseline_captured");
+      expect(
+        fn.prosrc,
+        `${fn.nspname}.${fn.proname} must not claim the migration origin`
+      ).not.toContain("'migration'");
+    }
+  });
+
+  it("fabricates no baseline history on a fresh migration and denies a client impersonation attempt", async () => {
+    const baselineCount = async (): Promise<number> => {
+      const { rows } = await pool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM public.audit_event
+          WHERE action = 'baseline_captured' OR origin = 'migration'`
+      );
+      return rows[0].n;
+    };
+    expect(await baselineCount(), "a fresh migration writes no baseline_captured/migration event").toBe(0);
+
+    // A client cannot fabricate a baseline row: the CHECK vocabulary exists but
+    // there is no product-role writer path.
+    const forged = await staff.client.from("audit_event").insert({
+      entity_type: "student",
+      entity_id: 1,
+      action: "baseline_captured",
+      actor_name_snapshot: "Fabricated",
+      origin: "migration",
+    });
+    expect(forged.error, "authenticated baseline impersonation must be denied").not.toBeNull();
+    expect(forged.error?.code).toBe("42501");
+    expect(await baselineCount(), "the denied impersonation wrote nothing").toBe(0);
   });
 });
 
@@ -1037,13 +1623,16 @@ describe("audit schema, ACL, RLS, and helper hardening (migration 20261012000001
          JOIN pg_class c ON c.oid = t.tgrelid
          JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public'
+          AND c.relname = ANY(ARRAY['student', 'fellowship', 'application', 'advisor'])
           AND t.tgname LIKE 'trg_audit_%'
           AND NOT t.tgisinternal
         ORDER BY c.relname`
     );
     // student/fellowship/application from migration 20261012000001 and the
     // advisor-only helper (migration 20261013000001) all use the same AFTER
-    // ROW INSERT OR UPDATE shape.
+    // ROW INSERT OR UPDATE shape. (Migration 20261015000002 adds separate
+    // INSERT-only `trg_audit_*_created` triggers on the historical base/
+    // amendment tables, proven in historical-audit-activity.test.ts.)
     expect(triggers.rows.map((r) => r.table_name)).toEqual([
       "advisor",
       "application",
@@ -1078,14 +1667,15 @@ describe("legacy behavior remains intact with the audit layer present", () => {
 
   it("keeps the lifecycle RPC working and records no duplicate event", async () => {
     const studentId = await seedStudent("legacy-lifecycle");
-    const archived = await admin.client.rpc("lifecycle_transition", {
-      p_entity: "student",
-      p_action: "archive",
-      p_entity_id: studentId,
-      p_reason: "contract lifecycle archive",
-    });
+    const archived = await lifecycleRpc(
+      admin.client,
+      "student",
+      "archive",
+      studentId,
+      "contract lifecycle archive"
+    );
     expect(archived.error, "lifecycle RPC still works").toBeNull();
-    expect(archived.data![0]).toMatchObject({ entity: "student", action: "archive", applied: true });
+    expect(archived.data).toMatchObject([{ entity: "student", action: "archive", applied: true }]);
 
     const events = await readAudit("student", studentId);
     expect(events.filter((e) => e.action === "archived")).toHaveLength(1);

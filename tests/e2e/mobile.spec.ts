@@ -75,6 +75,12 @@ test.describe("mobile smoke", () => {
     // a trailing span ("Advising Meetings(1)"), and the shell sidebar's "Advising"
     // nav item must not be picked up.
     await expect(page.locator("main").getByText("Advising Meetings").first()).toBeVisible();
+
+    // The student's unified audit history surface remains reachable at this
+    // viewport.
+    await expect(
+      page.getByRole("heading", { name: "Activity & Change History" }),
+    ).toBeVisible();
   });
 
   test("renders the fellowship catalog as cards and opens the seeded fellowship detail", async ({ page }, testInfo) => {
@@ -92,6 +98,26 @@ test.describe("mobile smoke", () => {
       .click();
     await expect(page.getByRole("heading", { name: FELLOWSHIP_NAME })).toBeVisible();
     await expect(page.getByText("Program Detail", { exact: true })).toBeVisible();
+
+    // The fellowship's audit history surface stays usable at this viewport.
+    await expect(
+      page.getByRole("heading", { name: "Fellowship change history" }),
+    ).toBeVisible();
+  });
+
+  test("the global activity log and its controls stay usable at this viewport", async ({ page }) => {
+    await signInAsActive(page);
+    await page.goto("/activity");
+
+    // The record-type filter, page-size control, and server-rendered history
+    // list all remain reachable on a narrow viewport (card/stacked layout).
+    await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Recent changes" })).toBeVisible();
+    await expect(page.getByLabel(/^Record type/)).toBeVisible();
+    await expect(page.getByLabel(/^Change/)).toBeVisible();
+    await expect(page.getByLabel("Rows per page", { exact: true })).toBeVisible();
+    await expect(page.locator("main section[aria-label='Recent changes'] ol")).toBeVisible();
+    await expect(page.getByText(/Page 1 of \d+/)).toBeVisible();
   });
 
   test("a key advising/student-detail workflow reaches its essential fields", async ({ page }) => {

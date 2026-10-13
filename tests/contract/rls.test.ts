@@ -1111,10 +1111,14 @@ describe("invoker-security one-time-bind trigger on advisor.auth_user_id (rows 1
     );
   });
 
-  // Active-staff updates to other advisor columns stay intact (design §1.3):
-  // an update that happens to carry the current binding unchanged is a no-op
-  // for the trigger and passes through.
-  it("passes through an authenticated no-op update that keeps auth_user_id unchanged", async () => {
+  // Migration 20261015000001 revokes direct authenticated UPDATE on advisor
+  // entirely (the self-scoped table policy is replaced by the expected-version
+  // `update_my_advisor_profile` RPC), so no browser session — including one
+  // "carrying the current binding unchanged" — can reach the one-time-bind
+  // trigger through the table API. The binding is untouched and the row proves
+  // unchanged (R4).
+  it("keeps the one-time-bind boundary: an authenticated no-op self update carrying the binding is denied and the bind is untouched", async () => {
+    const before = await readRow("advisor", "advisor_id", fixtures.advisorSelfId);
     const { data, error } = await selfClient
       .from("advisor")
       .update({
@@ -1123,10 +1127,12 @@ describe("invoker-security one-time-bind trigger on advisor.auth_user_id (rows 1
       })
       .eq("advisor_id", fixtures.advisorSelfId)
       .select("advisor_id");
-    expect(error).toBeNull();
-    expect(data ?? [], "no-op update must affect one row").toHaveLength(1);
+    expect(error, "direct authenticated advisor UPDATE must now be revoked").not.toBeNull();
+    expect(error?.code, "direct advisor UPDATE revocation code").toBe("42501");
+    expect(data ?? [], "a denied advisor UPDATE returns no row").toHaveLength(0);
 
     const row = await readRow("advisor", "advisor_id", fixtures.advisorSelfId);
+    expect(row).toEqual(before);
     expect(row?.auth_user_id).toBe(selfUserId);
   });
 
@@ -1298,7 +1304,7 @@ describe("pre-bound active advisor has staff access", () => {
   // children), so only the ...006 lockdown — never NO ACTION FK semantics — can
   // be blocking the delete; the service-role re-read proves the row survives.
   it.each(CORE_HISTORY_DELETE_DENIED_TABLES)(
-    "active staff can insert, read, and update %s rows but cannot DELETE them (row preserved)",
+    "active staff can insert, read, and update %s rows but cannot DELETE them (row preserved; updates via the protected writers)",
     async (table) => {
       const idColumn = ID_COLUMN[table];
 
@@ -1319,13 +1325,55 @@ describe("pre-bound active advisor has staff access", () => {
       expect(readError, `${table} read`).toBeNull();
       expect(read).not.toBeNull();
 
-      const { data: updated, error: updateError } = await selfClient
-        .from(table)
-        .update(operationalUpdatePayload(table))
-        .eq(idColumn, rowId)
-        .select(idColumn);
-      expect(updateError, `${table} update`).toBeNull();
-      expect(updated ?? [], `${table} update affected rows`).toHaveLength(1);
+      // Migration 20261015000001 revokes direct authenticated UPDATE on these
+      // current-state tables; the write path is now the narrow expected-version
+      // writer RPC (fresh rows start at version 1).
+      let updateError: { code?: string; message?: string } | null = null;
+      if (table === "student") {
+        const row = await readRow("student", idColumn, rowId);
+        const updated = await selfClient.rpc("update_student_profile", {
+          p_student_id: rowId,
+          p_expected_version: 1,
+          p_full_name: row!.full_name,
+          p_email: row!.email,
+          p_is_ch_student: row!.is_ch_student,
+          p_major: "Chemistry",
+          p_minor: row!.minor,
+          p_gpa: row!.gpa,
+          p_class_standing: row!.class_standing,
+          p_us_citizen: row!.us_citizen,
+          p_age: row!.age,
+          p_gender: row!.gender,
+          p_pronouns: row!.pronouns,
+          p_race_ethnicity: row!.race_ethnicity,
+          p_languages: row!.languages,
+          p_first_gen: row!.first_gen,
+          p_honors_college: row!.honors_college,
+        });
+        updateError = (updated.error as { code?: string; message?: string } | null) ?? null;
+      } else if (table === "fellowship") {
+        const updated = await selfClient.rpc("update_fellowship", {
+          p_fellowship_id: rowId,
+          p_expected_version: 1,
+          p_fellowship_name: syntheticName("crud-fellowship-renamed"),
+        });
+        updateError = (updated.error as { code?: string; message?: string } | null) ?? null;
+      } else {
+        const row = await readRow("application", idColumn, rowId);
+        const updated = await selfClient.rpc("update_application", {
+          p_application_id: rowId,
+          p_expected_version: 1,
+          p_student_id: row!.student_id,
+          p_fellowship_id: row!.fellowship_id,
+          p_application_year: row!.application_year,
+          p_destination_country: row!.destination_country,
+          p_stage_of_application: "Under Review",
+          p_is_semi_finalist: row!.is_semi_finalist,
+          p_is_finalist: row!.is_finalist,
+        });
+        updateError = (updated.error as { code?: string; message?: string } | null) ?? null;
+      }
+      expect(updateError, `${table} update via the protected writer`).toBeNull();
 
       await assertDeleteBlocked(selfClient, table, idColumn, rowId);
     }
@@ -1800,14 +1848,27 @@ describe("advisor.role display vocabulary and role-write guard (migration 202610
     expect(updated?.auth_user_id, "role update must never touch the bind").toBeNull();
   });
 
-  it("lets an authenticated active advisor pass a no-op restatement of their current display role", async () => {
-    const { data, error } = await selfClient
+  it("lets a trusted no-op restatement of the current display role pass through; browser sessions have no direct role path (migration 20261015000001)", async () => {
+    // The browser session's direct advisor UPDATE is revoked: the display role
+    // is written only through the trusted atomic role RPC / lifecycle RPC. The
+    // role-write guard still lets a NO-OP restatement through (trusted path),
+    // exactly as the pre-revocation shape did.
+    const { data: denied, error: deniedError } = await selfClient
       .from("advisor")
       .update({ role: "Advisor" })
       .eq("advisor_id", fixtures.advisorSelfId)
       .select("advisor_id");
-    expect(error, "no-op role restatement must pass through").toBeNull();
-    expect(data ?? [], "no-op role restatement affects one row").toHaveLength(1);
+    expect(deniedError, "browser session direct advisor UPDATE is revoked").not.toBeNull();
+    expect(deniedError?.code).toBe("42501");
+    expect(denied ?? []).toHaveLength(0);
+
+    const { data, error } = await service
+      .from("advisor")
+      .update({ role: "Advisor" })
+      .eq("advisor_id", fixtures.advisorSelfId)
+      .select("advisor_id");
+    expect(error, "trusted no-op role restatement must pass through").toBeNull();
+    expect(data ?? [], "trusted no-op role restatement affects one row").toHaveLength(1);
   });
 
   it("denies an active advisor elevating their OWN role to Admin (42501, row unchanged)", async () => {
@@ -1822,19 +1883,19 @@ describe("advisor.role display vocabulary and role-write guard (migration 202610
     });
   });
 
-  it("lets an active advisor update their OWN bound row's allowed profile fields (self-scoped, review remediation)", async () => {
-    // The self-scoped `advisor_update_own_profile` policy keeps the own-row
-    // profile path (advisor_name / email) working for an active, pre-bound
-    // advisor, while the column-scoped guards still protect role/is_active/
-    // auth_user_id on the same row.
+  it("lets an active advisor update their OWN bound row's allowed profile fields (protected self-service writer, review remediation)", async () => {
+    // Migration 20261015000001 replaces the revoked self-scoped table UPDATE
+    // with the expected-version self-service writer
+    // (`update_my_advisor_profile`): the active, pre-bound advisor updates ONLY
+    // their own `advisor_name`, while role/is_active/auth_user_id stay
+    // protected on the same row. The fresh seed row starts at version 1.
     const renamed = syntheticName("advisor-self-renamed");
-    const { data, error } = await selfClient
-      .from("advisor")
-      .update({ advisor_name: renamed })
-      .eq("advisor_id", fixtures.advisorSelfId)
-      .select("advisor_id");
-    expect(error, "own-profile UPDATE must succeed through the self-scoped policy").toBeNull();
-    expect(data ?? [], "own-profile UPDATE must affect one row").toHaveLength(1);
+    const { data: result, error } = await selfClient.rpc("update_my_advisor_profile", {
+      p_expected_version: 1,
+      p_advisor_name: renamed,
+    });
+    expect(error, "own-profile write must succeed through the protected writer").toBeNull();
+    expect(result, "self-service writer must return the updated row").toHaveLength(1);
 
     const row = await readRow("advisor", "advisor_id", fixtures.advisorSelfId);
     expect(row?.advisor_name, "own advisor_name updated").toBe(renamed);
@@ -1898,9 +1959,11 @@ describe("Advisor cannot promote, self-activate, or provision (display role is n
         p_entity: "student",
         p_action: "archive",
         p_entity_id: fixtures.studentId,
-        // A non-blank reason is supplied so the denial is the missing-admin
-        // claim (42501), never the required-reason gate (22023).
+        // A non-blank reason AND a non-null expected version are supplied so
+        // the denial is the missing-admin claim (42501), never the
+        // required-reason/version gate (22023).
         p_reason: "no-claim denial",
+        p_expected_version: 1,
       }
     );
     expect(transitionData, "no-claim lifecycle transition must return no row").toBeNull();

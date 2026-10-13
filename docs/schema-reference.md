@@ -6,7 +6,47 @@ All table names are **singular**. Primary keys are sequence-backed integers (nev
 
 > For a compact one-page overview see [`supabase/SCHEMA.md`](../supabase/SCHEMA.md).
 > For open design decisions (email uniqueness, stage denormalization, etc.) see [`docs/schema-decisions.md`](./schema-decisions.md).
-> The repository migration chain is **forward-only** and currently contains **twenty-six migrations** ending with `20261013000001_advisor_admin_immutable_history.sql` (see `supabase/SCHEMA.md` for the ordered migration table).
+> The repository migration chain is **forward-only** and currently contains **thirty-two migrations** ending with `20261018000001_lock_application_relink_parents.sql` (see `supabase/SCHEMA.md` for the ordered migration table).
+
+---
+
+## Immutable history invariant and entity categories
+
+**Invariant:** at the database boundary, no normal application access may change
+business history without an atomic, immutable, database-authored record. Every
+meaningful change to a current-state business entity must run through that
+entity's expected-`row_version` database writer and commit exactly one immutable
+`public.audit_event` in the same transaction (an audit failure aborts the
+write); `audit_event` cannot be directly changed, deleted, or truncated by a
+normal product role; corrections to historical records use append-only
+amendments.
+
+| Category | Tables | Rule |
+| --- | --- | --- |
+| **Current-state / audited** | `student`, `advisor`, `fellowship`, `application` | Mutable only through the expected-version database writer; each meaningful mutation writes exactly one `audit_event`; direct authenticated `UPDATE` is revoked. |
+| **Immutable base** | `advising_meeting`, `fellowship_thursday`, `scholarship_history` | Append-only history: normal roles may `SELECT`/`INSERT` only; rows are never updated or deleted; inserts are audited (`created`). |
+| **Append-only amendment** | `advising_meeting_amendment`, `fellowship_thursday_amendment`, `scholarship_history_amendment` | Correction records appended (never edited); inserts are audited (`correction_added`; a scholarship `Void` is `voided`). |
+
+**Advising-history TRUNCATE closure (migration `20261017000001`).** The
+append-only `advising_meeting` and `advising_meeting_amendment` tables revoke
+the destructive `TRUNCATE` privilege from `PUBLIC`, `anon`, and `authenticated`
+(the trusted `service_role` grant is untouched), so a normal product role
+cannot wipe the entire advising history even though row-level
+`UPDATE`/`DELETE` were already denied. This matches the sibling historical
+tables closed in `20261008000001`; no `SELECT`/`INSERT` behavior, RLS policy,
+audit trigger, business row, or audit row changes.
+
+Effective-value views (`effective_fellowship_thursday`,
+`effective_scholarship_history`) apply the newest amendment without rewriting
+the base facts. `public.audit_activity` is the explicit-column, server-paginated
+read model over `audit_event`.
+
+**Trust boundary:** the product `Admin` role is **not** a PostgreSQL superuser;
+effective administration is the immutable Auth `app_metadata.ocf_admin = true`
+claim plus an active, pre-bound advisor row (`public.is_effective_admin()`). A
+`service_role`/DBA session is a separate technical trust boundary (trusted
+provisioning, first-Admin bootstrap, synthetic fixtures) and never a normal
+application path.
 
 ---
 
@@ -35,6 +75,8 @@ Stores FGCU student profiles managed by the OCF.
 | `languages` | varchar | YES | | |
 | `first_gen` | boolean | NO | `false` | First-generation college student |
 | `honors_college` | boolean | NO | `false` | |
+| `row_version` | integer | NO | `1` | DB-authored optimistic-concurrency version (migrations `20261015000001` + `20261016000001`): forced to `1` on INSERT and +1 per meaningful UPDATE; every expected version must be `>= 1` |
+| `updated_at` | timestamptz | NO | `now()` | DB-authored timestamp of the last meaningful UPDATE (and of INSERT); never in an audit snapshot/diff |
 
 Indexed: `email`, `is_ch_student`, `class_standing`, `archived_at`.
 
@@ -50,6 +92,14 @@ meetings, attendance, or award history (FKs stay `NO ACTION`).
 `DELETE` student rows (the `authenticated` DELETE table privilege is revoked
 and no DELETE RLS policy remains). Archive via `lifecycle_transition` is the
 only removal path.
+
+**Expected-version writes (migration `20261015000001`):** the `authenticated`
+UPDATE grant and the direct UPDATE policy are revoked; normal edits go through
+the expected-version RPC `public.update_student_profile(...)` (active advisor,
+locks the row, `PT409` on a stale version, returns the projection with its new
+version). Since migration `20261016000001`, `row_version`/`updated_at` are
+database-authored on INSERT as well (`row_version = 1`), and a NULL/0/negative
+expected version is rejected as malformed input (`22023`).
 
 ---
 
@@ -67,6 +117,8 @@ Staff profile and authorization anchor for OCF application users.
 | `role` | text | NO | `'Advisor'` | Protected **display projection**: exactly `Admin` or `Advisor` (CHECK); reconciled to the Auth claim; **never** an authorization input |
 | `created_at` | timestamptz | NO | `now()` | Advisor profile creation time |
 | `last_login_at` | timestamptz | YES | | Last successful advisor sign-in link/update |
+| `row_version` | integer | NO | `1` | DB-authored optimistic-concurrency version (migrations `20261015000001` + `20261016000001`): forced to `1` on INSERT and +1 per meaningful UPDATE; every expected version must be `>= 1` |
+| `updated_at` | timestamptz | NO | `now()` | DB-authored timestamp of the last meaningful UPDATE (and of INSERT); never in an audit snapshot/diff |
 
 **Business rules:**
 
@@ -128,14 +180,15 @@ Staff profile and authorization anchor for OCF application users.
   writes the bound advisor row, and emits exactly one `created` audit event
   attributed to that Admin in the same transaction (never `System`). Role
   changes run only through the service-role-only
-  `public.set_advisor_role(p_advisor_id, p_role, p_reason, p_actor_id)` RPC —
+  `public.set_advisor_role(p_advisor_id, p_role, p_reason, p_actor_id,
+  p_expected_version)` RPC —
   the **single role-changing writer** — which requires a non-blank reason,
   revalidates the actor as a durable active bound effective Admin, serializes
   membership-reducing changes under a fixed advisory lock, rejects demoting the
   last active bound durable Admin, and atomically sets
   `auth.users.raw_app_meta_data.ocf_admin` and `advisor.role` in one
-  transaction with exactly one `role_changed` event. The prior 2-arg and 3-arg
-  signatures are dropped, and the earlier lease/fencing direct-write RPCs
+  transaction with exactly one `role_changed` event. The prior 2-arg and legacy
+  4-arg signatures are dropped, and the earlier lease/fencing direct-write RPCs
   (`fenced_write_advisor_role_display`, `reconcile_advisor_role_display`) were
   decommissioned by the same migration.
 - **Email is read-only in ordinary profile editing (change
@@ -144,6 +197,45 @@ Staff profile and authorization anchor for OCF application users.
   `email` is rejected rather than letting `advisor.email` and the Auth email
   diverge. Changing a login email requires a future explicit trusted
   account-management workflow that updates both consistently.
+- **Expected-version writes (migration `20261015000001`):** the
+  `authenticated` UPDATE grant and the `advisor_update_own_profile` UPDATE policy
+  are revoked. Self-service display-name edits go through the expected-version
+  RPC `public.update_my_advisor_profile(p_expected_version, p_advisor_name)`
+  (actor from `auth.uid()`; `PT409` on a stale version). Peer display-name edits
+  use `update_advisor_profile_name(..., p_expected_version)`, role changes use
+  `set_advisor_role(..., p_expected_version)`, and lifecycle transitions use
+  `lifecycle_transition(..., p_expected_version)`. A semantic change bumps
+  `row_version`/`updated_at` exactly once; a stale write changes nothing. Since
+  migration `20261016000001`, both columns are also database-authored on INSERT
+  (`row_version = 1`) and every expected version must be a positive integer
+  (`>= 1`; NULL/0/negative raise `22023`).
+- **Effective-Admin peer display-name update (migration `20261014000001`,
+  versioned in `20261015000001`):**
+  the authenticated-only SECURITY DEFINER RPC
+  `public.update_advisor_profile_name(p_advisor_id, p_advisor_name,
+  p_expected_version)`
+  (`SET search_path = ''`, fully qualified, EXECUTE revoked from
+  `PUBLIC`/`anon`/`service_role` and granted to `authenticated` only) lets an
+  effective Admin update **another** advisor's permitted profile display name —
+  the production path that closes the review gap (previously a peer profile
+  change required a private SQL session). The actor is derived **only** from
+  `auth.uid()` and validated with `public.is_effective_admin()` (never a
+  parameter, never the mutable display role); a technical/service session with
+  no `auth.uid()` is rejected fail-closed (42501). The RPC writes **only**
+  `advisor.advisor_name` — the signature has no email parameter and the
+  existing invoker-security email guard still rejects any untrusted email
+  change, so no Auth-identity divergence path is created or weakened. It
+  refuses the caller's own row (self-service name edits stay on the profile
+  API), validates the target exists and the name is non-blank, trimmed, ≤120
+  chars, and unique, and requires **no reason** (ordinary profile edit, R8; no
+  `ocf.audit_reason` context is set). Because the write is a single
+  `UPDATE advisor_name` in the authenticated session, the existing advisor
+  audit trigger emits exactly one `advisor/updated` event attributed to the
+  acting Admin (`origin = 'user'`), with a no-op restatement writing none.
+  Consumed by `PATCH /api/advisors/[id]` with `{ "advisorName": "…" }` through
+  the admin's own cookie-backed session, which never forwards an actor or an
+  email. Role/lifecycle/binding/email controls, RLS, grants, and immutable
+  audit are untouched.
 - **Advisor audit coverage (migration `20261013000001`):** every advisor INSERT
   and meaningful UPDATE writes exactly one immutable `public.audit_event` through
   the internal `private.audit_advisor_change` trigger
@@ -163,6 +255,8 @@ Fellowship programs that students can apply to or have won.
 | `fellowship_id` | integer | NO | nextval | **Primary key** |
 | `fellowship_name` | varchar | NO | | UNIQUE |
 | `archived_at` | timestamptz | YES | | **Lifecycle:** `NULL` = active, a database-authored timestamp = archived |
+| `row_version` | integer | NO | `1` | DB-authored optimistic-concurrency version (migrations `20261015000001` + `20261016000001`): forced to `1` on INSERT and +1 per meaningful UPDATE; every expected version must be `>= 1` |
+| `updated_at` | timestamptz | NO | `now()` | DB-authored timestamp of the last meaningful UPDATE (and of INSERT); never in an audit snapshot/diff |
 
 Indexed: `archived_at`.
 
@@ -177,6 +271,13 @@ applications and award-history rows that reference the fellowship (FKs stay
 **DELETE lockdown (migration `20260930000006`):** authenticated clients cannot
 `DELETE` fellowship rows (privilege revoked at grant and RLS layers). Archive
 via `lifecycle_transition` is the only removal path.
+
+**Expected-version writes (migration `20261015000001`):** the `authenticated`
+UPDATE grant and the direct UPDATE policy are revoked; renames go through the
+expected-version RPC `public.update_fellowship(p_fellowship_id,
+p_expected_version, p_fellowship_name)`. Since migration `20261016000001`,
+`row_version`/`updated_at` are database-authored on INSERT as well and the
+expected version must be a positive integer.
 
 ---
 
@@ -194,6 +295,8 @@ Tracks a student's application to one fellowship program.
 | `stage_of_application` | varchar | NO | | CHECK — nine stages: `Started`, `Submitted`, `Under Review`, `Semi-Finalist`, `Finalist`, `Awarded`, `Rejected`, `Did Not Submit`, `Withdrawn` |
 | `is_semi_finalist` | boolean | NO | `false` | |
 | `is_finalist` | boolean | NO | `false` | |
+| `row_version` | integer | NO | `1` | DB-authored optimistic-concurrency version (migrations `20261015000001` + `20261016000001`): forced to `1` on INSERT and +1 per meaningful UPDATE; every expected version must be `>= 1` |
+| `updated_at` | timestamptz | NO | `now()` | DB-authored timestamp of the last meaningful UPDATE (and of INSERT); never in an audit snapshot/diff |
 
 **Business rules:**
 
@@ -209,6 +312,30 @@ Tracks a student's application to one fellowship program.
   referencing an archived `student` or `fellowship` (and UPDATE re-links to an
   archived parent). Historical reads of applications referencing archived
   parents are preserved.
+
+**Expected-version writes (migration `20261015000001`):** the `authenticated`
+UPDATE grant and the direct UPDATE policy are revoked; normal edits go through
+the expected-version RPC `public.update_application(p_application_id,
+p_expected_version, ...)` (the target row is locked, an actual parent re-link is
+validated against the active-parent boundary, and a stale version raises
+`PT409`). Since migration `20261016000001`, `row_version`/`updated_at` are
+database-authored on INSERT as well and the expected version must be a positive
+integer (`>= 1`).
+
+**Re-link vs. concurrent parent archive (migration `20261018000001`):** when an
+edit actually changes the parent reference, `update_application` now locks the
+prospective `student`/`fellowship` row `FOR UPDATE` and reads its `archived_at`
+under that lock **before** the active-parent check. A concurrent
+`public.lifecycle_transition` archive takes `FOR UPDATE` on the same parent row,
+so the archive and the re-link serialize: the archive either commits first (the
+re-link then observes the archived parent and is rejected `42501`) or waits
+until the re-link commits (the parent was still active at that point). The lock
+order is fixed (application row first, then prospective student, then
+prospective fellowship) and no path locks a parent before an application, so the
+added parent locks cannot deadlock. Only the parent-validation block changes;
+authorization, the `PT409` stale precondition, the `P0002` missing-row outcome,
+the permitted fields, the return projection, and every ACL/RLS policy are
+unchanged.
 
 ---
 
@@ -257,6 +384,11 @@ Records each advising session between an advisor and a student.
   `DELETE` are denied, with **no application-admin bypass**. Historic meeting
   records are preserved, so a correction is recorded as a new
   `advising_meeting_amendment` rather than changing or removing one.
+- **TRUNCATE closure (migration `20261017000001`):** the destructive `TRUNCATE`
+  privilege on `advising_meeting` is revoked from `PUBLIC`, `anon`, and
+  `authenticated` (the trusted `service_role` grant is untouched), closing the
+  SQL path that could otherwise wipe the entire meeting history despite the
+  row-level `UPDATE`/`DELETE` denial.
 - **Conducting-advisor guard (historical-integrity remediation):** new
   authenticated advising-meeting writes require a non-NULL conducting
   `advisor_id` at both the UI and the database boundary. The form defaults to
@@ -316,6 +448,10 @@ historic meeting row**. More than one amendment may reference the same meeting.
 
 - Database RLS allows active advisors to `SELECT` and `INSERT` amendment rows
   only. `UPDATE` and `DELETE` are denied.
+- The destructive `TRUNCATE` privilege on `advising_meeting_amendment` is
+  revoked from `PUBLIC`, `anon`, and `authenticated` (migration
+  `20261017000001`; trusted `service_role` grant untouched), matching the base
+  table closure so the append-only correction history cannot be wiped.
 - The creation trigger (`set_advising_meeting_amendment_created_metadata`)
   replaces any client-supplied creator or timestamp with the authenticated
   **active** advisor and the database timestamp; a session that cannot resolve
@@ -466,7 +602,7 @@ decommissioned (EXECUTE revoked, then DROP) in migration `20261013000001`.
 
 ---
 
-### `audit_event` (immutable audit trail — migrations `20261012000001` + `20261013000001`)
+### `audit_event` (immutable audit trail — migrations `20261012000001` + `20261013000001` + `20261015000002`)
 
 Immutable, database-authored audit read model for the current-state `student`,
 `fellowship`, and `application` rows plus trusted `advisor`/administrator
@@ -504,11 +640,11 @@ fabricate history.
   `updated`, `archived`, `restored`, `deactivated`, `reactivated`,
   `role_changed`, `correction_added`, `voided`, `baseline_captured`. `origin`
   accepts exactly `user`, `system`, `migration`. `student`, `fellowship`,
-  `application`, and `advisor` are wired to triggers; `created`, `updated`,
-  `archived`, `restored`, `deactivated`, `reactivated`, and `role_changed` have
-  writers, while the remaining entity names and the `correction_added`,
-  `voided`, and `baseline_captured` actions are reserved vocabulary with no
-  writer yet.
+  `application`, and `advisor` are wired to triggers, and (since migration
+  `20261015000002`) so are the historical base/amendment tables; `created`,
+  `updated`, `archived`, `restored`, `deactivated`, `reactivated`,
+  `role_changed`, `correction_added`, and `voided` have writers, while
+  `baseline_captured` remains reserved vocabulary with no writer yet.
 - **Event semantics.** INSERT writes `old_values`/`changes = NULL`, a whitelisted
   `new_values`, `action = 'created'`. UPDATE writes whitelisted
   `old_values`/`new_values` plus a `changes` map containing ONLY whitelisted
@@ -543,6 +679,12 @@ fabricate history.
 - **No foreign keys.** `entity_id` and the three `subject_*_id` columns are
   immutable historical facts deliberately stored without FKs, so history is never
   rewritten or cascaded by a later parent change.
+- **Privacy.** Payloads are allowlisted business data only: credentials,
+  passwords, tokens/JWTs, raw Auth metadata or `auth_user_id`, technical
+  identifiers, the advisor role-lock state, and narrative free-text (advising
+  `notes`, amendment `reason`/`details`) are structurally excluded rather than
+  redacted at read time, and read access is least-privilege (active advisors
+  only).
 
 **RLS and immutability boundary:** RLS is enabled. ALL privileges are revoked
 from `PUBLIC`/`anon`/`authenticated`; only `authenticated` receives `SELECT`,
@@ -551,11 +693,10 @@ under the sole policy `audit_event_select_active_advisor`
 no INSERT/UPDATE/DELETE/TRUNCATE grant or policy and no sequence usage for any
 product role, so neither staff nor Admin can write audit rows.
 
-**Triggers:** two `private`-schema `SECURITY DEFINER` helpers, each with
+**Triggers:** three `private`-schema `SECURITY DEFINER` helpers, each with
 `SET search_path = ''` and fully qualified references, write the events.
 `PUBLIC`/`anon`/`authenticated` have no `USAGE` on `private` and no `EXECUTE` on
-either function, so neither is a Data API RPC and neither has a client writer
-path.
+any helper, so none is a Data API RPC and none has a client writer path.
 
 - `private.audit_current_state_change()` is attached `AFTER INSERT OR UPDATE ...
   FOR EACH ROW` on `student`, `fellowship`, and `application`
@@ -566,6 +707,13 @@ path.
 - `private.audit_advisor_change()` is attached `AFTER INSERT OR UPDATE ... FOR
   EACH ROW` on `advisor` (`trg_audit_advisor_current_state`) with the strict
   advisor allowlist described above.
+- `private.audit_historical_record()` (migration `20261015000002`) is attached
+  `AFTER INSERT ... FOR EACH ROW` on `advising_meeting`,
+  `fellowship_thursday`, `scholarship_history` (`created`) and their
+  `*_amendment` tables (`correction_added`; a Scholarship `Void` is `voided`).
+  Snapshots are explicit structural identifiers/context only — narrative
+  `notes`, amendment `reason`/`details`, credentials, Auth claims, tokens, and
+  passwords never enter a payload. No historical row is backfilled.
 
 `AFTER` timing follows the existing `BEFORE` lifecycle guards, so a denied direct
 archive write never reaches the trigger while a lifecycle transition emits
@@ -589,6 +737,19 @@ the audit surface is additive and unread by any write path, so application
 rollback can simply stop reading it — there is no down migration and no data
 reset.
 
+**Activity read view (`public.audit_activity`, migration `20261015000002`):**
+an explicit-column `security_invoker` view over `audit_event` exposing only
+audit-safe event fields (`audit_id`, `occurred_at`, `entity_type`, `entity_id`,
+`action`, `actor_advisor_id`, `actor_name_snapshot`, `reason`, `origin`,
+whitelisted `old_values`/`new_values`/`changes`, subject context ids) plus
+display-safe `student_name`/`fellowship_name` labels resolved by correlated
+scalar subqueries (no row multiplication, no current advisor join, no
+Auth-binding column). It is `SELECT`-only, granted to `authenticated` after
+revoking `anon`, and remains governed by the underlying active-advisor audit
+RLS. Page-state and ordering (`occurred_at DESC, audit_id DESC`) are enforced
+by server loaders; the existing chronology indexes serve the access paths (no
+new index is added).
+
 **TypeScript:** `types/database.ts` exposes `public.audit_event` with
 `Row`/`Insert`/`Update` shapes; `Insert`/`Update` are generated for completeness
 but are unusable by product roles because no INSERT/UPDATE grant exists.
@@ -607,11 +768,14 @@ every historical relationship is preserved.
 - `advisor.is_active` (boolean) is the **sole** advisor lifecycle
   representation; there is no advisor `archived_at`.
 - **Only normal transition path:** `public.lifecycle_transition(p_entity,
-  p_action, p_entity_id, p_reason)` (SECURITY DEFINER) — effective-Admin-only,
+  p_action, p_entity_id, p_reason, p_expected_version)` (SECURITY DEFINER;
+  versioned in migration `20261015000001`, which dropped the prior 4-arg
+  signature) — effective-Admin-only,
   actor derived from `auth.uid()` only (never a parameter), whitelisted to
   `student`/`fellowship` `archive` | `restore` and `advisor` `deactivate` |
-  `reactivate`, idempotent, guarded against self-deactivation, and requiring a
-  non-blank human `reason` (stored once on the emitted event). The prior 3-arg
+  `reactivate`, idempotent, guarded against self-deactivation, requiring a
+  non-blank human `reason` (stored once on the emitted event), and rejecting a
+  stale `row_version` with `PT409` before any state change. The prior 3-arg
   signature is dropped.
 - **Durable last-active-bound-Admin invariant (migration `20261013000001`):**
   advisor deactivation and role demotion share a fixed transaction-scoped
@@ -675,12 +839,12 @@ archive/deactivate lifecycle: student.archived_at, fellowship.archived_at,
 advisor.is_active — all FKs stay NO ACTION; archived parents reject new
 operational child INSERTs and UPDATE re-links (database boundary).
 
-audit_event (standalone read model, migrations 20261012000001 + 20261013000001):
+audit_event (standalone read model, migrations 20261012000001 + 20261013000001 + 20261015000002):
 entity_id and the subject_student_id / subject_application_id /
 subject_fellowship_id context columns are immutable historical facts with NO
 foreign keys; rows are written ONLY by the internal triggers on
-student/fellowship/application and on advisor, and read by active advisors
-(SELECT-only).
+student/fellowship/application, on advisor, and on the historical
+base/amendment tables, and read by active advisors (SELECT-only).
 ```
 
 ---

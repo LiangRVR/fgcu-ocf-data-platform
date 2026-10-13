@@ -16,6 +16,10 @@ import {
 import { Mail, GraduationCap, Pencil, X, Check } from "lucide-react";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
+import {
+  STALE_VERSION_GUIDANCE,
+  isVersionConflict,
+} from "@/lib/supabase/errors";
 import type { Database } from "@/types/database";
 
 type Student = Database["public"]["Tables"]["student"]["Row"];
@@ -153,40 +157,50 @@ export function StudentInfoEditor({ initialStudent }: StudentInfoEditorProps) {
     setErrors(e);
     if (Object.keys(e).length > 0) return;
 
-    const payload: Partial<Student> = {};
-
-    if (section === "basic") {
-      payload.full_name = draft.full_name.trim();
-      payload.email = draft.email.trim();
-      payload.is_ch_student = draft.is_ch_student;
-    } else if (section === "academic") {
-      payload.major = draft.major || null;
-      payload.minor = draft.minor || null;
-      payload.class_standing = draft.class_standing || null;
-      payload.gpa = draft.gpa !== "" ? parseFloat(draft.gpa) : null;
-      payload.honors_college = draft.honors_college;
-      payload.languages = draft.languages || null;
-    } else {
-      payload.age = draft.age !== "" ? parseInt(draft.age) : null;
-      payload.gender = draft.gender || null;
-      payload.pronouns = draft.pronouns || null;
-      payload.race_ethnicity = draft.race_ethnicity || null;
-      payload.first_gen = draft.first_gen;
-      payload.us_citizen = draft.us_citizen;
-    }
-
     setSaving(true);
     try {
-      const { data, error } = await supabaseBrowserClient
-        .from("student")
-        .update(payload)
-        .eq("student_id", student.student_id)
-        .select()
-        .single();
+      // The writer is a full-replacement RPC; the draft mirrors every current
+      // field (reset from the live row at edit start), so unedited sections
+      // pass through unchanged. `row_version` is the loaded version carried in
+      // component state — never re-read at save time.
+      const { data, error } = await supabaseBrowserClient.rpc(
+        "update_student_profile",
+        {
+          p_student_id: student.student_id,
+          p_expected_version: student.row_version,
+          p_full_name: draft.full_name.trim(),
+          p_email: draft.email.trim(),
+          p_is_ch_student: draft.is_ch_student,
+          p_major: (draft.major || null) as string,
+          p_minor: (draft.minor || null) as string,
+          p_gpa: (draft.gpa !== "" ? parseFloat(draft.gpa) : null) as number,
+          p_class_standing: (draft.class_standing || null) as string,
+          p_us_citizen: draft.us_citizen,
+          p_age: (draft.age !== "" ? parseInt(draft.age) : null) as number,
+          p_gender: (draft.gender || null) as string,
+          p_pronouns: (draft.pronouns || null) as string,
+          p_race_ethnicity: (draft.race_ethnicity || null) as string,
+          p_languages: (draft.languages || null) as string,
+          p_first_gen: draft.first_gen,
+          p_honors_college: draft.honors_college,
+        },
+      );
 
-      if (error) throw error;
+      if (error) {
+        if (isVersionConflict(error)) {
+          // Keep the draft values visible for review; require a manual
+          // refresh. No retry, no overwrite.
+          toast.error(STALE_VERSION_GUIDANCE);
+          return;
+        }
+        throw error;
+      }
 
-      setStudent(data as Student);
+      const updated = Array.isArray(data) ? data[0] : data;
+      if (updated) {
+        // Carry the new version into the next section save.
+        setStudent(updated as Student);
+      }
       setEditingSection(null);
       toast.success("Student updated.");
     } catch (err) {

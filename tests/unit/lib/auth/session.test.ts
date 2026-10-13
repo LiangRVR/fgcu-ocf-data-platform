@@ -49,6 +49,8 @@ function makeAdvisor(overrides: Partial<Advisor> = {}): Advisor {
     is_active: true,
     last_login_at: null,
     role: "admin",
+    row_version: 1,
+    updated_at: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };
 }

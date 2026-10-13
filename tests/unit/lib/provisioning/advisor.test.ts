@@ -1199,6 +1199,7 @@ describe("AdvisorProvisioning.setAdvisorRole (atomic service-role DB RPC, actor-
       role: "Admin",
       actorAdvisorId: 7,
       reason: "Operational promotion",
+      expectedVersion: 5,
     });
 
     expect(result).toEqual({ ok: true, advisorId: 42, role: "Admin", authUserId: "user-1" });
@@ -1209,6 +1210,7 @@ describe("AdvisorProvisioning.setAdvisorRole (atomic service-role DB RPC, actor-
       p_role: "Admin",
       p_actor_id: 7,
       p_reason: "Operational promotion",
+      p_expected_version: 5,
     });
     // No external GoTrue Auth Admin write and NO lease/fenced/read-back/saga
     // machinery: the whole role change is one atomic DB transaction.
@@ -1230,6 +1232,7 @@ describe("AdvisorProvisioning.setAdvisorRole (atomic service-role DB RPC, actor-
       role: "Advisor",
       actorAdvisorId: 7,
       reason: "Role realignment",
+      expectedVersion: 5,
     });
 
     expect(result).toEqual({ ok: true, advisorId: 42, role: "Advisor", authUserId: "user-1" });
@@ -1238,6 +1241,7 @@ describe("AdvisorProvisioning.setAdvisorRole (atomic service-role DB RPC, actor-
       p_role: "Advisor",
       p_actor_id: 7,
       p_reason: "Role realignment",
+      p_expected_version: 5,
     });
   });
 
@@ -1252,6 +1256,7 @@ describe("AdvisorProvisioning.setAdvisorRole (atomic service-role DB RPC, actor-
       role: "Admin",
       actorAdvisorId: 7,
       reason: "  Promotion on 2026-10-12  ",
+      expectedVersion: 5,
     });
 
     expect(result).toEqual({ ok: true, advisorId: 42, role: "Admin", authUserId: "user-1" });
@@ -1260,6 +1265,7 @@ describe("AdvisorProvisioning.setAdvisorRole (atomic service-role DB RPC, actor-
       p_role: "Admin",
       p_actor_id: 7,
       p_reason: "Promotion on 2026-10-12",
+      p_expected_version: 5,
     });
   });
 
@@ -1269,6 +1275,7 @@ describe("AdvisorProvisioning.setAdvisorRole (atomic service-role DB RPC, actor-
       role: "Admin",
       actorAdvisorId: 7,
       reason: "   ",
+      expectedVersion: 3,
     });
 
     expect(result).toEqual({
@@ -1287,6 +1294,7 @@ describe("AdvisorProvisioning.setAdvisorRole (atomic service-role DB RPC, actor-
       role: "Admin",
       actorAdvisorId: -1,
       reason: "Promotion",
+      expectedVersion: 3,
     });
 
     expect(result).toEqual({
@@ -1295,6 +1303,29 @@ describe("AdvisorProvisioning.setAdvisorRole (atomic service-role DB RPC, actor-
       message: expect.any(String),
     });
     expect(admin.rpc).not.toHaveBeenCalled();
+  });
+
+  it("fails generically WITHOUT calling the RPC when the expected version is missing/malformed", async () => {
+    // A missing/zero/negative/non-integer expected version is rejected BEFORE
+    // the atomic RPC runs (defense in depth): no role or claim change can
+    // occur with a bogus optimistic-concurrency value.
+    for (const expectedVersion of [undefined, 0, -2, 1.5, Number.NaN]) {
+      admin.rpc.mockClear();
+      const result = await provisioner.setAdvisorRole({
+        advisorId: 42,
+        role: "Admin",
+        actorAdvisorId: 7,
+        reason: "Promotion",
+        expectedVersion: expectedVersion as number,
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        code: "role_update_failed",
+        message: expect.any(String),
+      });
+      expect(admin.rpc).not.toHaveBeenCalled();
+    }
   });
 
   it("maps P0002 -> advisor_not_found (the atomic transaction changed nothing)", async () => {
@@ -1308,6 +1339,7 @@ describe("AdvisorProvisioning.setAdvisorRole (atomic service-role DB RPC, actor-
       role: "Admin",
       actorAdvisorId: 7,
       reason: "Demotion",
+      expectedVersion: 3,
     });
 
     expect(result).toEqual(expect.objectContaining({ ok: false, code: "advisor_not_found" }));
@@ -1325,9 +1357,38 @@ describe("AdvisorProvisioning.setAdvisorRole (atomic service-role DB RPC, actor-
       role: "Admin",
       actorAdvisorId: 7,
       reason: "Promotion",
+      expectedVersion: 3,
     });
 
     expect(result).toEqual(expect.objectContaining({ ok: false, code: "not_bound" }));
+    expect(admin.auth.admin.updateUserById).not.toHaveBeenCalled();
+  });
+
+  it("maps PT409 -> stale_version (no change; the refresh-and-review guidance is surfaced, R4)", async () => {
+    // A concurrent writer won: the DB rejects the stale expected version with
+    // `PT409` BEFORE any claim/display change. The adapter maps it to the
+    // explicit `stale_version` outcome so the API returns the required
+    // refresh-and-review 409 guidance — never a retry or overwrite.
+    admin.rpc.mockResolvedValue({
+      data: null,
+      error: { code: "PT409", message: "version conflict" },
+    });
+
+    const result = await provisioner.setAdvisorRole({
+      advisorId: 42,
+      role: "Admin",
+      actorAdvisorId: 7,
+      reason: "Promotion",
+      expectedVersion: 2,
+    });
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: "stale_version" }));
+    expect(result).toEqual(
+      expect.objectContaining({
+        message: expect.stringContaining("Refresh and review the latest information"),
+      })
+    );
+    // No external Auth write and no display mutation ran.
     expect(admin.auth.admin.updateUserById).not.toHaveBeenCalled();
   });
 
@@ -1342,6 +1403,7 @@ describe("AdvisorProvisioning.setAdvisorRole (atomic service-role DB RPC, actor-
       role: "Admin",
       actorAdvisorId: 7,
       reason: "Promotion",
+      expectedVersion: 3,
     });
 
     expect(result).toEqual(expect.objectContaining({ ok: false, code: "role_update_failed" }));
@@ -1356,6 +1418,7 @@ describe("AdvisorProvisioning.setAdvisorRole (atomic service-role DB RPC, actor-
       role: "Admin",
       actorAdvisorId: 7,
       reason: "Promotion",
+      expectedVersion: 3,
     });
 
     expect(result).toEqual(expect.objectContaining({ ok: false, code: "role_update_failed" }));
@@ -1369,6 +1432,7 @@ describe("AdvisorProvisioning.setAdvisorRole (atomic service-role DB RPC, actor-
       role: "Admin",
       actorAdvisorId: 7,
       reason: "Promotion",
+      expectedVersion: 3,
     });
 
     expect(result).toEqual(expect.objectContaining({ ok: false, code: "role_update_failed" }));
@@ -1383,8 +1447,8 @@ describe("AdvisorProvisioning.setAdvisorRole (atomic service-role DB RPC, actor-
     );
 
     const [promote, demote] = await Promise.all([
-      provisioner.setAdvisorRole({ advisorId: 42, role: "Admin", actorAdvisorId: 7, reason: "Promote" }),
-      provisioner.setAdvisorRole({ advisorId: 42, role: "Advisor", actorAdvisorId: 7, reason: "Demote" }),
+      provisioner.setAdvisorRole({ advisorId: 42, role: "Admin", actorAdvisorId: 7, reason: "Promote", expectedVersion: 3 }),
+      provisioner.setAdvisorRole({ advisorId: 42, role: "Advisor", actorAdvisorId: 7, reason: "Demote", expectedVersion: 3 }),
     ]);
 
     expect(promote).toEqual({ ok: true, advisorId: 42, role: "Admin", authUserId: "user-1" });

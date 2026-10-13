@@ -31,7 +31,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const navGroups = [
     {
       title: "Overview",
-      items: NAV_ITEMS.filter((item) => ["/dashboard", "/reports"].includes(item.href)),
+      items: NAV_ITEMS.filter((item) => ["/dashboard", "/reports", "/activity"].includes(item.href)),
     },
     {
       title: "People",

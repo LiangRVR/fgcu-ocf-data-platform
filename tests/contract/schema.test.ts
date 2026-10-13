@@ -497,9 +497,15 @@ describe("privilege steady state (migrations ...004 + ...006 + ...008)", () => {
       }
     }
 
-    // UPDATE is revoked from authenticated only on the append-only histories
-    // (advising + the migration 20261008000001 base-history lockdown).
+    // UPDATE is revoked from authenticated on the append-only histories
+    // (advising + the migration 20261008000001 base-history lockdown) AND on
+    // the four current-state tables (migration 20261015000001: all normal
+    // mutations flow through the expected-version SECURITY DEFINER writers).
     const updateRevoked = new Set([
+      "advisor",
+      "student",
+      "fellowship",
+      "application",
       "advising_meeting",
       "advising_meeting_amendment",
       "fellowship_thursday",
@@ -583,27 +589,27 @@ describe("core-history DELETE lockdown policy shape (migration 20260930000006)",
       list.push(`${String(row.cmd).toUpperCase()}:${String(row.policyname)}`);
       byTable.set(table, list);
     }
+    // Migration 20261015000001 drops the direct UPDATE policies on the four
+    // current-state tables (all mutations flow through the expected-version
+    // writers), so only their SELECT/INSERT policies remain.
     expect(byTable.get("student")?.sort()).toEqual([
       "INSERT:active_advisor_insert_student",
       "SELECT:active_advisor_select_student",
-      "UPDATE:active_advisor_update_student",
     ]);
     expect(byTable.get("fellowship")?.sort()).toEqual([
       "INSERT:active_advisor_insert_fellowship",
       "SELECT:active_advisor_select_fellowship",
-      "UPDATE:active_advisor_update_fellowship",
     ]);
     expect(byTable.get("application")?.sort()).toEqual([
       "INSERT:active_advisor_insert_application",
       "SELECT:active_advisor_select_application",
-      "UPDATE:active_advisor_update_application",
     ]);
     // Migration 20261002000001: the broad active-staff INSERT policy is dropped
-    // (no authenticated advisor creation) and the UPDATE policy is self-scoped
-    // to the caller's own bound row; the self-or-active-staff SELECT remains.
+    // (no authenticated advisor creation); migration 20261015000001 drops the
+    // self-scoped UPDATE policy as well (the self-service writer replaces it);
+    // the self-or-active-staff SELECT remains.
     expect(byTable.get("advisor")?.sort()).toEqual([
       "SELECT:advisor_select_self_or_active_staff",
-      "UPDATE:advisor_update_own_profile",
     ]);
   });
 
@@ -1031,9 +1037,9 @@ describe("entity lifecycle archiving steady state (migration 20260930000005)", (
   it("creates lifecycle_transition as SECURITY DEFINER with empty search_path; technical sessions are rejected by the actor check", async () => {
     const rows = await query(
       `SELECT p.prosecdef, p.proconfig, p.proacl::text[] AS acl,
-              has_function_privilege('authenticated', 'public.lifecycle_transition(text, text, integer, text)', 'EXECUTE') AS auth_exec,
-              has_function_privilege('anon', 'public.lifecycle_transition(text, text, integer, text)', 'EXECUTE') AS anon_exec,
-              has_function_privilege('service_role', 'public.lifecycle_transition(text, text, integer, text)', 'EXECUTE') AS sr_exec
+              has_function_privilege('authenticated', 'public.lifecycle_transition(text, text, integer, text, integer)', 'EXECUTE') AS auth_exec,
+              has_function_privilege('anon', 'public.lifecycle_transition(text, text, integer, text, integer)', 'EXECUTE') AS anon_exec,
+              has_function_privilege('service_role', 'public.lifecycle_transition(text, text, integer, text, integer)', 'EXECUTE') AS sr_exec
          FROM pg_proc p
          JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public'

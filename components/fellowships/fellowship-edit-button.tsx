@@ -13,6 +13,10 @@ import { Label } from "@/components/ui/label";
 import { Pencil } from "lucide-react";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
+import {
+  STALE_VERSION_GUIDANCE,
+  isVersionConflict,
+} from "@/lib/supabase/errors";
 import { useRouter } from "next/navigation";
 
 interface FellowshipEditButtonProps {
@@ -28,19 +32,54 @@ export function FellowshipEditButton({
   const [name, setName] = useState(fellowshipName);
   const [isDirty, setIsDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Loaded optimistic-concurrency version; read from the base table when the
+  // dialog opens (the list view does not carry it). Never re-read at save time.
+  const [expectedVersion, setExpectedVersion] = useState<number | null>(null);
   const router = useRouter();
+
+  async function handleOpen() {
+    setName(fellowshipName);
+    setIsDirty(false);
+    setExpectedVersion(null);
+    setOpen(true);
+    const { data, error } = await supabaseBrowserClient
+      .from("fellowship")
+      .select("row_version")
+      .eq("fellowship_id", fellowshipId)
+      .single();
+    if (!error && data) setExpectedVersion(data.row_version);
+  }
 
   async function handleSave() {
     const trimmed = name.trim();
     if (!trimmed) return;
+    if (expectedVersion == null) {
+      // Fail closed: the loaded version is not available.
+      toast.error(STALE_VERSION_GUIDANCE);
+      return;
+    }
     setSaving(true);
     try {
-      const { error } = await supabaseBrowserClient
-        .from("fellowship")
-        .update({ fellowship_name: trimmed })
-        .eq("fellowship_id", fellowshipId);
+      const { data, error } = await supabaseBrowserClient.rpc(
+        "update_fellowship",
+        {
+          p_fellowship_id: fellowshipId,
+          p_expected_version: expectedVersion,
+          p_fellowship_name: trimmed,
+        },
+      );
 
-      if (error) throw error;
+      if (error) {
+        if (isVersionConflict(error)) {
+          // Keep the edited name visible for review. No retry, no overwrite.
+          toast.error(STALE_VERSION_GUIDANCE);
+          return;
+        }
+        throw error;
+      }
+
+      const updated = Array.isArray(data) ? data[0] : data;
+      if (updated) setExpectedVersion(updated.row_version);
 
       toast.success("Fellowship updated");
       setOpen(false);
@@ -59,11 +98,7 @@ export function FellowshipEditButton({
         size="icon"
         className="h-8 w-8 text-slate-600 hover:text-slate-900"
         title="Edit fellowship"
-        onClick={() => {
-          setName(fellowshipName);
-          setIsDirty(false);
-          setOpen(true);
-        }}
+        onClick={() => void handleOpen()}
       >
         <Pencil className="h-4 w-4" />
       </Button>

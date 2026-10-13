@@ -32,6 +32,7 @@ type Advisor = Database["public"]["Tables"]["advisor"]["Row"];
 const validBody = {
   advisorName: "Jane Doe",
   email: "jane@example.com",
+  expectedVersion: 3,
 };
 
 function makeAdvisor(overrides: Partial<Advisor> = {}): Advisor {
@@ -44,6 +45,8 @@ function makeAdvisor(overrides: Partial<Advisor> = {}): Advisor {
     is_active: true,
     last_login_at: null,
     role: "admin",
+    row_version: 3,
+    updated_at: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };
 }
@@ -56,34 +59,40 @@ function patchRequest(body: unknown): Request {
   });
 }
 
+/**
+ * Mock the server Supabase surface the route actually uses:
+ *   - `rpc("update_my_advisor_profile", …)` for the expected-version name
+ *     write (PT409 on a stale version);
+ *   - a `from("advisor").select(…).eq(…).single()` re-read that returns the
+ *     refreshed display-safe projection with the new `row_version`.
+ */
 function createMockSupabase() {
   const query = {
-    update: vi.fn(),
-    eq: vi.fn(),
-    is: vi.fn(),
     select: vi.fn(),
+    eq: vi.fn(),
     single: vi.fn(),
   };
-  query.update.mockReturnValue(query);
-  query.eq.mockReturnValue(query);
-  query.is.mockReturnValue(query);
   query.select.mockReturnValue(query);
+  query.eq.mockReturnValue(query);
   query.single.mockResolvedValue({ data: null, error: null });
 
   const client = {
     from: vi.fn().mockReturnValue(query),
+    rpc: vi.fn().mockResolvedValue({ data: null, error: null }),
   };
 
   return { client, query };
 }
 
+let client: ReturnType<typeof createMockSupabase>["client"];
 let query: ReturnType<typeof createMockSupabase>["query"];
 
 beforeEach(() => {
   vi.clearAllMocks();
   const mock = createMockSupabase();
+  client = mock.client;
   query = mock.query;
-  createServerClient.mockReturnValue(mock.client as never);
+  createServerClient.mockReturnValue(client as never);
 });
 
 afterEach(() => {
@@ -95,7 +104,7 @@ afterEach(() => {
 describe("PATCH /api/account/profile", () => {
   it("rejects an invalid payload with 400 before any auth/Supabase work", async () => {
     const res = await PATCH(
-      patchRequest({ advisorName: "A", email: "not-an-email" })
+      patchRequest({ advisorName: "A", email: "not-an-email", expectedVersion: 3 })
     );
 
     expect(res.status).toBe(400);
@@ -106,6 +115,17 @@ describe("PATCH /api/account/profile", () => {
     expect(getSessionUser).not.toHaveBeenCalled();
     expect(getCurrentAdvisor).not.toHaveBeenCalled();
     expect(createServerClient).not.toHaveBeenCalled();
+  });
+
+  it("rejects a payload WITHOUT the required expectedVersion with 400 (R3/R4)", async () => {
+    // A stale form cannot even pass validation: the caller must always send
+    // the loaded `advisor.row_version` for the versioned profile RPC.
+    const res = await PATCH(
+      patchRequest({ advisorName: "Jane Doe", email: "jane@example.com" })
+    );
+
+    expect(res.status).toBe(400);
+    expect(getSessionUser).not.toHaveBeenCalled();
   });
 
   it("returns 400 for a malformed JSON body", async () => {
@@ -162,7 +182,7 @@ describe("PATCH /api/account/profile", () => {
     expect(createServerClient).not.toHaveBeenCalled();
   });
 
-  it("applies the normalized NAME-ONLY update scoped to the advisor row (identical email tolerated)", async () => {
+  it("writes ONLY the name through the expected-version RPC and returns the refreshed projection", async () => {
     const advisor = makeAdvisor({
       advisor_id: 42,
       auth_user_id: "user-123",
@@ -175,6 +195,7 @@ describe("PATCH /api/account/profile", () => {
       advisor_id: 42,
       advisor_name: "Jane Doe",
       email: "jane@example.com",
+      row_version: 4,
     });
     query.single.mockResolvedValue({ data: updated, error: null });
 
@@ -182,22 +203,32 @@ describe("PATCH /api/account/profile", () => {
       patchRequest({
         advisorName: "  Jane Doe  ",
         email: "  JANE@EXAMPLE.COM  ",
+        expectedVersion: 3,
       })
     );
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ advisor: updated });
 
-    // ONLY the name is written — email is read-only (R4) and never reaches
-    // the UPDATE, even when the echoed value equals the current one.
-    expect(query.update).toHaveBeenCalledWith({ advisor_name: "Jane Doe" });
-    expect(Object.keys(query.update.mock.calls[0][0])).toEqual(["advisor_name"]);
+    // The write goes through the expected-version RPC ONLY — no direct
+    // PostgREST UPDATE can touch the protected advisor table (revoked).
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+    expect(client.rpc).toHaveBeenCalledWith("update_my_advisor_profile", {
+      // The caller's loaded row_version is propagated so the RPC can reject
+      // a stale value with PT409 before any change.
+      p_expected_version: 3,
+      // Only the trimmed name reaches the writer; the echoed email never does.
+      p_advisor_name: "Jane Doe",
+    });
+    expect(client.from).not.toHaveBeenCalledWith(expect.anything(), expect.anything());
 
-    // The update is scoped to the advisor resolved from the session.
-    expect(query.eq).toHaveBeenCalledWith("advisor_id", 42);
+    // The response re-reads the display-safe projection (never auth_user_id)
+    // so the client receives the NEW row_version for its next save.
+    expect(client.from).toHaveBeenCalledWith("advisor");
     expect(query.select).toHaveBeenCalledWith(
-      "advisor_id, advisor_name, email, role, is_active, last_login_at"
+      "advisor_id, advisor_name, email, role, is_active, last_login_at, row_version"
     );
+    expect(query.eq).toHaveBeenCalledWith("advisor_id", 42);
   });
 
   it("rejects a CHANGED email with 400 and performs NO write (email is read-only)", async () => {
@@ -210,15 +241,19 @@ describe("PATCH /api/account/profile", () => {
     getCurrentAdvisor.mockResolvedValue(advisor);
 
     const res = await PATCH(
-      patchRequest({ advisorName: "Jane Doe", email: "someone-else@example.com" })
+      patchRequest({
+        advisorName: "Jane Doe",
+        email: "someone-else@example.com",
+        expectedVersion: 3,
+      })
     );
 
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toContain("Email changes require account administration");
-    // No write at all — the advisor row is untouched.
-    expect(query.update).not.toHaveBeenCalled();
-    expect(query.eq).not.toHaveBeenCalled();
+    // No write at all — neither the RPC nor a re-read ran.
+    expect(client.rpc).not.toHaveBeenCalled();
+    expect(client.from).not.toHaveBeenCalled();
   });
 
   it("accepts a payload WITHOUT email and writes only the name", async () => {
@@ -228,10 +263,15 @@ describe("PATCH /api/account/profile", () => {
     const updated = makeAdvisor({ advisor_id: 42, advisor_name: "Jane Doe" });
     query.single.mockResolvedValue({ data: updated, error: null });
 
-    const res = await PATCH(patchRequest({ advisorName: "Jane Doe" }));
+    const res = await PATCH(
+      patchRequest({ advisorName: "Jane Doe", expectedVersion: 3 })
+    );
 
     expect(res.status).toBe(200);
-    expect(query.update).toHaveBeenCalledWith({ advisor_name: "Jane Doe" });
+    expect(client.rpc).toHaveBeenCalledWith("update_my_advisor_profile", {
+      p_expected_version: 3,
+      p_advisor_name: "Jane Doe",
+    });
   });
 
   it("allows an empty echoed email (null-email advisor) and still writes only the name", async () => {
@@ -250,18 +290,69 @@ describe("PATCH /api/account/profile", () => {
     query.single.mockResolvedValue({ data: updated, error: null });
 
     const res = await PATCH(
-      patchRequest({ advisorName: "Jane Doe", email: "" })
+      patchRequest({ advisorName: "Jane Doe", email: "", expectedVersion: 3 })
     );
 
     expect(res.status).toBe(200);
-    expect(query.update).toHaveBeenCalledWith({ advisor_name: "Jane Doe" });
+    expect(client.rpc).toHaveBeenCalledWith("update_my_advisor_profile", {
+      p_expected_version: 3,
+      p_advisor_name: "Jane Doe",
+    });
+  });
+
+  // ── Stale-version (PT409) handling: refresh-and-review, never retry ──────
+
+  it("returns 409 with the refresh-and-review guidance when the RPC reports a stale version (PT409)", async () => {
+    const advisor = makeAdvisor({ advisor_id: 42, auth_user_id: "user-123" });
+    getSessionUser.mockResolvedValue({ id: "user-123" });
+    getCurrentAdvisor.mockResolvedValue(advisor);
+    // A concurrent writer already advanced the row: the versioned RPC rejects
+    // the stale expected version BEFORE any change.
+    client.rpc.mockResolvedValue({
+      data: null,
+      error: { code: "PT409", message: "version conflict" },
+    });
+
+    const res = await PATCH(patchRequest(validBody));
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toEqual({
+      error:
+        "This record was changed by another session. Refresh and review the latest information before saving.",
+    });
+    // No automatic retry/overwrite and no re-read of a changed row.
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+    expect(client.rpc).toHaveBeenCalledWith("update_my_advisor_profile", {
+      p_expected_version: 3,
+      p_advisor_name: "Jane Doe",
+    });
+    expect(client.from).not.toHaveBeenCalled();
+  });
+
+  it("recognises a PT409 only from a top-level PostgREST string code (PT409 vs other SQLSTATEs)", async () => {
+    // The route must not treat OTHER RPC failures (22023 malformed input,
+    // 42501 denied, P0002 missing row) as a stale-version conflict.
+    const advisor = makeAdvisor({ advisor_id: 42, auth_user_id: "user-123" });
+    getSessionUser.mockResolvedValue({ id: "user-123" });
+    getCurrentAdvisor.mockResolvedValue(advisor);
+    client.rpc.mockResolvedValue({
+      data: null,
+      error: { code: "P0002", message: "advisor does not exist" },
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await PATCH(patchRequest(validBody));
+
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toBe("Failed to update advisor profile.");
+    expect(errorSpy).toHaveBeenCalled();
   });
 
   it("returns 500 with a generic message when the update fails", async () => {
     const advisor = makeAdvisor({ advisor_id: 42, auth_user_id: "user-123" });
     getSessionUser.mockResolvedValue({ id: "user-123" });
     getCurrentAdvisor.mockResolvedValue(advisor);
-    query.single.mockResolvedValue({
+    client.rpc.mockResolvedValue({
       data: null,
       error: {
         message: "connection reset for postgres://user:hunter2@db.internal:5432",
@@ -301,8 +392,8 @@ describe("PATCH /api/account/profile", () => {
     getSessionUser.mockResolvedValue({ id: "user-123" });
     getCurrentAdvisor.mockResolvedValue(advisor);
 
-    // The provider rejects the whole query chain (e.g. a network failure).
-    query.single.mockRejectedValue(
+    // The provider rejects the RPC (e.g. a network failure).
+    client.rpc.mockRejectedValue(
       new Error(
         "network down for postgres://user:hunter2@db.internal:5432 token=abc123"
       )
@@ -330,6 +421,26 @@ describe("PATCH /api/account/profile", () => {
     expect(logged).not.toContain("network down");
     expect(logged).not.toContain("hunter2");
     expect(logged).not.toContain("token=abc123");
+  });
+
+  it("returns 500 with a generic message when the post-write re-read fails", async () => {
+    const advisor = makeAdvisor({ advisor_id: 42, auth_user_id: "user-123" });
+    getSessionUser.mockResolvedValue({ id: "user-123" });
+    getCurrentAdvisor.mockResolvedValue(advisor);
+    query.single.mockResolvedValue({
+      data: null,
+      error: { message: "re-read failed secret=abc123", code: "PGRST116" },
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await PATCH(patchRequest(validBody));
+
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body).toEqual({ error: "Failed to update advisor profile." });
+    expect(JSON.stringify(body)).not.toContain("abc123");
+    const logged = errorSpy.mock.calls.join("\n");
+    expect(logged).not.toContain("abc123");
   });
 
   it("returns 500 with a generic message when the session lookup throws", async () => {

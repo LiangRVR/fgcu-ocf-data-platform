@@ -9,6 +9,7 @@ import {
   BarChart2,
   User,
   ShieldCheck,
+  Activity,
 } from "lucide-react";
 import type { NavItem } from "@/types";
 
@@ -27,4 +28,5 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Fellowship Thursday", href: "/fellowship-thursday", icon: CalendarDays },
   { label: "Scholarship History", href: "/scholarship-history", icon: BookOpen },
   { label: "Reports", href: "/reports", icon: BarChart2 },
+  { label: "Activity", href: "/activity", icon: Activity },
 ];

@@ -16,6 +16,8 @@ import { createServerClient } from "@/lib/supabase/server";
 import type { Database } from "@/types/database";
 import { formatApplicationLabel } from "@/lib/applications/pipeline";
 import { getSessionUser, isOcfAdmin } from "@/lib/auth/session";
+import { EntityHistory } from "@/components/history/audit-history";
+import { ENTITY_HISTORY_PAGE_SIZE, getEntityHistoryPage } from "@/lib/audit/read";
 
 type Advisor = Database["public"]["Tables"]["advisor"]["Row"];
 type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
@@ -85,9 +87,10 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
     notFound();
   }
 
-  const [advisor, meetings] = await Promise.all([
+  const [advisor, meetings, entityHistory] = await Promise.all([
     getAdvisor(advisorId),
     getMeetings(advisorId),
+    getEntityHistoryPage("advisor", advisorId),
   ]);
 
   if (!advisor) {
@@ -107,6 +110,7 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
 
   return (
     <>
+      <EntityHistory items={entityHistory.items} hasMore={entityHistory.hasMore} nextCursor={entityHistory.nextCursor} highWatermark={entityHistory.highWatermark} pageSize={ENTITY_HISTORY_PAGE_SIZE} query={{ kind: "entity", entityType: "advisor", entityId: advisorId }} title="Advisor change history" />
       <EntityHeader
         kicker="Advisor Record"
         title={advisor.advisor_name}

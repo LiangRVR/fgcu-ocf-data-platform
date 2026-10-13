@@ -42,6 +42,10 @@ import Link from "next/link";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
 import {
+  STALE_VERSION_GUIDANCE,
+  isVersionConflict,
+} from "@/lib/supabase/errors";
+import {
   STAGES,
   type Stage,
   deriveFlags,
@@ -51,6 +55,7 @@ import {
 import type { Database } from "@/types/database";
 import { Pagination } from "@/components/pagination/pagination";
 import { updateListSearchParams } from "@/lib/utils/pagination";
+import { ApplicationHistoryButton } from "@/components/applications/application-history-button";
 
 type Application = Database["public"]["Views"]["application_list"]["Row"] & {
   student: { full_name: string } | null;
@@ -135,6 +140,13 @@ export function ApplicationsTable({
   const [addOpen, setAddOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editingApp, setEditingApp] = useState<Application | null>(null);
+  /**
+   * The edited row's loaded `row_version` (read from the base `application`
+   * table when the edit dialog opens; the read-only `application_list` view
+   * does not expose it). Carried unchanged through the form until save so a
+   * stale form is rejected by the writer with `PT409`.
+   */
+  const [editVersion, setEditVersion] = useState<number | null>(null);
 
   const [form, setForm] = useState(EMPTY_FORM);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
@@ -288,7 +300,7 @@ export function ApplicationsTable({
     }
   };
 
-  const openEdit = (app: Application) => {
+  const openEdit = async (app: Application) => {
     setEditingApp(app);
     setForm({
       student_id: String(app.student_id),
@@ -300,7 +312,17 @@ export function ApplicationsTable({
       is_finalist: app.is_finalist,
     });
     setFormErrors({});
+    setEditVersion(null);
     setEditOpen(true);
+
+    // Load the optimistic-concurrency version now (not at save time) so a
+    // concurrent edit during the dialog's lifetime is detected on save.
+    const { data, error } = await supabaseBrowserClient
+      .from("application")
+      .select("row_version")
+      .eq("application_id", app.application_id)
+      .single();
+    if (!error && data) setEditVersion(data.row_version);
   };
 
   const handleEditSubmit = async () => {
@@ -308,25 +330,41 @@ export function ApplicationsTable({
     const errors = validateForm(form);
     setFormErrors(errors);
     if (Object.keys(errors).length > 0) return;
+    if (editVersion == null) {
+      // Fail closed: the loaded version is not available.
+      toast.error(STALE_VERSION_GUIDANCE);
+      return;
+    }
 
     setIsLoading(true);
     try {
-      const { error } = await supabaseBrowserClient
-        .from("application")
-        .update({
-          student_id: Number(form.student_id),
-          fellowship_id: Number(form.fellowship_id),
-          application_year: Number(form.application_year),
-          destination_country: form.destination_country || null,
-          stage_of_application: form.stage_of_application,
-          is_semi_finalist: form.is_semi_finalist,
-          is_finalist: form.is_finalist,
-        } as Database["public"]["Tables"]["application"]["Update"])
-        .eq("application_id", editingApp.application_id)
-        .select(`*, student(full_name), fellowship(fellowship_name)`)
-        .single();
+      const { data, error } = await supabaseBrowserClient.rpc(
+        "update_application",
+        {
+          p_application_id: editingApp.application_id,
+          p_expected_version: editVersion,
+          p_student_id: Number(form.student_id),
+          p_fellowship_id: Number(form.fellowship_id),
+          p_application_year: Number(form.application_year),
+          p_destination_country: (form.destination_country || null) as string,
+          p_stage_of_application: form.stage_of_application,
+          p_is_semi_finalist: form.is_semi_finalist,
+          p_is_finalist: form.is_finalist,
+        },
+      );
 
-      if (error) throw error;
+      if (error) {
+        if (isVersionConflict(error)) {
+          // Keep the edited values visible for review; require a manual
+          // refresh. No retry, no overwrite.
+          toast.error(STALE_VERSION_GUIDANCE);
+          return;
+        }
+        throw error;
+      }
+
+      const updated = Array.isArray(data) ? data[0] : data;
+      if (updated) setEditVersion(updated.row_version);
 
       router.refresh();
       toast.success("Application updated successfully.");
@@ -334,6 +372,7 @@ export function ApplicationsTable({
       setEditingApp(null);
       setForm(EMPTY_FORM);
       setFormErrors({});
+      setEditVersion(null);
     } catch (err) {
       console.error(err);
       toast.error("Failed to update application.");
@@ -352,6 +391,7 @@ export function ApplicationsTable({
     setForm(EMPTY_FORM);
     setFormErrors({});
     setEditingApp(null);
+    setEditVersion(null);
     setEditOpen(false);
   };
 
@@ -465,6 +505,7 @@ export function ApplicationsTable({
                           {app.is_semi_finalist && <MetricBadge tone="purple">Semi-Fin.</MetricBadge>}
                           {app.is_finalist && <MetricBadge tone="green">Finalist</MetricBadge>}
                         </div>
+                        <div className="mt-2"><ApplicationHistoryButton applicationId={app.application_id} /></div>
                       </div>
 <DropdownMenu modal={false}>
                           <DropdownMenuTrigger asChild>
@@ -559,6 +600,7 @@ export function ApplicationsTable({
                       </td>
                       <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                         <div className="flex items-center justify-end gap-2">
+                          <ApplicationHistoryButton applicationId={app.application_id} />
                           <Button
                             variant="ghost"
                             size="icon"

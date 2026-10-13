@@ -35,7 +35,7 @@ import {
  * excluded: the protected list response never exposes Auth binding data.
  */
 const ADVISOR_LIST_SELECT =
-  "advisor_id, advisor_name, email, role, is_active, last_login_at, created_at";
+  "advisor_id, advisor_name, email, role, is_active, last_login_at, created_at, row_version";
 
 /** Bound the exact count reported from the failing query. */
 function resolveTotalCount(count: number | null, rows: unknown[] | null): number {

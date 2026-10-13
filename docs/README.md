@@ -17,6 +17,7 @@ This folder contains detailed documentation for the OCF Fellowship Management Sy
 
 ### Database
 
+- **[Immutable history invariant](schema-reference.md#immutable-history-invariant-and-entity-categories)** — the durable rule that no normal application access may change business history without an atomic, immutable audit record, plus the current-state/immutable-base/append-only-amendment entity categories
 - **[Schema Reference](schema-reference.md)** — **Canonical schema** with all constraints, business rules, and TypeScript type locations
 - **[Schema Verification](schema-verification.md)** - Checklist for setting up and verifying the database
 - **[Supabase Setup](../supabase/README.md)** - Guide for creating a Supabase project and applying migrations

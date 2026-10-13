@@ -43,6 +43,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 import type { AdvisorRole } from "@/lib/auth/session";
+import { STALE_VERSION_GUIDANCE } from "@/lib/supabase/errors";
 
 /** The subset of the Supabase service-role client this adapter needs. */
 export type AdminClient = Pick<SupabaseClient<Database>, "auth" | "from" | "rpc">;
@@ -122,10 +123,12 @@ export interface RoleAwareProvisionInput {
  * Input for `setAdvisorRole`: an Admin-only role change on a bound advisor.
  *
  * The trusted service-role RPC contract is: target advisor id + new role +
- * verified actor id + reason (`p_advisor_id`, `p_role`, `p_actor_id`,
- * `p_reason`). `actorAdvisorId` is the route-resolved effective-Admin advisor
- * id (never client input) and is revalidated inside the RPC; `reason` is a
- * required non-blank human reason that is forwarded verbatim (trimmed).
+ * verified actor id + reason + the target's expected row version
+ * (`p_advisor_id`, `p_role`, `p_actor_id`, `p_reason`, `p_expected_version`).
+ * `actorAdvisorId` is the route-resolved effective-Admin advisor id (never
+ * client input) and is revalidated inside the RPC; `reason` is a required
+ * non-blank human reason forwarded verbatim (trimmed); `expectedVersion` is the
+ * target's loaded `row_version` (a stale value is rejected with `PT409`).
  */
 export interface SetAdvisorRoleInput {
   /** Target bound advisor whose protected display role/claim changes. */
@@ -136,11 +139,14 @@ export interface SetAdvisorRoleInput {
   actorAdvisorId: number;
   /** Required non-blank human reason for the role change. */
   reason: string;
+  /** Target's loaded row version; the RPC rejects a stale value with `PT409`. */
+  expectedVersion: number;
 }
 
 export type SetRoleFailureCode =
   | "advisor_not_found"
   | "not_bound"
+  | "stale_version"
   | "role_update_failed";
 
 export interface SetRoleSuccess {
@@ -180,6 +186,7 @@ const ROLE_CHANGE_NOT_BOUND_MESSAGE =
   "The advisor account is not bound to an Auth identity, so its role cannot be changed.";
 const ROLE_CHANGE_DISPLAY_FAILED_MESSAGE =
   "Unable to update the advisor role. Please try again later.";
+const ROLE_CHANGE_STALE_MESSAGE = STALE_VERSION_GUIDANCE;
 const ROLE_CHANGE_REASON_REQUIRED_MESSAGE =
   "A non-blank reason is required for an advisor role change.";
 const PROVISION_ACTOR_REQUIRED_MESSAGE =
@@ -434,11 +441,13 @@ export class AdvisorProvisioning {
    * design point 4): `p_advisor_id` (target advisor), `p_role` (new role),
    * `p_actor_id` (the VERIFIED server-resolved effective-Admin advisor id —
    * revalidated inside the RPC against the durable Auth metadata + active
-   * bound advisor state) and a required non-blank `p_reason`. It serializes
-   * final-effective-Admin removal and emits exactly one `role_changed` audit
-   * event in the same transaction. The adapter enforces the non-blank reason
-   * and a positive actor id BEFORE the call (defense in depth; the RPC is
-   * authoritative).
+   * bound advisor state), a required non-blank `p_reason`, and
+   * `p_expected_version` (the target's loaded `row_version`). It serializes
+   * final-effective-Admin removal, rejects a stale expected version with
+   * `PT409` BEFORE any claim/display change, and emits exactly one
+   * `role_changed` audit event in the same transaction. The adapter enforces
+   * the non-blank reason, a positive actor id, and a positive expected version
+   * BEFORE the call (defense in depth; the RPC is authoritative).
    *
    * Because the claim and display are written in a single transaction, a
    * claim/display mismatch is IMPOSSIBLE: the transaction commits with both
@@ -451,6 +460,7 @@ export class AdvisorProvisioning {
    *   - P0002  -> `advisor_not_found` (the advisor row does not exist);
    *   - 42501  -> `not_bound` (the advisor is not bound to an Auth identity;
    *               this also covers an invalid/unverified trusted actor);
+   *   - PT409  -> `stale_version` (the expected version is stale; no change);
    *   - anything else (incl. an unknown/network failure) -> `role_update_failed`
    *     (safe: the atomic transaction either fully applied — consistent — or
    *     did not apply at all).
@@ -478,6 +488,13 @@ export class AdvisorProvisioning {
         message: ROLE_CHANGE_DISPLAY_FAILED_MESSAGE,
       };
     }
+    if (!Number.isInteger(input.expectedVersion) || input.expectedVersion <= 0) {
+      return {
+        ok: false,
+        code: "role_update_failed",
+        message: ROLE_CHANGE_DISPLAY_FAILED_MESSAGE,
+      };
+    }
 
     const result = await this.safeRun(() =>
       this.admin.rpc("set_advisor_role", {
@@ -485,6 +502,7 @@ export class AdvisorProvisioning {
         p_role: input.role,
         p_actor_id: input.actorAdvisorId,
         p_reason: reason,
+        p_expected_version: input.expectedVersion,
       }),
     );
 
@@ -505,6 +523,9 @@ export class AdvisorProvisioning {
       }
       if (code === "42501") {
         return { ok: false, code: "not_bound", message: ROLE_CHANGE_NOT_BOUND_MESSAGE };
+      }
+      if (code === "PT409") {
+        return { ok: false, code: "stale_version", message: ROLE_CHANGE_STALE_MESSAGE };
       }
       return { ok: false, code: "role_update_failed", message: ROLE_CHANGE_DISPLAY_FAILED_MESSAGE };
     }

@@ -427,6 +427,62 @@ describe("Scholarship History append-only Correction/Void (R3)", () => {
     const after = await readTable("scholarship_history", "history_id", fixtures.historyId);
     expect(after, "base award preserved after denied mutations").toEqual(before);
   });
+
+  it("locks the amendment rows against UPDATE and DELETE (row preserved)", async () => {
+    // A fresh, un-voided award so the amendment can be appended cleanly, then a
+    // real authenticated INSERT to establish the append-only row under test.
+    const { data: freshHistory, error: freshError } = await service
+      .from("scholarship_history")
+      .insert({ student_id: fixtures.studentId, fellowship_id: fixtures.fellowshipId })
+      .select("history_id")
+      .single();
+    expect(freshError, "fresh history seed for the amendment lock").toBeNull();
+    const freshHistoryId = freshHistory!.history_id as number;
+
+    const { data: inserted, error: insertError } = await selfClient
+      .from("scholarship_history_amendment")
+      .insert({
+        history_id: freshHistoryId,
+        amendment_type: "Correction",
+        reason: "Contract fixture for the append-only mutation lock",
+        corrected_fellowship_id: otherFellowshipId,
+      })
+      .select("amendment_id")
+      .single();
+    expect(insertError, "amendment INSERT for the lock test").toBeNull();
+    const amendmentId = inserted!.amendment_id as number;
+
+    const amendmentBefore = await readTable(
+      "scholarship_history_amendment",
+      "amendment_id",
+      amendmentId
+    );
+    expect(amendmentBefore, "seeded amendment row").not.toBeNull();
+
+    const updateAmendment = await selfClient
+      .from("scholarship_history_amendment")
+      .update({ reason: "This must not apply" })
+      .eq("amendment_id", amendmentId)
+      .select("amendment_id");
+    expect(updateAmendment.data ?? [], "amendment UPDATE affected rows").toHaveLength(0);
+    expect(updateAmendment.error, "amendment UPDATE must be denied").not.toBeNull();
+    expect(updateAmendment.error?.code, "amendment UPDATE denial code").toBe("42501");
+
+    const deleteAmendment = await selfClient
+      .from("scholarship_history_amendment")
+      .delete()
+      .eq("amendment_id", amendmentId);
+    expect(deleteAmendment.data ?? [], "amendment DELETE affected rows").toHaveLength(0);
+    expect(deleteAmendment.error, "amendment DELETE must be denied").not.toBeNull();
+    expect(deleteAmendment.error?.code, "amendment DELETE denial code").toBe("42501");
+
+    const amendmentAfter = await readTable(
+      "scholarship_history_amendment",
+      "amendment_id",
+      amendmentId
+    );
+    expect(amendmentAfter, "denied amendment mutations leave the row unchanged").toEqual(amendmentBefore);
+  });
 });
 
 describe("application DB hardening (R7)", () => {

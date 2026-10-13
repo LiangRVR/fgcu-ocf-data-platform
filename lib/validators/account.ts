@@ -17,6 +17,11 @@ const advisorNameSchema = z
  * Ordinary self-service profile updates are NAME-ONLY (R4/design point 7):
  * `advisor.email` is read-only and can never be written through this route.
  *
+ * `expectedVersion` is the caller's loaded `advisor.row_version`; the
+ * `update_my_advisor_profile` writer rejects a stale value with `PT409` before
+ * any change. It is required so a stale form can never silently overwrite a
+ * newer profile.
+ *
  * `email` is accepted here ONLY so the route can detect — and reject — a
  * hand-off attempt: the schema validates format (when non-empty), then the
  * route refuses (400) any value that differs from the advisor's current login
@@ -27,6 +32,10 @@ const advisorNameSchema = z
  */
 export const profileUpdateSchema = z.object({
   advisorName: advisorNameSchema,
+  expectedVersion: z
+    .number()
+    .int("A valid row version is required.")
+    .positive("A valid row version is required."),
   email: z.union([z.literal(""), emailSchema]).optional(),
 });
 

@@ -37,6 +37,8 @@ import { LifecycleAction } from "@/components/lifecycle";
 import { formatDate } from "@/lib/utils/format";
 import { formatApplicationLabel } from "@/lib/applications/pipeline";
 import { AdvisingHistory } from "@/components/advising/advising-table";
+import { EntityHistory } from "@/components/history/audit-history";
+import { ENTITY_HISTORY_PAGE_SIZE, getStudentActivityPage } from "@/lib/audit/read";
 
 type Student = Database["public"]["Tables"]["student"]["Row"];
 type Application = Database["public"]["Tables"]["application"]["Row"] & {
@@ -196,13 +198,14 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
     notFound();
   }
 
-  const [student, applications, advisingMeetings, fellowshipThursday, scholarshipHistory] =
+  const [student, applications, advisingMeetings, fellowshipThursday, scholarshipHistory, studentActivity] =
     await Promise.all([
       getStudent(studentId),
       getApplications(studentId),
       getAdvisingMeetings(studentId),
       getFellowshipThursday(studentId),
       getScholarshipHistory(studentId),
+      getStudentActivityPage(studentId),
     ]);
 
   if (!student) {
@@ -346,6 +349,7 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
       />
 
       <div className="space-y-6">
+        <EntityHistory items={studentActivity.items} hasMore={studentActivity.hasMore} nextCursor={studentActivity.nextCursor} highWatermark={studentActivity.highWatermark} pageSize={ENTITY_HISTORY_PAGE_SIZE} query={{ kind: "student", studentId }} title="Activity & Change History" />
         {/* Basic / Academic / Personal — inline-editable */}
         <section aria-label="Student Profile" className="space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-2">

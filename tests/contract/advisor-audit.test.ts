@@ -35,6 +35,13 @@
  *            (NFR2).
  *   - R9     audit rows remain immutable to product roles (including Admin) and
  *            historical advisor attribution survives deactivation / rename.
+ *   - RPC    the production peer-name path (`update_advisor_profile_name`,
+ *            migration 20261014000001): an effective Admin renames ANOTHER
+ *            advisor through the authenticated-only SECURITY DEFINER RPC with
+ *            exactly one attributed `advisor/updated` event and a name-only
+ *            diff, email preserved, no-op restatements suppressed, and
+ *            non-Admin / self / invalid-input / unauthenticated / technical
+ *            (service_role) access denied fail-closed.
  *
  * ## Contract-signature note (parallel-lane integration)
  *
@@ -187,8 +194,13 @@ const ADVISOR_FORBIDDEN_KEYS = [
   "last_login_at",
   "created_at",
   "holder",
+  "lease_expires_at",
   "expires_at",
   "updated_at",
+  // Durable Auth claim / role-lock surface must never enter a business payload.
+  "ocf_admin",
+  "role_lock",
+  "advisor_role_lock",
 ];
 
 function assertAllowlisted(values: Record<string, unknown> | null, label: string): void {
@@ -247,19 +259,45 @@ interface SetRoleSpec {
   role: string;
   actorAdvisorId: number;
   reason: string;
+  /** Expected target row_version (migration 20261015000001). Auto-read when omitted. */
+  expectedVersion?: number;
 }
 interface LifecycleSpec {
   entity: string;
   action: string;
   entityId: number;
   reason: string;
+  /** Expected target row_version (migration 20261015000001). Auto-read when omitted. */
+  expectedVersion?: number;
+}
+
+/**
+ * Read the CURRENT `row_version` of a current-state row — the expected-version
+ * oracle for the versioned writer signatures (migration 20261015000001). Falls
+ * back to `1` for a non-current-state entity, a missing row, or an
+ * intentionally invalid id (the RPC's own fail-closed checks decide outcomes
+ * for those cases).
+ */
+async function currentRowVersion(entityOrTable: string, id: number): Promise<number> {
+  const table =
+    entityOrTable === "student" || entityOrTable === "fellowship" || entityOrTable === "advisor"
+      ? entityOrTable
+      : null;
+  if (!table) return 1;
+  const idColumn = table === "student" ? "student_id" : table === "fellowship" ? "fellowship_id" : "advisor_id";
+  const { rows } = await pool.query<{ row_version: number }>(
+    `SELECT row_version FROM public.${table} WHERE ${idColumn} = $1`,
+    [id]
+  );
+  return rows[0]?.row_version ?? 1;
 }
 
 function mapSetRoleArgs(names: string[], spec: SetRoleSpec): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const name of names) {
     const n = name.toLowerCase();
-    if (n.includes("reason")) out[name] = spec.reason;
+    if (n.includes("expected") || n.includes("version")) out[name] = spec.expectedVersion ?? 1;
+    else if (n.includes("reason")) out[name] = spec.reason;
     else if (n.includes("actor")) out[name] = spec.actorAdvisorId;
     else if (n.includes("admin")) out[name] = spec.actorAdvisorId;
     else if (n.includes("role")) out[name] = spec.role;
@@ -273,7 +311,8 @@ function mapLifecycleArgs(names: string[], spec: LifecycleSpec): Record<string, 
   const out: Record<string, unknown> = {};
   for (const name of names) {
     const n = name.toLowerCase();
-    if (n.includes("reason")) out[name] = spec.reason;
+    if (n.includes("expected") || n.includes("version")) out[name] = spec.expectedVersion ?? 1;
+    else if (n.includes("reason")) out[name] = spec.reason;
     else if (n.includes("entity") && n.includes("id")) out[name] = spec.entityId;
     else if (n.includes("entity")) out[name] = spec.entity;
     else if (n.includes("action")) out[name] = spec.action;
@@ -287,7 +326,11 @@ async function callSetAdvisorRole(spec: SetRoleSpec): Promise<{
   error: { code?: string; message?: string } | null;
 }> {
   const names = await rpcInputArgNames("set_advisor_role");
-  const { data, error } = await service.rpc("set_advisor_role", mapSetRoleArgs(names, spec));
+  const args = mapSetRoleArgs(names, {
+    ...spec,
+    expectedVersion: spec.expectedVersion ?? (await currentRowVersion("advisor", spec.advisorId)),
+  });
+  const { data, error } = await service.rpc("set_advisor_role", args);
   return { data, error: (error as { code?: string; message?: string } | null) ?? null };
 }
 
@@ -296,7 +339,13 @@ async function callLifecycle(
   spec: LifecycleSpec
 ): Promise<{ data: unknown; error: { code?: string; message?: string } | null }> {
   const names = await rpcInputArgNames("lifecycle_transition");
-  const { data, error } = await client.rpc("lifecycle_transition", mapLifecycleArgs(names, spec));
+  const args = mapLifecycleArgs(names, {
+    ...spec,
+    expectedVersion:
+      spec.expectedVersion ??
+      (spec.entityId == null ? 1 : await currentRowVersion(spec.entity, spec.entityId)),
+  });
+  const { data, error } = await client.rpc("lifecycle_transition", args);
   return { data, error: (error as { code?: string; message?: string } | null) ?? null };
 }
 
@@ -320,10 +369,30 @@ async function promoteToAdmin(target: Actor): Promise<void> {
 /** Direct SQL call (positional) for transaction-scoped / concurrency tests. */
 async function directSetAdvisorRole(client: PoolClient, spec: SetRoleSpec): Promise<void> {
   const names = await rpcInputArgNames("set_advisor_role");
-  const mapped = mapSetRoleArgs(names, spec);
+  const mapped = mapSetRoleArgs(names, {
+    ...spec,
+    expectedVersion: spec.expectedVersion ?? (await currentRowVersion("advisor", spec.advisorId)),
+  });
   const values = names.map((n) => mapped[n]);
   const placeholders = names.map((_, i) => `$${i + 1}`).join(", ");
   await client.query(`SELECT public.set_advisor_role(${placeholders})`, values);
+}
+
+/**
+ * Self-service expected-version writer (migration 20261015000001 replaces the
+ * revoked self-scoped table UPDATE): the authenticated caller updates ONLY
+ * their own `advisor_name` through `public.update_my_advisor_profile`.
+ */
+async function callSelfProfileName(
+  client: SupabaseClient,
+  expectedVersion: number,
+  advisorName: string
+): Promise<{ data: unknown; error: { code?: string; message?: string } | null }> {
+  const { data, error } = await client.rpc("update_my_advisor_profile", {
+    p_expected_version: expectedVersion,
+    p_advisor_name: advisorName,
+  });
+  return { data, error: (error as { code?: string; message?: string } | null) ?? null };
 }
 
 /**
@@ -524,7 +593,13 @@ describe("advisor audit: no-op and technical-only suppression (R2)", () => {
     );
     const before = (await readAudit("advisor", advisorId)).length;
 
-    const { error } = await staffActor.client
+    // `last_login_at` is technical/client-session metadata, never a writable
+    // business field. Direct authenticated UPDATE on advisor is revoked
+    // (migration 20261015000001), so the write is exercised through the
+    // trusted technical session (service role), which still resolves an actor
+    // for the audit helper; the no-audit contract (technical-only columns are
+    // not in the allowlist) is unchanged.
+    const { error } = await service
       .from("advisor")
       .update({ last_login_at: new Date().toISOString() })
       .eq("advisor_id", advisorId)
@@ -546,12 +621,14 @@ describe("advisor audit: no-op and technical-only suppression (R2)", () => {
     );
     const before = (await readAudit("advisor", advisorId)).length;
 
-    const { error } = await staffActor.client
-      .from("advisor")
-      .update({ advisor_name: rows[0].advisor_name, email: rows[0].email })
-      .eq("advisor_id", advisorId)
-      .select("advisor_id");
-    expect(error).toBeNull();
+    // A no-op restatement of the exact same business values (trusted lane
+    // superuser write, the same shape a client would have submitted before the
+    // authenticated UPDATE revoke) produces no diff and therefore no event.
+    const { rowCount } = await pool.query(
+      "UPDATE public.advisor SET advisor_name = $1, email = $2 WHERE advisor_id = $3",
+      [rows[0].advisor_name, rows[0].email, advisorId]
+    );
+    expect(rowCount).toBe(1);
 
     expect((await readAudit("advisor", advisorId)).length, "no-op creates no event").toBe(before);
   });
@@ -575,17 +652,72 @@ describe("advisor audit: no-op and technical-only suppression (R2)", () => {
 // R3: updated events + actor attribution
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// R7: advisor role-lock state / durable claim never enter an audit payload
+// ---------------------------------------------------------------------------
+
+describe("advisor role-lock state is excluded from every audit payload (R7)", () => {
+  it("keeps role-lock table state and the durable claim out of an advisor snapshot while a live lock exists", async () => {
+    const actor = await createBoundActor("role-lock-exclusion");
+    const holder = nextUnique("role-lock-holder");
+
+    const acquired = await service.rpc("acquire_advisor_role_lock", {
+      p_advisor_id: actor.advisorId,
+      p_holder: holder,
+      p_lease_seconds: 60,
+    });
+    expect(acquired.error, "acquire a live role lock for the exclusion proof").toBeNull();
+
+    try {
+      const renamed = syntheticName(nextUnique("role-lock-rename"));
+      const result = await callSelfProfileName(actor.client, 1, renamed);
+      expect(result.error, "profile write while a role lock row exists").toBeNull();
+
+      const events = await readAudit("advisor", actor.advisorId);
+      const update = events.find((e) => e.action === "updated");
+      expect(update, "the lock-era profile event exists").toBeDefined();
+
+      // Exactly the four business fields — never a role-lock column or claim.
+      assertAllowlisted(update!.old_values, "role-lock-era old_values");
+      assertAllowlisted(update!.new_values, "role-lock-era new_values");
+      for (const leaked of [
+        "holder",
+        "lease_expires_at",
+        "ocf_admin",
+        "role_lock",
+        "advisor_role_lock",
+        "auth_user_id",
+      ]) {
+        expect(update!.new_values, `new_values must not leak role-lock/claim key ${leaked}`).not.toHaveProperty(
+          leaked
+        );
+        expect(update!.old_values, `old_values must not leak role-lock/claim key ${leaked}`).not.toHaveProperty(
+          leaked
+        );
+      }
+
+      // The lock table is not a client-readable surface at all.
+      const lockRead = await actor.client.from("advisor_role_lock").select("advisor_id");
+      expect(lockRead.error, "authenticated role-lock read must be denied").not.toBeNull();
+    } finally {
+      await service.rpc("release_advisor_role_lock", {
+        p_advisor_id: actor.advisorId,
+        p_holder: holder,
+      });
+    }
+  });
+});
+
 describe("advisor audit: updated events and actor attribution (R3)", () => {
   it("attributes a self profile-name update to that advisor with a single diff event", async () => {
     const actor = await createBoundActor("self-update");
     const next = `${actor.advisorName} (Self)`;
 
-    const { error } = await actor.client
-      .from("advisor")
-      .update({ advisor_name: next })
-      .eq("advisor_id", actor.advisorId)
-      .select("advisor_id");
-    expect(error).toBeNull();
+    // The self-scoped table UPDATE was replaced by the expected-version
+    // self-service writer (migration 20261015000001); the fresh row starts at
+    // version 1. The audit attribution shape is unchanged.
+    const result = await callSelfProfileName(actor.client, 1, next);
+    expect(result.error).toBeNull();
 
     const events = await readAudit("advisor", actor.advisorId);
     const updates = events.filter((e) => e.action === "updated");
@@ -650,6 +782,278 @@ describe("advisor audit: updated events and actor attribution (R3)", () => {
     expect(updates[0].changes).toEqual({
       advisor_name: { old: target.advisorName, new: next },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RPC: effective-Admin peer profile-name production path
+// (`public.update_advisor_profile_name`, migration 20261014000001, extended by
+// the versioned expected-version signature of migration 20261015000001)
+//
+// The ONLY production server path for an effective Admin to change another
+// advisor's permitted profile data: an authenticated-only SECURITY DEFINER RPC
+// that derives the actor from `auth.uid()` (never a parameter), validates the
+// existing effective-Admin boundary, rejects the caller's own row, writes ONLY
+// `advisor_name`, and lets the existing advisor audit trigger emit exactly one
+// attributed `updated` event (or none for a no-op). Migration 20261015000001
+// drops the legacy 2-arg overload and REQUIRES `p_expected_version` (PT409 on
+// a stale target, 22023 when malformed), so a browser session can never bypass
+// the optimistic-concurrency precondition through a legacy arity. `email` is
+// unreachable, no reason is required (R8: ordinary profile edit), and
+// technical/service-role sessions are revoked.
+// ---------------------------------------------------------------------------
+
+describe("update_advisor_profile_name: effective-Admin peer-name production path", () => {
+  interface RpcRow {
+    advisor_id: number;
+    advisor_name: string;
+    row_version: number;
+  }
+
+  async function callProfileNameRpc(
+    client: SupabaseClient,
+    advisorId: number | null,
+    advisorName: string | null,
+    expectedVersion: number | null = 1
+  ): Promise<{ data: RpcRow[] | null; error: { code?: string; message?: string } | null }> {
+    const { data, error } = await client.rpc("update_advisor_profile_name", {
+      p_advisor_id: advisorId,
+      p_advisor_name: advisorName,
+      p_expected_version: expectedVersion,
+    });
+    return {
+      data: (data as RpcRow[] | null) ?? null,
+      error: (error as { code?: string; message?: string } | null) ?? null,
+    };
+  }
+
+  async function readProfile(advisorId: number): Promise<{ advisor_name: string; email: string }> {
+    const { rows } = await pool.query<{ advisor_name: string; email: string }>(
+      "SELECT advisor_name, email FROM public.advisor WHERE advisor_id = $1",
+      [advisorId]
+    );
+    return rows[0];
+  }
+
+  it("lets an effective Admin update a peer name: exactly one attributed updated event, correct diff, preserved email", async () => {
+    const target = await createBoundActor("profile-rpc-target");
+    const next = `${target.advisorName} (Effective Admin)`;
+
+    const result = await callProfileNameRpc(adminActor.client, target.advisorId, next, 1);
+    expect(result.error, "effective-Admin peer rename succeeds").toBeNull();
+    expect(result.data, "RPC returns the updated row").toHaveLength(1);
+    expect(result.data![0]).toMatchObject({
+      advisor_id: target.advisorId,
+      advisor_name: next,
+      row_version: 2,
+    });
+
+    // Only advisor_name changed; email is unreachable through the RPC and stays
+    // identical to the Auth identity (R4 projection invariant).
+    expect(await readProfile(target.advisorId)).toEqual({ advisor_name: next, email: target.email });
+
+    // Exactly one `updated` event, attributed to the acting Admin (origin user
+    // via auth.uid()), with the correct name-only diff and a preserved email.
+    const events = await readAudit("advisor", target.advisorId);
+    const updates = events.filter((e) => e.action === "updated");
+    expect(updates, "exactly one updated event").toHaveLength(1);
+    expect(updates[0].origin).toBe("user");
+    expect(updates[0].actor_advisor_id, "attributed to the acting Admin").toBe(adminActor.advisorId);
+    expect(updates[0].actor_name_snapshot, "frozen Admin display-name snapshot").toBe(
+      adminActor.advisorName
+    );
+    expect(updates[0].changes, "name-only diff").toEqual({
+      advisor_name: { old: target.advisorName, new: next },
+    });
+    assertAllowlisted(updates[0].old_values, "peer old_values");
+    assertAllowlisted(updates[0].new_values, "peer new_values");
+    expect(updates[0].new_values).toMatchObject({ advisor_name: next, email: target.email });
+    expect(
+      events.filter((e) => e.action !== "created" && e.action !== "updated"),
+      "no fabricated extra event (role_changed / deactivated / ...)"
+    ).toHaveLength(0);
+  });
+
+  it("trims the submitted name before writing, diffing, and returning it", async () => {
+    const target = await createBoundActor("profile-rpc-trim");
+    const next = `  ${target.advisorName} (Padded)  `;
+    const trimmed = next.trim();
+
+    const result = await callProfileNameRpc(adminActor.client, target.advisorId, next, 1);
+    expect(result.error).toBeNull();
+    expect(result.data![0]).toMatchObject({
+      advisor_id: target.advisorId,
+      advisor_name: trimmed,
+      row_version: 2,
+    });
+    expect((await readProfile(target.advisorId)).advisor_name).toBe(trimmed);
+
+    const updates = (await readAudit("advisor", target.advisorId)).filter(
+      (e) => e.action === "updated"
+    );
+    expect(updates, "exactly one updated event").toHaveLength(1);
+    expect(updates[0].changes).toEqual({
+      advisor_name: { old: target.advisorName, new: trimmed },
+    });
+  });
+
+  it("suppresses a no-op restatement: no event, row untouched", async () => {
+    const target = await createBoundActor("profile-rpc-noop");
+    const updatesBefore = (await readAudit("advisor", target.advisorId)).filter(
+      (e) => e.action === "updated"
+    );
+
+    const result = await callProfileNameRpc(adminActor.client, target.advisorId, target.advisorName, 1);
+    expect(result.error, "no-op restatement succeeds").toBeNull();
+    expect(result.data![0]).toMatchObject({
+      advisor_id: target.advisorId,
+      advisor_name: target.advisorName,
+      row_version: 1,
+    });
+
+    const updatesAfter = (await readAudit("advisor", target.advisorId)).filter(
+      (e) => e.action === "updated"
+    );
+    expect(updatesAfter, "no-op records no new updated event").toHaveLength(updatesBefore.length);
+    expect(await readProfile(target.advisorId)).toEqual({
+      advisor_name: target.advisorName,
+      email: target.email,
+    });
+  });
+
+  it("denies a non-effective-Admin actor (claimless, inactive, or anonymous) and changes nothing", async () => {
+    const target = await createBoundActor("profile-rpc-denied");
+    const inactiveAdmin = await createBoundActor("profile-rpc-inactive-admin", true, false);
+    const before = (await readAudit("advisor", target.advisorId)).length;
+
+    // A bound, active advisor WITHOUT the durable ocf_admin claim: not an
+    // effective Admin.
+    const claimless = await callProfileNameRpc(staffActor.client, target.advisorId, "Sneak", 1);
+    expect(claimless.error, "claimless advisor must be denied").not.toBeNull();
+    expect(claimless.error?.code, "claimless denial code").toBe("42501");
+
+    // A bound advisor WITH the durable claim but an INACTIVE advisor row:
+    // fail-closed on the effective-Admin boundary even though the JWT still
+    // claims admin (the claim alone is never authorization).
+    const inactive = await callProfileNameRpc(inactiveAdmin.client, target.advisorId, "Sneak", 1);
+    expect(inactive.error, "inactive advisor must be denied").not.toBeNull();
+    expect(inactive.error?.code, "inactive denial code").toBe("42501");
+
+    expect(await readProfile(target.advisorId)).toEqual({
+      advisor_name: target.advisorName,
+      email: target.email,
+    });
+    expect(
+      (await readAudit("advisor", target.advisorId)).length,
+      "no event from a denied rename"
+    ).toBe(before);
+  });
+
+  it("refuses the caller's own row (self-service stays on the ordinary profile path)", async () => {
+    const updatesBefore = (await readAudit("advisor", adminActor.advisorId)).filter(
+      (e) => e.action === "updated"
+    );
+    const result = await callProfileNameRpc(
+      adminActor.client,
+      adminActor.advisorId,
+      `${adminActor.advisorName} (Self via admin)`,
+      1
+    );
+    expect(result.error, "self-update through the Admin route must be refused").not.toBeNull();
+    expect(result.error?.code, "self-update denial code").toBe("22023");
+
+    expect((await readProfile(adminActor.advisorId)).advisor_name).toBe(adminActor.advisorName);
+    expect(
+      (await readAudit("advisor", adminActor.advisorId)).filter((e) => e.action === "updated"),
+      "no event from the refused self-update"
+    ).toHaveLength(updatesBefore.length);
+  });
+
+  it("rejects invalid input fail-closed before any write (22023 / P0002)", async () => {
+    const target = await createBoundActor("profile-rpc-invalid");
+    const before = (await readAudit("advisor", target.advisorId)).length;
+    const cases: Array<{ id: number | null; name: string | null; code: string }> = [
+      { id: null, name: "Some Name", code: "22023" }, // missing target id
+      { id: target.advisorId, name: "", code: "22023" }, // blank name
+      { id: target.advisorId, name: "   ", code: "22023" }, // whitespace-only name
+      { id: target.advisorId, name: "X".repeat(121), code: "22023" }, // over 120 chars
+      { id: 99999999, name: "Ghost", code: "P0002" }, // nonexistent target
+    ];
+    for (const c of cases) {
+      const result = await callProfileNameRpc(adminActor.client, c.id, c.name, 1);
+      expect(
+        result.error,
+        `case id=${c.id} name=${JSON.stringify(c.name)} must be rejected`
+      ).not.toBeNull();
+      expect(result.error?.code, `denial code for id=${c.id}`).toBe(c.code);
+    }
+    expect(
+      (await readAudit("advisor", target.advisorId)).length,
+      "rejected inputs record no event"
+    ).toBe(before);
+  });
+
+  it("rejects a name that would collide with another advisor's unique name (23505)", async () => {
+    const target = await createBoundActor("profile-rpc-collision");
+    // staffActor already owns its unique advisor_name: the friendly duplicate
+    // check (with the UNIQUE(advisor_name) constraint as the authoritative
+    // backstop) must reject the collision.
+    const result = await callProfileNameRpc(adminActor.client, target.advisorId, staffActor.advisorName, 1);
+    expect(result.error, "duplicate-name collision must be rejected").not.toBeNull();
+    expect(result.error?.code, "collision denial code").toBe("23505");
+    expect(await readProfile(target.advisorId)).toEqual({
+      advisor_name: target.advisorName,
+      email: target.email,
+    });
+  });
+
+  it("exposes exactly one update_advisor_profile_name overload with the pinned advisor-id/name/expected-version parameters", async () => {
+    const names = await rpcInputArgNames("update_advisor_profile_name");
+    // Migration 20261015000001 drops the legacy 2-arg overload and pins the
+    // versioned 3-arg signature; exactly one overload must remain.
+    expect(names).toEqual(["p_advisor_id", "p_advisor_name", "p_expected_version"]);
+  });
+
+  it("hardens update_advisor_profile_name (SECURITY DEFINER, empty search_path, authenticated EXECUTE only)", async () => {
+    const { rows } = await pool.query(
+      `SELECT p.prosecdef, p.proconfig,
+              has_function_privilege('authenticated', p.oid, 'EXECUTE') AS auth,
+              has_function_privilege('anon', p.oid, 'EXECUTE') AS anon,
+              has_function_privilege('service_role', p.oid, 'EXECUTE') AS sr
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.proname = 'update_advisor_profile_name'`
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].prosecdef).toBe(true);
+    expect(rows[0].proconfig).toEqual(['search_path=""']);
+    expect(rows[0].auth).toBe(true);
+    expect(rows[0].anon).toBe(false);
+    // Technical/service-role sessions are revoked: the actor must always be an
+    // authenticated auth.uid() (an unattributable session is rejected fail-closed).
+    expect(rows[0].sr).toBe(false);
+  });
+
+  it("denies anon and service_role execution at the database boundary", async () => {
+    const anonDenied = await anon.rpc("update_advisor_profile_name", {
+      p_advisor_id: targetAdvisor.advisorId,
+      p_advisor_name: "Anon edit",
+      p_expected_version: 1,
+    });
+    expect(anonDenied.error, "anon must not execute the RPC").not.toBeNull();
+
+    // The service role is NOT a caller of this RPC (a technical session has no
+    // auth.uid(), so it could never be an attributed actor anyway) — the
+    // migration revokes EXECUTE from service_role and anon.
+    const serviceDenied = await service.rpc("update_advisor_profile_name", {
+      p_advisor_id: targetAdvisor.advisorId,
+      p_advisor_name: "Service edit",
+      p_expected_version: 1,
+    });
+    expect(
+      serviceDenied.error,
+      "service_role must not execute the RPC (authenticated actor required)"
+    ).not.toBeNull();
   });
 });
 
@@ -950,6 +1354,8 @@ describe("lifecycle transitions: required reason and single event (R6)", () => {
           entity: "student",
           action: "archive",
           entityId: studentId,
+          // Fresh row: version 1 is the current expected version.
+          expectedVersion: 1,
           reason: "atomic rollback proof",
         };
         return mapLifecycleArgs(names, spec)[n];
@@ -972,6 +1378,55 @@ describe("lifecycle transitions: required reason and single event (R6)", () => {
     expect(
       (await readAudit("student", studentId)).filter((e) => e.action === "archived"),
       "no archived event survives"
+    ).toHaveLength(0);
+  });
+
+  it("rolls back the Auth claim, advisor role, and event together when the role-change audit insert fails (R5/NFR1)", async () => {
+    const target = await createBoundActor("role-atomic");
+    expect(await readAuthClaim(target.userId), "target starts without the Admin claim").not.toBe(true);
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      // Transaction-local forced audit failure. The explicit role_changed INSERT
+      // (and the Auth claim + display-role writes it aborts) all roll back.
+      await client.query(
+        `CREATE OR REPLACE FUNCTION public._test_advisor_role_audit_fail()
+           RETURNS trigger LANGUAGE plpgsql AS $fn$
+           BEGIN
+             RAISE EXCEPTION 'forced role audit failure' USING ERRCODE = 'P0001';
+           END;
+         $fn$`
+      );
+      await client.query(
+        `CREATE TRIGGER _test_advisor_role_audit_fail
+           BEFORE INSERT ON public.audit_event
+           FOR EACH ROW EXECUTE FUNCTION public._test_advisor_role_audit_fail()`
+      );
+      await expect(
+        directSetAdvisorRole(client, {
+          advisorId: target.advisorId,
+          role: "Admin",
+          actorAdvisorId: adminActor.advisorId,
+          reason: "atomic role rollback proof",
+          expectedVersion: 1,
+        })
+      ).rejects.toMatchObject({ code: "P0001" });
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+
+    // Auth claim + advisor row + audit event all rolled back together.
+    expect(await readAuthClaim(target.userId), "Auth claim rolled back").not.toBe(true);
+    const { rows } = await pool.query<{ role: string }>(
+      "SELECT role FROM public.advisor WHERE advisor_id = $1",
+      [target.advisorId]
+    );
+    expect(rows[0].role, "display role rolled back").toBe("Advisor");
+    expect(
+      (await readAudit("advisor", target.advisorId)).filter((e) => e.action === "role_changed"),
+      "no role_changed event survives"
     ).toHaveLength(0);
   });
 });
@@ -1122,6 +1577,7 @@ describe("last active durable Admin invariant (R7/NFR2)", () => {
         entity: "advisor",
         action: "deactivate",
         entityId: adminActor.advisorId,
+        expectedVersion: await currentRowVersion("advisor", adminActor.advisorId),
         reason: "last admin deactivation",
       };
       const args = names.map((n) => mapLifecycleArgs(names, spec)[n]);
@@ -1196,13 +1652,10 @@ describe("audit immutability and historical attribution (R9)", () => {
     const selfRenamed = `${originalName} (Self)`;
 
     // A user-attributed event recorded BEFORE any later rename/deactivation:
-    // the actor updates their own display name.
-    const { error: selfError } = await actor.client
-      .from("advisor")
-      .update({ advisor_name: selfRenamed })
-      .eq("advisor_id", actor.advisorId)
-      .select("advisor_id");
-    expect(selfError).toBeNull();
+    // the actor updates their own display name through the expected-version
+    // self-service writer (the fresh row starts at version 1).
+    const selfResult = await callSelfProfileName(actor.client, 1, selfRenamed);
+    expect(selfResult.error).toBeNull();
 
     // A meeting attributed to this advisor (trusted technical write).
     const studentId = await seedStudent("historical-meeting");

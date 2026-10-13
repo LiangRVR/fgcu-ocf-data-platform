@@ -63,9 +63,9 @@ links) is also required and does not come from `supabase status -o env`.
 > the hosted **production** database while provenance is unresolved —
 > production is the physical-schema authority, its migration ledger records
 > only `20260924065221_advisor_self_activation_lockdown`, and the deployed
-> schema materially differs from this repository chain (which tracks **twenty-two**
+> schema materially differs from this repository chain (which tracks **thirty-two**
 > forward-only migrations ending with
-> `20261009000001_scholarship_void_serialization.sql`). See
+> `20261018000001_lock_application_relink_parents.sql`). See
 > [SCHEMA.md — Migration deployment freeze](./SCHEMA.md#migration-deployment-freeze)
 > and the approval-gated
 > [reconciliation runbook](../aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
@@ -95,7 +95,7 @@ to match `public.advisor.email`.
   self-link, and no self-service fallback — an unbound, email-matched account
   reads zero advisor rows by design.
 - Provisioning is sequenced **after** the complete migration chain: apply the
-  full chain through `20261009000001_scholarship_void_serialization.sql` first —
+  full chain through `20261018000001_lock_application_relink_parents.sql` first —
   the lockdown migration (`20260318000001_advisor_self_activation_lockdown.sql`)
   removes the remaining email self-link write path and installs the
   one-time-bind guard under which the trusted `service_role` bind is written.
@@ -113,7 +113,7 @@ Admin API** — never a public endpoint, and never with service credentials
 exposed, committed, or logged.
 
 Steps (after the complete migration chain through
-`20261009000001_scholarship_void_serialization.sql` is applied):
+`20261018000001_lock_application_relink_parents.sql` is applied):
 
 1. Confirm the confirmed FGCU advisor email is present on an **active**
    `public.advisor` row (`is_active = true`).
@@ -139,7 +139,7 @@ are never a part of the running application.
 ### Local workflow (Docker) — recommended
 
 This is the supported local development/testing workflow. It applies the full
-**twenty-two-migration** chain to a disposable Docker-local instance and requires
+**thirty-two-migration** chain to a disposable Docker-local instance and requires
 no hosted project:
 
 ```bash
@@ -157,7 +157,7 @@ pnpm exec supabase stop --no-backup
 ```
 
 `supabase db reset` applies every file in `supabase/migrations/` in order,
-ending with `20261009000001_scholarship_void_serialization.sql`. The contract and
+ending with `20261018000001_lock_application_relink_parents.sql`. The contract and
 E2E suites run the same chain automatically against a throwaway isolated
 instance (`scripts/test-support/supabase-isolation.mjs`) and never touch the
 repository's own `supabase/` project.
@@ -192,25 +192,35 @@ repository's own `supabase/` project.
 23. Repeat steps 3–6 for `supabase/migrations/20261003000001_advisor_role_change_lock.sql`, `20261004000001_advisor_role_fenced_write.sql`, `20261005000001_advisor_role_fenced_read.sql`, and `20261006000001_advisor_role_display_reconcile.sql` — server-only per-advisor role-change lease + fenced write/read (legacy primitives retained).
 24. Repeat steps 3–6 for `supabase/migrations/20261007000001_atomic_advisor_role_change.sql` — `set_advisor_role` (service-role-only SECURITY DEFINER RPC) updates the Auth claim and the display role in one transaction.
 25. Repeat steps 3–6 for `supabase/migrations/20261008000001_historical_integrity_remediation.sql` — makes `fellowship_thursday`/`scholarship_history` append-only base records plus their amendment tables and effective views, expands the application pipeline to nine database-enforced stages with the stage/flag and `application_year` checks, and requires a conducting `advisor_id` on new authenticated advising meetings while preserving legacy `NULL` rows.
-26. Repeat steps 3–6 for `supabase/migrations/20261009000001_scholarship_void_serialization.sql` — **final migration**: serializes concurrent scholarship amendments for one award by taking an exclusive lock on the parent `scholarship_history` row before the terminal-`Void` `EXISTS` guard (the loser re-evaluates against the committed state and is rejected) and adds a partial unique index enforcing at most one `Void` per award; the append-only tables, trigger grants, RLS, and effective views are otherwise unchanged.
-27. **Only after the complete migration chain is applied (through step 26):** provision each advisor via the admin pre-binding path (see [Advisor identity binding](#advisor-identity-binding-admin-pre-binding-not-email-self-link) above) — never create auth users to "self-link" by email. Use the protected `/api/advisors` endpoints (effective-Admin only). Because those endpoints require an existing effective Admin, **first** bootstrap the first effective Admin out of band (see [Bootstrap the first effective Admin](#bootstrap-the-first-effective-admin-trusted-operator-out-of-band)), then provision every other advisor normally.
-28. Verify the first active advisor (the bootstrapped Admin) can sign in — the pre-bound `auth_user_id` resolves their advisor row, `is_active` is `true`, and the strict-boolean `ocf_admin` claim grants effective admin.
+26. Repeat steps 3–6 for `supabase/migrations/20261009000001_scholarship_void_serialization.sql` — serializes concurrent scholarship amendments for one award by taking an exclusive lock on the parent `scholarship_history` row before the terminal-`Void` `EXISTS` guard (the loser re-evaluates against the committed state and is rejected) and adds a partial unique index enforcing at most one `Void` per award; the append-only tables, trigger grants, RLS, and effective views are otherwise unchanged.
+27. Repeat steps 3–6 for `supabase/migrations/20261010000001_security_invoker_list_views.sql` — one read-only, explicit-column, RLS-preserving `security_invoker` view per operational list (no Auth binding fields, no row multiplication).
+28. Repeat steps 3–6 for `supabase/migrations/20261011000001_scholarship_history_operational_summary.sql` — the `security_invoker` aggregate returning exact non-void scholarship totals without shipping rows to the client.
+29. Repeat steps 3–6 for `supabase/migrations/20261012000001_immutable_audit.sql` — the immutable, database-authored `public.audit_event` read model plus the internal after-insert/update trigger on `student`/`fellowship`/`application` (no baseline rows, no product-role writer).
+30. Repeat steps 3–6 for `supabase/migrations/20261013000001_advisor_admin_immutable_history.sql` — extends `audit_event` to `advisor`/administrator operations with a strict allowlist, trusted human attribution, required role/lifecycle reasons, audited `provision_advisor`, and the durable concurrency-safe last-active-bound-Admin invariant.
+31. Repeat steps 3–6 for `supabase/migrations/20261014000001_advisor_admin_profile_name.sql` — the authenticated-only, effective-Admin peer display-name RPC `update_advisor_profile_name` (actor from `auth.uid()`, no email, no reason, one attributed audit event).
+32. Repeat steps 3–6 for `supabase/migrations/20261015000001_protected_current_state_writers.sql` — adds `row_version`/`updated_at` to the four current-state tables and replaces direct authenticated `UPDATE` with the expected-version writer RPCs (`update_student_profile`, `update_fellowship`, `update_application`, `update_my_advisor_profile`, and versioned `lifecycle_transition`/`set_advisor_role`/`update_advisor_profile_name`); stale versions raise `PT409` before any change.
+33. Repeat steps 3–6 for `supabase/migrations/20261015000002_historical_audit_activity.sql` — audits historical base/amendment inserts (`created` / `correction_added` / `voided`) and adds the explicit-column `security_invoker` `public.audit_activity` read view.
+34. Repeat steps 3–6 for `supabase/migrations/20261016000001_insert_metadata_and_positive_version.sql` — makes `row_version` (`= 1`) and `updated_at` (`= now()`) database-authored on every INSERT (overriding any supplied value) and requires every expected version to be a positive integer (`>= 1`; NULL/0/negative raise `22023`).
+35. Repeat steps 3–6 for `supabase/migrations/20261017000001_revoke_advising_meeting_truncate.sql` — revokes `TRUNCATE` on `advising_meeting`/`advising_meeting_amendment` from `PUBLIC`/`anon`/`authenticated`, closing the destructive `TRUNCATE` bypass on the append-only advising history (the trusted `service_role` grant is untouched; no SELECT/INSERT, RLS, trigger, or data change).
+36. Repeat steps 3–6 for `supabase/migrations/20261018000001_lock_application_relink_parents.sql` — **final migration**: `public.update_application` locks the prospective parent row `FOR UPDATE` and reads `archived_at` under that lock before the ACTIVE-parent check (only when an actual parent re-link changes the reference), so a concurrent `lifecycle_transition` parent archive serializes with the re-link and a re-link can never commit pointing at a parent archived at commit time (fixed, deadlock-free lock order; only the parent-validation block changes).
+37. **Only after the complete migration chain is applied (through step 36):** provision each advisor via the admin pre-binding path (see [Advisor identity binding](#advisor-identity-binding-admin-pre-binding-not-email-self-link) above) — never create auth users to "self-link" by email. Use the protected `/api/advisors` endpoints (effective-Admin only). Because those endpoints require an existing effective Admin, **first** bootstrap the first effective Admin out of band (see [Bootstrap the first effective Admin](#bootstrap-the-first-effective-admin-trusted-operator-out-of-band)), then provision every other advisor normally.
+38. Verify the first active advisor (the bootstrapped Admin) can sign in — the pre-bound `auth_user_id` resolves their advisor row, `is_active` is `true`, and the strict-boolean `ocf_admin` claim grants effective admin.
 
 Migrations `20260305000001_allow_anon_read.sql` and
 `20260305000002_allow_anon_write.sql` are temporary bootstrap steps. After the
-full chain ending with `20261009000001_scholarship_void_serialization.sql`,
+full chain ending with `20261018000001_lock_application_relink_parents.sql`,
 bootstrap anon access is no longer the intended steady state. Operational
 access comes only from authenticated active advisors, `advisor.auth_user_id`
-binding is admin-only, and advising history is append-only (meetings and
-amendments are SELECT/INSERT-only).
+binding is admin-only, and history is append-only (base records and amendments
+are SELECT/INSERT-only).
 
 ### Option B: Supabase CLI against a hosted project (fresh/disposable only)
 
 > ⛔ `supabase link` + `supabase db push` must **not** be run against the
 > hosted **production** project. The production migration ledger records only
 > `20260924065221_advisor_self_activation_lockdown`, while this repository
-> tracks twenty-two migrations ending with
-> `20261009000001_scholarship_void_serialization.sql`, and the deployed schema
+> tracks thirty-two migrations ending with
+> `20261018000001_lock_application_relink_parents.sql`, and the deployed schema
 > differs materially. Generic `db push`, historical replay, and
 > migration-history repair against production are prohibited until a separately
 > approved reconciliation exists. See the
@@ -232,8 +242,8 @@ provisioning a fresh hosted project.
 
 ## Step 3: Generate TypeScript Types
 
-> The repository migration chain now contains **twenty-two** migrations and ends
-> with `20261009000001_scholarship_void_serialization.sql`.
+> The repository migration chain now contains **thirty-two** migrations and ends
+> with `20261018000001_lock_application_relink_parents.sql`.
 
 After applying the schema, generate TypeScript types for type-safe database access:
 
@@ -302,6 +312,30 @@ See [SCHEMA.md](./SCHEMA.md) for detailed documentation about:
 - Row Level Security policies
 - Sample queries
 
+### Historical integrity invariant and entity categories
+
+The database enforces one durable invariant: **no normal application access may
+change business history without an atomic, immutable audit record.** A
+meaningful change to a current-state business entity must run through that
+entity's database-owned versioned writer and commit exactly one immutable,
+database-authored `audit_event` in the same transaction; `audit_event` cannot be
+directly changed, deleted, or truncated by a normal product role; corrections to
+historical records are append-only amendments.
+
+| Category | Tables | Rule |
+| --- | --- | --- |
+| Current-state / audited | `student`, `advisor`, `fellowship`, `application` | Mutable only through the expected-`row_version` database writer; each meaningful mutation writes exactly one `audit_event`; direct authenticated `UPDATE` is revoked. |
+| Immutable base | `advising_meeting`, `fellowship_thursday`, `scholarship_history` | `SELECT`/`INSERT` only for normal roles; rows are never updated or deleted (audited `created`). |
+| Append-only amendment | `advising_meeting_amendment`, `fellowship_thursday_amendment`, `scholarship_history_amendment` | Appended corrections (`correction_added`; a Scholarship `Void` is `voided`); effective-value views apply corrections without rewriting base facts. |
+
+The product `Admin` role is **not** a PostgreSQL superuser; the immutable Auth
+`app_metadata.ocf_admin = true` claim plus an active, pre-bound advisor is the
+only effective-admin authority. A `service_role`/DBA session is a separate
+technical trust boundary reserved for trusted provisioning, first-Admin
+bootstrap, and synthetic fixtures — never a normal application path. See
+[SCHEMA.md](./SCHEMA.md) and
+[`docs/schema-reference.md`](../docs/schema-reference.md) for details.
+
 ## Troubleshooting
 
 ### Types generation fails
@@ -337,8 +371,8 @@ If you're getting permission errors:
 5. For a new advisor, complete the admin pre-binding/invite path (see the
    identity-binding subsection above) before asking them to sign in
 6. Confirm the complete chain through
-   `20261009000001_scholarship_void_serialization.sql` was applied before any
-   advisor was provisioned
+   `20261018000001_lock_application_relink_parents.sql` was applied before
+   any advisor was provisioned
 7. A fresh project has **no effective Admin** until the first effective Admin
    is bootstrapped out of band via the service role / Supabase Admin API (see
    [Bootstrap the first effective Admin](#bootstrap-the-first-effective-admin-trusted-operator-out-of-band));
@@ -367,11 +401,21 @@ If you're getting permission errors:
 18. ✅ Apply role-change lease/fencing migrations (`20261003000001`–`20261006000001`)
 19. ✅ Apply atomic role change migration (`20261007000001_atomic_advisor_role_change.sql`)
 20. ✅ Apply historical integrity remediation migration (`20261008000001_historical_integrity_remediation.sql`)
-21. ✅ Apply scholarship terminal-Void serialization migration (`20261009000001_scholarship_void_serialization.sql`) — final migration
-22. ✅ Provision each advisor via the admin pre-binding path (invite/create the auth account and bind its UUID to the unbound `advisor` row **before first sign-in**; one-time bind, no email self-link) — done only after the full migration chain (items 2–21) is applied
-23. ✅ Verify the first active advisor can sign in (pre-bound `auth_user_id` resolves the advisor row; `is_active = true`)
-24. ✅ Generate TypeScript types
-25. ✅ Verify connection
+21. ✅ Apply scholarship terminal-Void serialization migration (`20261009000001_scholarship_void_serialization.sql`)
+22. ✅ Apply read-only list views migration (`20261010000001_security_invoker_list_views.sql`)
+23. ✅ Apply scholarship operational summary migration (`20261011000001_scholarship_history_operational_summary.sql`)
+24. ✅ Apply immutable audit trail migration (`20261012000001_immutable_audit.sql`)
+25. ✅ Apply advisor/admin immutable history migration (`20261013000001_advisor_admin_immutable_history.sql`)
+26. ✅ Apply effective-Admin peer display-name RPC migration (`20261014000001_advisor_admin_profile_name.sql`)
+27. ✅ Apply protected current-state writers migration (`20261015000001_protected_current_state_writers.sql`)
+28. ✅ Apply historical audit + activity read model migration (`20261015000002_historical_audit_activity.sql`)
+29. ✅ Apply insert metadata + positive expected-version migration (`20261016000001_insert_metadata_and_positive_version.sql`)
+30. ✅ Apply advising-history TRUNCATE-revoke migration (`20261017000001_revoke_advising_meeting_truncate.sql`)
+31. ✅ Apply application re-link parent-locking migration (`20261018000001_lock_application_relink_parents.sql`) — final migration
+32. ✅ Provision each advisor via the admin pre-binding path (invite/create the auth account and bind its UUID to the unbound `advisor` row **before first sign-in**; one-time bind, no email self-link) — done only after the full migration chain (items 2–31) is applied
+33. ✅ Verify the first active advisor can sign in (pre-bound `auth_user_id` resolves the advisor row; `is_active = true`)
+34. ✅ Generate TypeScript types
+35. ✅ Verify connection
 
 ## Auth and Account Notes
 

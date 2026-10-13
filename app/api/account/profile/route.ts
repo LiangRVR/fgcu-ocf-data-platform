@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { getCurrentAdvisor, getSessionUser } from "@/lib/auth/session";
 import { createServerClient } from "@/lib/supabase/server";
+import {
+  STALE_VERSION_GUIDANCE,
+  isVersionConflict,
+} from "@/lib/supabase/errors";
 import { profileUpdateSchema } from "@/lib/validators/account";
 
 /**
@@ -10,12 +14,14 @@ import { profileUpdateSchema } from "@/lib/validators/account";
  * read-only for ordinary editing and becomes consistent only through a future
  * explicit trusted account-management workflow that updates Auth AND the
  * advisor projection together. The route therefore:
- *   1. validates the payload;
+ *   1. validates the payload (including the caller's loaded `expectedVersion`);
  *   2. resolves the authenticated, ACTIVE, pre-bound advisor;
  *   3. REJECTS (400) any email value that differs from the advisor's current
  *      login email — no email write or Auth identity change ever happens here,
  *      and the projector can never silently diverge from Auth;
- *   4. updates ONLY `advisor_name`, scoped to the session-resolved row.
+ *   4. writes ONLY `advisor_name` through the expected-version
+ *      `update_my_advisor_profile` RPC (actor derived from `auth.uid()`),
+ *      which rejects a stale `expectedVersion` with `PT409` before any change.
  *
  * The email key is accepted solely to detect such an attempt; absent/empty
  * values (echoing a read-only field) are fine.
@@ -67,13 +73,29 @@ export async function PATCH(request: Request) {
     }
 
     const supabase = createServerClient();
+    const { error: rpcError } = await supabase.rpc("update_my_advisor_profile", {
+      p_expected_version: parsed.data.expectedVersion,
+      p_advisor_name: parsed.data.advisorName,
+    });
+
+    if (rpcError) {
+      if (isVersionConflict(rpcError)) {
+        // Required refresh-and-review guidance (R4): no retry, no overwrite.
+        return NextResponse.json(
+          { error: STALE_VERSION_GUIDANCE },
+          { status: 409 }
+        );
+      }
+      // Masked below through the same generic path as thrown provider errors.
+      throw rpcError;
+    }
+
+    // Re-read the display-safe projection (never `auth_user_id`) so the
+    // response carries the updated row_version.
     const { data, error } = await supabase
       .from("advisor")
-      .update({
-        advisor_name: parsed.data.advisorName,
-      })
+      .select("advisor_id, advisor_name, email, role, is_active, last_login_at, row_version")
       .eq("advisor_id", advisor.advisor_id)
-      .select("advisor_id, advisor_name, email, role, is_active, last_login_at")
       .single();
 
     if (error) {
