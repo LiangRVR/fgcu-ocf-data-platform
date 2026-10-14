@@ -342,31 +342,23 @@ export function StudentsTable({
   };
 
   const openEdit = async (student: Student) => {
-    setEditingStudent(student);
-    setEditForm({
-      ...EMPTY_STUDENT_FORM,
-      full_name: student.full_name,
-      email: student.email,
-      major: student.major ?? "",
-      class_standing: student.class_standing ?? "",
-      gpa: student.gpa != null ? String(student.gpa) : "",
-      is_ch_student: student.is_ch_student,
-      first_gen: student.first_gen,
-      honors_college: student.honors_college,
-      us_citizen: student.us_citizen,
-    });
     setEditFormErrors({});
     setEditVersion(null);
     setEditStudentOpen(true);
 
-    // Load the optimistic-concurrency version now (not at save time) so a
-    // concurrent edit during the dialog's lifetime is detected on save.
+    // The form and version come from this one query. Never pair a rendered list
+    // row with a separately refreshed version.
     const { data, error } = await supabaseBrowserClient
       .from("student")
-      .select("row_version")
+      .select("student_id, full_name, email, is_ch_student, major, minor, gpa, class_standing, us_citizen, age, gender, pronouns, race_ethnicity, languages, first_gen, honors_college, archived_at, row_version, updated_at")
       .eq("student_id", student.student_id)
       .single();
-    if (!error && data) setEditVersion(data.row_version);
+    if (!error && data) {
+      const snapshot = data as Database["public"]["Tables"]["student"]["Row"];
+      setEditingStudent(snapshot as unknown as Student);
+      setEditForm({ ...EMPTY_STUDENT_FORM, full_name: snapshot.full_name, email: snapshot.email, major: snapshot.major ?? "", class_standing: snapshot.class_standing ?? "", gpa: snapshot.gpa != null ? String(snapshot.gpa) : "", is_ch_student: snapshot.is_ch_student, first_gen: snapshot.first_gen, honors_college: snapshot.honors_college, us_citizen: snapshot.us_citizen });
+      setEditVersion(snapshot.row_version);
+    }
   };
 
   const handleEditSubmit = async () => {

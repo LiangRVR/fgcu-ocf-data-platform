@@ -1391,11 +1391,11 @@ describe("audit event timestamps are database-authored across the mutation matri
 });
 
 // ---------------------------------------------------------------------------
-// R9: reserved baseline vocabulary and no fabricated migration history
+// R9: trusted, transaction-local baseline import and no fabricated history
 // ---------------------------------------------------------------------------
 
-describe("baseline_captured semantics: reserved, unwritten, and never fabricated (R9)", () => {
-  it("reserves baseline_captured and the migration origin without any audit writer", async () => {
+describe("baseline_captured semantics: trusted and never fabricated (R9)", () => {
+  it("reserves baseline vocabulary for the transaction-local trusted import path", async () => {
     const { rows: defs } = await pool.query<{ conname: string; def: string }>(
       `SELECT conname, pg_get_constraintdef(oid) AS def
          FROM pg_constraint
@@ -1406,24 +1406,19 @@ describe("baseline_captured semantics: reserved, unwritten, and never fabricated
     expect(actionDef, "action vocabulary reserves baseline_captured").toContain("'baseline_captured'");
     expect(originDef, "origin vocabulary reserves migration").toContain("'migration'");
 
-    // No audit helper function may emit the reserved baseline vocabulary: the
-    // values are vocabulary-only, never a writable path.
     const { rows: fns } = await pool.query<{ nspname: string; proname: string; prosrc: string }>(
       `SELECT n.nspname, p.proname, p.prosrc
          FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname IN ('public', 'private') AND p.proname LIKE '%audit%'`
     );
-    expect(fns.length, "the audit helper functions exist").toBeGreaterThan(0);
-    for (const fn of fns) {
-      expect(
-        fn.prosrc,
-        `${fn.nspname}.${fn.proname} must not write baseline_captured`
-      ).not.toContain("baseline_captured");
-      expect(
-        fn.prosrc,
-        `${fn.nspname}.${fn.proname} must not claim the migration origin`
-      ).not.toContain("'migration'");
-    }
+    const normalizer = fns.find(
+      (fn) => fn.nspname === "private" && fn.proname === "normalize_baseline_audit_event"
+    );
+    expect(normalizer?.prosrc, "baseline normalizer exists").toContain("baseline_captured");
+    expect(normalizer?.prosrc, "baseline normalizer fixes the trusted origin").toContain("'migration'");
+    expect(normalizer?.prosrc, "baseline normalizer requires transaction-local context").toContain(
+      "ocf.legacy_baseline_import"
+    );
   });
 
   it("fabricates no baseline history on a fresh migration and denies a client impersonation attempt", async () => {

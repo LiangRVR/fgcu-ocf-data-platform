@@ -22,11 +22,13 @@ import { useRouter } from "next/navigation";
 interface FellowshipEditButtonProps {
   fellowshipId: number;
   fellowshipName: string;
+  disabled?: boolean;
 }
 
 export function FellowshipEditButton({
   fellowshipId,
   fellowshipName,
+  disabled = false,
 }: FellowshipEditButtonProps) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(fellowshipName);
@@ -38,16 +40,19 @@ export function FellowshipEditButton({
   const router = useRouter();
 
   async function handleOpen() {
-    setName(fellowshipName);
     setIsDirty(false);
     setExpectedVersion(null);
     setOpen(true);
     const { data, error } = await supabaseBrowserClient
       .from("fellowship")
-      .select("row_version")
+      .select("fellowship_name, row_version")
       .eq("fellowship_id", fellowshipId)
       .single();
-    if (!error && data) setExpectedVersion(data.row_version);
+    if (!error && data) {
+      // The displayed value and expected version must be one database snapshot.
+      setName(data.fellowship_name);
+      setExpectedVersion(data.row_version);
+    }
   }
 
   async function handleSave() {
@@ -99,6 +104,7 @@ export function FellowshipEditButton({
         className="h-8 w-8 text-slate-600 hover:text-slate-900"
         title="Edit fellowship"
         onClick={() => void handleOpen()}
+        disabled={disabled}
       >
         <Pencil className="h-4 w-4" />
       </Button>

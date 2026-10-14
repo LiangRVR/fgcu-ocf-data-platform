@@ -359,7 +359,8 @@ export default async function StudentDetailPage({ params }: StudentDetailPagePro
             </Button>
           </div>
           <div id="student-profile-editor" className="scroll-mt-6" tabIndex={-1}>
-            <StudentInfoEditor initialStudent={student} />
+            {isArchived ? <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">Archived — read only. Restore this student before changing the current profile.</p> : null}
+            <StudentInfoEditor initialStudent={student} readOnly={isArchived} />
           </div>
         </section>
 

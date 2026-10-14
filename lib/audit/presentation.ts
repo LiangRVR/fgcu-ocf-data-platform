@@ -56,8 +56,11 @@ export function normalizeAuditRow(row: AuditRow): AuditActivity {
 }
 
 const labels: Record<string, string> = {
-  insert: "Created", create: "Created", update: "Updated", delete: "Removed",
-  archive: "Archived", restore: "Restored", stage_change: "Stage changed",
+  insert: "Created", create: "Created", created: "Created", update: "Updated", updated: "Updated",
+  delete: "Removed",
+  archive: "Archived", archived: "Archived", restore: "Restored", restored: "Restored",
+  stage_change: "Stage changed", deactivated: "Advisor Deactivated", reactivated: "Advisor Reactivated",
+  baseline_captured: "Legacy State Captured",
 };
 
 export function auditActionLabel(action: string): string {

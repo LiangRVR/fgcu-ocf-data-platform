@@ -740,6 +740,8 @@ describe("audit_activity view: schema and grants (R11)", () => {
       "subject_fellowship_id",
       "student_name",
       "fellowship_name",
+      "student_subject_ids",
+      "fellowship_subject_ids",
     ]);
   });
 
@@ -775,18 +777,18 @@ describe("audit_activity view: schema and grants (R11)", () => {
     );
     const def = String(rows[0].def).replace(/\s+/g, " ");
 
-    // One outer SELECT plus exactly the two display-label scalar subqueries:
+    // One outer SELECT plus label and association scalar subqueries:
     // a SINGLE SQL statement returns event rows AND their labels, so a history
     // read is one round trip (no per-row N+1 follow-up query).
-    expect((def.match(/\bSELECT\b/gi) ?? []).length, "one statement + two label subqueries").toBe(3);
+    expect((def.match(/\bSELECT\b/gi) ?? []).length, "one statement + four association subqueries").toBe(5);
     expect(def, "no LATERAL / per-row set-returning join").not.toMatch(/\bLATERAL\b/i);
-    expect(def, "student label resolved in-query").toMatch(/s\.student_id\s*=\s*ae\.subject_student_id/i);
-    expect(def, "fellowship label resolved in-query").toMatch(
-      /f\.fellowship_id\s*=\s*ae\.subject_fellowship_id/i
-    );
+    expect(def, "student label comes from frozen subject snapshots").toMatch(/aes\.subject_type\s*=\s*'student'/i);
+    expect(def, "fellowship label comes from frozen subject snapshots").toMatch(/aes\.subject_type\s*=\s*'fellowship'/i);
     // The frozen actor snapshot is used; the view never joins the live advisor
     // or Auth identity for display labels.
     expect(def, "no live advisor join").not.toMatch(/from\s+(?:public\.)?advisor/i);
+    expect(def, "no live student join").not.toMatch(/from\s+(?:public\.)?student/i);
+    expect(def, "no live fellowship join").not.toMatch(/from\s+(?:public\.)?fellowship/i);
     expect(def, "no live Auth join").not.toMatch(/auth\.users/i);
   });
 });

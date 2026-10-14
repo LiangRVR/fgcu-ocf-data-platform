@@ -729,3 +729,40 @@ that an invoker-security trigger normally protects, it must take the same row
 lock the parent writer takes (here `FOR UPDATE` on the parent) so the check and
 the write are serialized against a concurrent parent mutation — do not rely on
 an unlocked re-read to close the race.
+
+---
+
+## 18. Final immutable-history remediation: frozen subjects, baseline imports, and archive mutability
+
+**Current state (migration `20261019000001`):** every newly written audit event
+also receives immutable `audit_event_subject` associations. Each association
+records a controlled subject type, relationship (`subject`, `previous`, or
+`current`), stable id, and event-time display-name snapshot. Application
+re-links retain both prior and current Student/Fellowship context; application-
+specific advising derives Fellowship context through its application. The
+existing direct subject columns remain current-context compatibility fields.
+
+**Archive rule:** archived Students and Fellowships are read-only current-state
+records. Restore first, make the profile change through the existing versioned
+writer, then optionally archive again with its own required lifecycle reason.
+Historical applications, meetings, attendance, awards, and corrections remain
+readable and are never deleted or relinked automatically.
+
+**Legacy import rule:** FGCU IT, not product users, owns real data migration. A
+trusted service-role/DBA transaction may call `begin_legacy_baseline_import()`
+before inserting legacy rows. The transaction-local context produces one
+`baseline_captured` event with `origin = migration`, `System` attribution, and
+no invented historic creator or original timestamp. The context must be set in
+the same transaction as the inserts and cannot be called by normal application
+roles. Imports outside that context remain ordinary `created` events.
+
+**Technical trust boundary:** OCF Admin is an application role, not a PostgreSQL
+superuser. Product roles cannot fabricate, update, delete, or truncate audit or
+audit-subject history. FGCU infrastructure/database administrators remain
+technically privileged outside the application guarantee.
+
+**OCF PRODUCT OWNER DECISION REQUIRED:** Do not add a Fellowship Thursday
+event-date field until OCF confirms whether each attendance must identify a
+specific weekly session. Do not add a Scholarship History award year/cycle until
+OCF confirms whether historical awards require one. Existing data must not be
+inferred for either decision.

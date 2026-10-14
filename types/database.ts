@@ -796,6 +796,8 @@ export type Database = {
           subject_application_id: number | null
           subject_fellowship_id: number | null
           subject_student_id: number | null
+          fellowship_subject_ids: number[]
+          student_subject_ids: number[]
         }
         Relationships: []
       }

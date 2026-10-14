@@ -47,13 +47,15 @@ function makeAuditRow(overrides: Partial<AuditRow> = {}): AuditRow {
     subject_application_id: 5,
     subject_fellowship_id: null,
     subject_student_id: 3,
+    fellowship_subject_ids: [],
+    student_subject_ids: [3],
     ...overrides,
   };
 }
 
 interface QueryRecord {
   select: string | null;
-  filters: Array<{ op: "eq" | "in"; column: string; value: unknown }>;
+  filters: Array<{ op: "contains" | "eq" | "in"; column: string; value: unknown }>;
   ors: string[];
   orders: Array<{ column: string; ascending: boolean }>;
   range: [number, number] | null;
@@ -70,6 +72,7 @@ function makeSupabase(rows: AuditRow[]) {
         select: (columns: string) => ((record.select = columns), builder),
         eq: (column: string, value: unknown) => (record.filters.push({ op: "eq", column, value }), builder),
         in: (column: string, value: unknown) => (record.filters.push({ op: "in", column, value }), builder),
+        contains: (column: string, value: unknown) => (record.filters.push({ op: "contains", column, value }), builder),
         or: (expression: string) => (record.ors.push(expression), builder),
         order: (column: string, options: { ascending: boolean }) =>
           (record.orders.push({ column, ...options }), builder),
@@ -194,7 +197,7 @@ describe("GET /api/audit/history keyset continuation", () => {
       )
     );
 
-    expect(calls[0].filters).toContainEqual({ op: "eq", column: "subject_student_id", value: 42 });
+    expect(calls[0].filters).toContainEqual({ op: "contains", column: "student_subject_ids", value: [42] });
     expect(calls[0].ors).toEqual([
       'occurred_at.lt."2026-10-12T15:00:00.000Z",and(occurred_at.eq."2026-10-12T15:00:00.000Z",audit_id.lte.99)',
       'occurred_at.lt."2026-10-12T14:30:00.000Z",and(occurred_at.eq."2026-10-12T14:30:00.000Z",audit_id.lt.42)',

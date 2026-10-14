@@ -55,7 +55,7 @@ type Row = Record<string, unknown>;
 
 interface QueryRecord {
   select: string | null;
-  filters: Array<{ op: "eq" | "in"; column: string; value: unknown }>;
+  filters: Array<{ op: "contains" | "eq" | "in"; column: string; value: unknown }>;
   ors: string[];
   orders: Array<{ column: string; ascending: boolean }>;
   range: [number, number] | null;
@@ -65,13 +65,14 @@ interface FakeBuilder {
   select(columns: string): FakeBuilder;
   eq(column: string, value: unknown): FakeBuilder;
   in(column: string, value: unknown): FakeBuilder;
+  contains(column: string, value: unknown): FakeBuilder;
   or(expression: string): FakeBuilder;
   order(column: string, options: { ascending: boolean }): FakeBuilder;
   range(from: number, to: number): Promise<{ data: AuditRow[] | null; error: unknown }>;
 }
 
 function makeAuditRow(overrides: Partial<AuditRow> = {}): AuditRow {
-  return {
+  const row: AuditRow = {
     action: "updated",
     actor_advisor_id: 5,
     actor_name_snapshot: "Jordan Lee",
@@ -89,8 +90,13 @@ function makeAuditRow(overrides: Partial<AuditRow> = {}): AuditRow {
     subject_application_id: null,
     subject_fellowship_id: null,
     subject_student_id: 3,
+    fellowship_subject_ids: [],
+    student_subject_ids: [],
     ...overrides,
   };
+  row.student_subject_ids = overrides.student_subject_ids ??
+    (row.subject_student_id === null ? [] : [row.subject_student_id]);
+  return row;
 }
 
 /** Compare scalars for the mini keyset engine (numbers numerically, else text). */
@@ -171,10 +177,13 @@ function makeDatasetClient(rows: AuditRow[], opts: { error?: unknown } = {}) {
           (row) =>
             record.filters.every((filter) => {
               const cell = (row as unknown as Row)[filter.column];
-              return filter.op === "eq"
-                ? String(cell) === String(filter.value)
-                : Array.isArray(filter.value) &&
-                    (filter.value as unknown[]).some((value) => String(value) === String(cell));
+              if (filter.op === "eq") return String(cell) === String(filter.value);
+              if (filter.op === "in") {
+                return Array.isArray(filter.value) &&
+                  (filter.value as unknown[]).some((value) => String(value) === String(cell));
+              }
+              return Array.isArray(cell) && Array.isArray(filter.value) &&
+                (filter.value as unknown[]).every((value) => cell.includes(value));
             }) && record.ors.every((expression) => matchesOr(row as unknown as Row, expression))
         );
         // Stable multi-key ordering: apply tie-breakers first (reverse order).
@@ -205,6 +214,10 @@ function makeDatasetClient(rows: AuditRow[], opts: { error?: unknown } = {}) {
         },
         in(column, value) {
           record.filters.push({ op: "in", column, value });
+          return builder;
+        },
+        contains(column, value) {
+          record.filters.push({ op: "contains", column, value });
           return builder;
         },
         or(expression) {
@@ -518,9 +531,22 @@ describe("getStudentActivity (student unified subject timeline)", () => {
     const { calls } = makeDatasetClient([makeAuditRow()]);
     await getStudentActivity(42);
 
-    // The unified subject timeline key is `subject_student_id` — events about
-    // the student from any entity context (application/fellowship/lifecycle).
-    expect(calls[0].filters).toContainEqual({ op: "eq", column: "subject_student_id", value: 42 });
+    // The immutable association set retains events from every entity context,
+    // including events recorded before a relationship was re-linked.
+    expect(calls[0].filters).toContainEqual({ op: "contains", column: "student_subject_ids", value: [42] });
+  });
+
+  it("keeps an event after its current student relationship is re-linked", async () => {
+    const reLinkedEvent = makeAuditRow({
+      audit_id: 11,
+      subject_student_id: 99,
+      student_subject_ids: [42, 99],
+    });
+    makeDatasetClient([reLinkedEvent]);
+
+    const result = await getStudentActivity(42);
+
+    expect(result.map((entry) => entry.id)).toEqual(["11"]);
   });
 
   it("orders the student timeline newest-first with the audit_id tie-breaker", async () => {

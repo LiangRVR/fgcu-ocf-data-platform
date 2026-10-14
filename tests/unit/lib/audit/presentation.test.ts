@@ -52,6 +52,8 @@ function makeAuditRow(overrides: Partial<AuditRow> = {}): AuditRow {
     subject_application_id: null,
     subject_fellowship_id: null,
     subject_student_id: null,
+    fellowship_subject_ids: [],
+    student_subject_ids: [],
     ...overrides,
   };
 }
@@ -270,7 +272,7 @@ describe("auditActionLabel", () => {
     expect(auditActionLabel("role_changed")).toBe("Role Changed");
     expect(auditActionLabel("correction_added")).toBe("Correction Added");
     expect(auditActionLabel("voided")).toBe("Voided");
-    expect(auditActionLabel("baseline_captured")).toBe("Baseline Captured");
+    expect(auditActionLabel("baseline_captured")).toBe("Legacy State Captured");
   });
 });
 

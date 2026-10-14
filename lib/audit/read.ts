@@ -158,8 +158,9 @@ export async function getEntityHistoryPage(
 
 /**
  * One bounded, newest-first page of history for a student's unified subject
- * timeline (`subject_student_id`): every event about the student from any
- * entity context, in a single bounded query.
+ * timeline (`student_subject_ids`): every event about the student from any
+ * entity context, including immutable prior associations after a re-link, in a
+ * single bounded query.
  */
 export async function getStudentActivityPage(
   studentId: number,
@@ -169,9 +170,9 @@ export async function getStudentActivityPage(
   const supabase = createServerClient();
   const request = applyWindow(
     supabase
-      .from("audit_activity")
-      .select(AUDIT_ACTIVITY_SAFE_COLUMNS)
-      .eq("subject_student_id", studentId),
+       .from("audit_activity")
+       .select(AUDIT_ACTIVITY_SAFE_COLUMNS)
+       .contains("student_subject_ids", [studentId]),
     options
   );
   const { data, error } = await request

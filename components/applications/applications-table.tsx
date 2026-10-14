@@ -301,28 +301,22 @@ export function ApplicationsTable({
   };
 
   const openEdit = async (app: Application) => {
-    setEditingApp(app);
-    setForm({
-      student_id: String(app.student_id),
-      fellowship_id: String(app.fellowship_id),
-      application_year: app.application_year ? String(app.application_year) : "",
-      destination_country: app.destination_country ?? "",
-      stage_of_application: app.stage_of_application as Stage,
-      is_semi_finalist: app.is_semi_finalist,
-      is_finalist: app.is_finalist,
-    });
     setFormErrors({});
     setEditVersion(null);
     setEditOpen(true);
 
-    // Load the optimistic-concurrency version now (not at save time) so a
-    // concurrent edit during the dialog's lifetime is detected on save.
+    // Form fields and row_version deliberately share one fresh row snapshot.
     const { data, error } = await supabaseBrowserClient
       .from("application")
-      .select("row_version")
+      .select("application_id, student_id, fellowship_id, application_year, destination_country, stage_of_application, is_semi_finalist, is_finalist, row_version, updated_at")
       .eq("application_id", app.application_id)
       .single();
-    if (!error && data) setEditVersion(data.row_version);
+    if (!error && data) {
+      const snapshot = data as Database["public"]["Tables"]["application"]["Row"];
+      setEditingApp(snapshot as unknown as Application);
+      setForm({ student_id: String(snapshot.student_id), fellowship_id: String(snapshot.fellowship_id), application_year: snapshot.application_year ? String(snapshot.application_year) : "", destination_country: snapshot.destination_country ?? "", stage_of_application: snapshot.stage_of_application as Stage, is_semi_finalist: snapshot.is_semi_finalist, is_finalist: snapshot.is_finalist });
+      setEditVersion(snapshot.row_version);
+    }
   };
 
   const handleEditSubmit = async () => {

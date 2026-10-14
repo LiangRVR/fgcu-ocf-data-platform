@@ -26,6 +26,7 @@ type Student = Database["public"]["Tables"]["student"]["Row"];
 
 interface StudentInfoEditorProps {
   initialStudent: Student;
+  readOnly?: boolean;
 }
 
 // ─── tiny helpers ────────────────────────────────────────────────────────────
@@ -74,7 +75,7 @@ function SectionSaveRow({
 
 // ─── component ───────────────────────────────────────────────────────────────
 
-export function StudentInfoEditor({ initialStudent }: StudentInfoEditorProps) {
+export function StudentInfoEditor({ initialStudent, readOnly = false }: StudentInfoEditorProps) {
   const [student, setStudent] = useState<Student>(initialStudent);
 
   // Which section is currently being edited
@@ -242,7 +243,7 @@ export function StudentInfoEditor({ initialStudent }: StudentInfoEditorProps) {
       <Card className="border-gray-200 shadow-sm">
         <CardHeader className="flex flex-row items-center justify-between pb-2">
           <CardTitle className="text-lg">Basic Information</CardTitle>
-          {editingSection !== "basic" && (
+          {!readOnly && editingSection !== "basic" && (
             <SectionEditButton onClick={() => startEdit("basic")} />
           )}
         </CardHeader>
@@ -333,7 +334,7 @@ export function StudentInfoEditor({ initialStudent }: StudentInfoEditorProps) {
       <Card className="border-gray-200 shadow-sm">
         <CardHeader className="flex flex-row items-center justify-between pb-2">
           <CardTitle className="text-lg">Academic Information</CardTitle>
-          {editingSection !== "academic" && (
+          {!readOnly && editingSection !== "academic" && (
             <SectionEditButton onClick={() => startEdit("academic")} />
           )}
         </CardHeader>
@@ -454,7 +455,7 @@ export function StudentInfoEditor({ initialStudent }: StudentInfoEditorProps) {
       <Card className="border-gray-200 shadow-sm">
         <CardHeader className="flex flex-row items-center justify-between pb-2">
           <CardTitle className="text-lg">Personal Information</CardTitle>
-          {editingSection !== "personal" && (
+          {!readOnly && editingSection !== "personal" && (
             <SectionEditButton onClick={() => startEdit("personal")} />
           )}
         </CardHeader>
