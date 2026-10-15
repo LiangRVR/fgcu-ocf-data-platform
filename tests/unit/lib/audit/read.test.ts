@@ -92,6 +92,11 @@ function makeAuditRow(overrides: Partial<AuditRow> = {}): AuditRow {
     subject_student_id: 3,
     fellowship_subject_ids: [],
     student_subject_ids: [],
+    previous_student_name: null,
+    current_student_name: null,
+    previous_fellowship_name: null,
+    current_fellowship_name: null,
+    subject_application_name: null,
     ...overrides,
   };
   row.student_subject_ids = overrides.student_subject_ids ??
@@ -275,6 +280,18 @@ describe("safe projection (no raw payload columns leave the database)", () => {
       expect(call.select).not.toContain("new_values");
       expect(call.select).not.toContain("actor_advisor_id");
       expect(call.select).not.toContain("origin");
+    }
+  });
+
+  it("projects the relationship-aware safe scalars", async () => {
+    for (const column of [
+      "previous_student_name",
+      "current_student_name",
+      "previous_fellowship_name",
+      "current_fellowship_name",
+      "subject_application_name",
+    ]) {
+      expect(AUDIT_ACTIVITY_SAFE_COLUMNS, `safe projection includes ${column}`).toContain(column);
     }
   });
 });

@@ -42,10 +42,31 @@ function normalizeChanges(raw: unknown): AuditChange[] {
   });
 }
 
+/**
+ * Resolve the label for an event's subject from the relationship-aware safe
+ * scalars the view exposes. The event-time CURRENT subject is preferred so a
+ * re-link or correction presents who/what the event now concerns rather than
+ * the view's aggregate of every historical endpoint (`student_name` /
+ * `fellowship_name`). When the immutable event could not prove a relationship
+ * label (NULL scalars), it degrades to the aggregate labels and finally the
+ * frozen previous side, never fabricating a present-day name.
+ */
+function subjectLabel(row: AuditRow): string | null {
+  return (
+    row.current_student_name ??
+    row.current_fellowship_name ??
+    row.student_name ??
+    row.fellowship_name ??
+    row.subject_application_name ??
+    row.previous_student_name ??
+    row.previous_fellowship_name
+  );
+}
+
 /** Normalize a trusted audit row; raw snapshots are never returned to UI. */
 export function normalizeAuditRow(row: AuditRow): AuditActivity {
   const entity = row.entity_type.replace(/[_-]+/g, " ");
-  const subject = row.student_name ?? row.fellowship_name;
+  const subject = subjectLabel(row);
   return {
     id: String(row.audit_id), action: row.action,
     entityLabel: subject ? `${entity}: ${subject}` : entity,

@@ -19,7 +19,7 @@
  *     is stored, only a body hash;
  *   - COMPLETE – every documented catalog section is present as an array, and
  *     the key expected local-chain catalog facts hold:
- *       * thirty-three local migration-ledger rows (the exact Git chain);
+ *       * thirty-four local migration-ledger rows (the exact Git chain);
  *       * RLS enabled on all eight operational tables;
  *       * application foreign keys keep the default NO ACTION semantics;
  *       * the advisor identity/RLS lockdown trigger and policies are present;
@@ -122,7 +122,7 @@ const OPERATIONAL_TABLES = [
   "scholarship_history_amendment",
 ] as const;
 
-/** The exact Git migration chain recorded in the local ledger (thirty-three rows). */
+/** The exact Git migration chain recorded in the local ledger (thirty-four rows). */
 const EXPECTED_LEDGER = [
   { version: "20260305000000", name: "initial_schema" },
   { version: "20260305000001", name: "allow_anon_read" },
@@ -157,6 +157,7 @@ const EXPECTED_LEDGER = [
   { version: "20261017000001", name: "revoke_advising_meeting_truncate" },
   { version: "20261018000001", name: "lock_application_relink_parents" },
   { version: "20261019000001", name: "final_immutable_history_remediation" },
+  { version: "20261020000001", name: "complete_immutable_history_context" },
 ] as const;
 
 /** One shared capture: read-only catalog queries against the lane database. */
@@ -218,7 +219,7 @@ describe("schema inventory packet shape (local/schema-only/complete)", () => {
 });
 
 describe("migration ledger", () => {
-  it("records exactly the thirty-three local-chain migrations", () => {
+  it("records exactly the thirty-four local-chain migrations", () => {
     const ledger = packet.catalog.migrationLedger;
     expect(ledger).toHaveLength(EXPECTED_LEDGER.length);
     const byVersion = new Map(ledger.map((record) => [record.fields.version, record.fields.name]));

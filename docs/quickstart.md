@@ -10,8 +10,8 @@
 
 ### ✅ Database Schema
 
-The repository tracks a **forward-only chain of thirty-two migrations** ending with
-`supabase/migrations/20261018000001_lock_application_relink_parents.sql`. The chain
+The repository tracks a **forward-only chain of thirty-four migrations** ending with
+`supabase/migrations/20261020000001_complete_immutable_history_context.sql`. The chain
 is applied in order to a fresh, disposable **local Supabase (Docker)** instance
 via `supabase start` + `supabase db reset`; it must **not** be pushed to the
 hosted production database (see the production freeze below).
@@ -60,7 +60,10 @@ hosted production database (see the production freeze below).
     `20261015000002_historical_audit_activity.sql` →
     `20261016000001_insert_metadata_and_positive_version.sql` →
     `20261017000001_revoke_advising_meeting_truncate.sql` →
-    `20261018000001_lock_application_relink_parents.sql` (final)
+    `20261018000001_lock_application_relink_parents.sql`
+  - Immutable history relationship context:
+    `20261019000001_final_immutable_history_remediation.sql` →
+    `20261020000001_complete_immutable_history_context.sql` (final)
 - Documented in `docs/schema-reference.md` and `supabase/SCHEMA.md` (which
   contains the full ordered migration table)
 
@@ -96,8 +99,9 @@ hosted production database (see the production freeze below).
 > history. It is privilege-only: no `SELECT`/`INSERT` behavior, RLS policy, audit
 > trigger, business row, or audit row changes, and there is no down migration.
 >
-> `20261018000001_lock_application_relink_parents.sql` is the current final
-> migration. It serializes an `update_application` parent re-link against a
+> `20261018000001_lock_application_relink_parents.sql` remains a factual,
+> historical migration (it was the chain end before the final immutable-history
+> migrations). It serializes an `update_application` parent re-link against a
 > concurrent `lifecycle_transition` parent archive by locking the prospective
 > parent row `FOR UPDATE` and reading `archived_at` under that lock before the
 > ACTIVE-parent check (only when an actual re-link changes the parent reference),
@@ -107,6 +111,30 @@ hosted production database (see the production freeze below).
 > authorization, the `PT409` stale precondition, the `P0002` missing-row
 > outcome, the permitted fields, the return projection, and every ACL/RLS policy
 > are unchanged, and there is no down migration.
+>
+> `20261019000001_final_immutable_history_remediation.sql` introduces the
+> `audit_event_subject` relationship read model (immutable `subject`/`previous`/
+> `current` links with active-advisor `SELECT`-only RLS and a
+> `(subject_type, subject_id, audit_id DESC)` lookup index), its deterministic
+> `private.audit_subject_label` resolver, and the transaction-local,
+> `service_role`/DBA-only `public.begin_legacy_baseline_import` helper through
+> which the trusted `baseline_captured`/`migration` audit provenance may be
+> written. It fabricates or backfills no legacy rows because their former
+> relationships and labels are unknown, and there is no down migration.
+>
+> `20261020000001_complete_immutable_history_context.sql` is the current final
+> migration. It completes the immutable audit relationship context the previous
+> migration deliberately left incomplete: an event-only, `ON CONFLICT DO NOTHING`
+> idempotent backfill of `audit_event_subject` from immutable event payloads
+> (never joining a mutable business table); deterministic label provenance
+> (event-proven `previous`/`current` sides, NULL otherwise); semantic subject
+> capture for application re-links and Scholarship History amendments; removal of
+> only the provably obsolete derived rows produced by the superseded
+> `20261019000001` helper; shared trusted baseline-session revalidation
+> (`private.assert_trusted_baseline_session`); and the relationship-extended
+> `security_invoker` `public.audit_activity` view (columns appended, still one row
+> per `audit_event`). `public.audit_event` remains immutable and is never written
+> here, and there is no down migration.
 
 ### ✅ Live Data and Auth Features
 
@@ -207,7 +235,7 @@ recovery links); it does not come from `supabase status -o env`.
 > the hosted **production** database while provenance is unresolved —
 > production is the physical-schema authority, its migration ledger records only
 > `20260924065221_advisor_self_activation_lockdown`, and the deployed schema
-> materially differs from this repository chain (which tracks thirty-two
+> materially differs from this repository chain (which tracks thirty-four
 > migrations). `supabase db push`, historical replay, and migration-history
 > repair against production are prohibited until a separately approved
 > reconciliation exists. See
@@ -217,7 +245,7 @@ recovery links); it does not come from `supabase status -o env`.
 
 #### Method A: Local Supabase (Docker) — recommended for development and testing
 
-This is the supported local workflow; it applies the **full thirty-two-migration
+This is the supported local workflow; it applies the **full thirty-four-migration
 chain** to a disposable Docker instance and requires no hosted project:
 
 ```bash
@@ -235,7 +263,7 @@ pnpm exec supabase stop --no-backup
 ```
 
 `supabase db reset` applies every file in `supabase/migrations/` in order,
-ending with `20261018000001_lock_application_relink_parents.sql`. Migrations 2 and 3
+ending with `20261020000001_complete_immutable_history_context.sql`. Migrations 2 and 3
 (`allow_anon_read`, `allow_anon_write`) are temporary bootstrap steps only;
 after the full chain, authenticated active advisors are the intended steady
 state.
@@ -283,7 +311,9 @@ the repository's own `supabase/` project is never started, reset, or stopped.
    `20261015000002_historical_audit_activity.sql`,
    `20261016000001_insert_metadata_and_positive_version.sql`,
    `20261017000001_revoke_advising_meeting_truncate.sql`,
-   and `20261018000001_lock_application_relink_parents.sql` (last).
+   `20261018000001_lock_application_relink_parents.sql`,
+   `20261019000001_final_immutable_history_remediation.sql`,
+   and `20261020000001_complete_immutable_history_context.sql` (last).
 10. **Only after the full chain is applied (steps 2–9):** provision each advisor
     before first sign-in via the server-only provisioning module
     (`lib/provisioning/*`): it invites/creates the auth account and
@@ -313,8 +343,8 @@ the repository's own `supabase/` project is never started, reset, or stopped.
 > ❗ Do **not** use `npx supabase link` + `npx supabase db push` against the
 > hosted **production** project: the production migration ledger records only
 > `20260924065221_advisor_self_activation_lockdown`, while this repository
-> tracks thirty-two migrations ending with
-> `20261018000001_lock_application_relink_parents.sql`, and the deployed schema
+> tracks thirty-four migrations ending with
+> `20261020000001_complete_immutable_history_context.sql`, and the deployed schema
 > differs materially. Generic `db push`, historical replay, and
 > migration-history repair against production are prohibited until a separately
 > approved reconciliation exists.
@@ -391,7 +421,7 @@ Before relying on the app day to day:
   are effective-Admin-only by design and cannot create the first Admin.
 - Confirm the advisor row is **pre-bound**: `public.advisor.auth_user_id` must already equal the sign-in user's auth UUID. Binding is admin-only and one-time; it happens before first sign-in via the server-only provisioning module, never by email match or auto-linking.
 - Confirm the advisor row has `is_active = true`.
-- Confirm the complete migration chain through `20261018000001_lock_application_relink_parents.sql` was applied **before** any advisor was provisioned/pre-bound.
+- Confirm the complete migration chain through `20261020000001_complete_immutable_history_context.sql` was applied **before** any advisor was provisioned/pre-bound.
 - Confirm the chain order: `20260318000001_advisor_self_activation_lockdown.sql`
   after `20260317000004_active_advisor_rls.sql`; then
   `20260929000001_advising_application_link.sql` … `20260930000004_advising_meeting_amendments.sql`;
@@ -401,8 +431,9 @@ Before relying on the app day to day:
   migrations `20261003000001`–`20261006000001`; then
   `20261007000001_atomic_advisor_role_change.sql`; then
   `20261008000001_historical_integrity_remediation.sql`; then the immutable-audit
-  and concurrency migrations `20261009000001`–`20261018000001`; and finally
-  `20261018000001_lock_application_relink_parents.sql` last.
+  and concurrency migrations `20261009000001`–`20261018000001`; then the
+  immutable-history migrations `20261019000001`–`20261020000001`; and finally
+  `20261020000001_complete_immutable_history_context.sql` last.
 
 ### Connection failed
 

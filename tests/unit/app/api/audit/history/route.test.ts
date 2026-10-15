@@ -49,6 +49,11 @@ function makeAuditRow(overrides: Partial<AuditRow> = {}): AuditRow {
     subject_student_id: 3,
     fellowship_subject_ids: [],
     student_subject_ids: [3],
+    previous_student_name: null,
+    current_student_name: "Sam Student",
+    previous_fellowship_name: null,
+    current_fellowship_name: null,
+    subject_application_name: null,
     ...overrides,
   };
 }

@@ -54,6 +54,11 @@ function makeAuditRow(overrides: Partial<AuditRow> = {}): AuditRow {
     subject_student_id: null,
     fellowship_subject_ids: [],
     student_subject_ids: [],
+    previous_student_name: null,
+    current_student_name: null,
+    previous_fellowship_name: null,
+    current_fellowship_name: null,
+    subject_application_name: null,
     ...overrides,
   };
 }
@@ -84,6 +89,36 @@ describe("normalizeAuditRow", () => {
   it("falls back to the fellowship subject when there is no student name", () => {
     const row = makeAuditRow({ student_name: null, fellowship_name: "Freshman Scholars" });
     expect(normalizeAuditRow(row).entityLabel).toBe("advisor: Freshman Scholars");
+  });
+
+  it("prefers the event-time CURRENT subject over the aggregate endpoint snapshot", () => {
+    // A re-link aggregates both endpoints in `student_name`; the relationship
+    // scalar exposes only the current endpoint.
+    const row = makeAuditRow({
+      entity_type: "application",
+      student_name: "Maria Torres | John Chen",
+      current_student_name: "John Chen",
+    });
+    expect(normalizeAuditRow(row).entityLabel).toBe("application: John Chen");
+  });
+
+  it("prefers the current fellowship label when no student context is proven", () => {
+    const row = makeAuditRow({
+      student_name: null,
+      fellowship_name: "Goldwater | Fulbright",
+      current_fellowship_name: "Fulbright",
+    });
+    expect(normalizeAuditRow(row).entityLabel).toBe("advisor: Fulbright");
+  });
+
+  it("falls back to the aggregate label when the relationship scalar is unproven (NULL)", () => {
+    const row = makeAuditRow({ current_student_name: null, student_name: "Legacy Student" });
+    expect(normalizeAuditRow(row).entityLabel).toBe("advisor: Legacy Student");
+  });
+
+  it("uses the frozen previous side only when no current/aggregate label exists", () => {
+    const row = makeAuditRow({ previous_student_name: "Maria Torres" });
+    expect(normalizeAuditRow(row).entityLabel).toBe("advisor: Maria Torres");
   });
 
   it("keeps null subjects/nullable display values as-is (no fabricated labels)", () => {

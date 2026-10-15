@@ -362,10 +362,12 @@ read time, a later rename would rewrite the meaning of a past event.
   passwords, tokens/JWTs, raw Auth metadata/IDs, technical identifiers, the
   advisor role-lock state, and narrative free-text (advising `notes`, amendment
   `reason`/`details`) are structurally excluded, not redacted at read time.
-- **No fabricated baseline.** `baseline_captured` and the `migration` origin are
-  reserved in the CHECK vocabularies but have **no writer** in this rollout; no
-  event is created for pre-existing rows. A baseline may only be captured by a
-  future, explicitly authorized operation.
+- **No fabricated baseline.** `baseline_captured` and the `migration` origin
+  have a single, explicitly authorized writer: the transaction-local legacy
+  baseline import (`public.begin_legacy_baseline_import`, `service_role`/DBA
+  only; see §18–§19). No event is created for pre-existing rows by any normal
+  application path, and no baseline is fabricated outside that
+  same-transaction, trusted technical session.
 
 **Operating rule:** never add a client-callable writer for `audit_event`, never
 look up actor identity or values at read time, and never backfill history by
@@ -766,3 +768,54 @@ event-date field until OCF confirms whether each attendance must identify a
 specific weekly session. Do not add a Scholarship History award year/cycle until
 OCF confirms whether historical awards require one. Existing data must not be
 inferred for either decision.
+
+---
+
+## 19. Complete immutable history context: relationship-aware subjects, event-only backfill, and trusted baseline
+
+**Current state (change `complete-immutable-history-context`, migration
+`20261020000001`, ordered after `20261019000001`):** the migration completes the
+immutable audit relationship context that `20261019000001` deliberately left
+incomplete, without changing `audit_event`, the existing audit architecture, or
+any prior migration.
+
+- **Trusted baseline is implemented, transaction-local, and revalidated.**
+  `public.begin_legacy_baseline_import()` (EXECUTE granted to `service_role`
+  only; denied to `anon`/`authenticated`) validates a trusted service/DBA
+  session through a shared `private.assert_trusted_baseline_session()` verifier
+  and enables the flag with `set_config(..., true)`. The BEFORE normalizer
+  re-runs the same verifier, so a caller-set GUC alone can never forge
+  `baseline_captured` provenance. An imported audited row is captured as
+  `baseline_captured` / `origin = migration` / `actor NULL` / `System` with the
+  known imported state in the same transaction; ordinary audit behavior resumes
+  immediately after commit.
+- **Event-only idempotent backfill.** `audit_event_subject` is backfilled for
+  every existing `audit_event` using only immutable event columns, snapshots,
+  and diffs — no mutable student/application/fellowship join, no audit event is
+  created, and every insert is `ON CONFLICT DO NOTHING`. Legacy labels are
+  frozen only when the event payload proves them (`previous` from the OLD value,
+  `current` from the NEW value, `subject` from an event-time value); application
+  labels are never reconstructed, and unproven labels stay NULL. Superseded
+  derived rows for Scholarship History / advising amendments are deterministically
+  repaired (only provably obsolete associations removed, canonical proven set
+  inserted) without modifying or deleting `audit_event`. Re-applying is
+  duplicate-free.
+- **Semantic subject capture.** Application re-links keep both transition
+  endpoints in the one triggering event; a Scholarship Correction uses the
+  immediately prior effective fellowship as `previous` and the corrected
+  fellowship as `current` (deterministic `(created_at, amendment_id)` order,
+  excluding the current and later amendments); a Void retains the prior effective
+  fellowship as `current` and creates no new fellowship; a new advising meeting
+  captures the application-time fellowship, while a later amendment inherits the
+  parent meeting's immutable creation context and leaves unknown context absent.
+- **Relationship-aware safe read model.** `public.audit_activity` remains a
+  `security_invoker` view with one row per `audit_event` and APPENDS explicit
+  relationship scalars — `previous_student_name`, `current_student_name`,
+  `previous_fellowship_name`, `current_fellowship_name`, and
+  `subject_application_name` — each resolved only from frozen
+  `audit_event_subject` snapshots and NULL when the immutable event proves no
+  label. `audit_event_subject` stays active-advisor `SELECT`-only.
+
+**OCF PRODUCT OWNER DECISION REQUIRED (unchanged):** a Fellowship Thursday
+event-date field and a Scholarship History award year/cycle remain absent — no
+historical value is inferred or backfilled for either.

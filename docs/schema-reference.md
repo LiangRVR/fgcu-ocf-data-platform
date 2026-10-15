@@ -6,7 +6,7 @@ All table names are **singular**. Primary keys are sequence-backed integers (nev
 
 > For a compact one-page overview see [`supabase/SCHEMA.md`](../supabase/SCHEMA.md).
 > For open design decisions (email uniqueness, stage denormalization, etc.) see [`docs/schema-decisions.md`](./schema-decisions.md).
-> The repository migration chain is **forward-only** and currently contains **thirty-two migrations** ending with `20261018000001_lock_application_relink_parents.sql` (see `supabase/SCHEMA.md` for the ordered migration table).
+> The repository migration chain is **forward-only** and currently contains **thirty-four migrations** ending with `20261020000001_complete_immutable_history_context.sql` (see `supabase/SCHEMA.md` for the ordered migration table).
 
 ---
 
@@ -643,8 +643,11 @@ fabricate history.
   `application`, and `advisor` are wired to triggers, and (since migration
   `20261015000002`) so are the historical base/amendment tables; `created`,
   `updated`, `archived`, `restored`, `deactivated`, `reactivated`,
-  `role_changed`, `correction_added`, and `voided` have writers, while
-  `baseline_captured` remains reserved vocabulary with no writer yet.
+  `role_changed`, `correction_added`, and `voided` have writers; since migration
+  `20261020000001` `baseline_captured` also has a single trusted writer — the
+  transaction-local, `service_role`/DBA-only legacy baseline import
+  (`public.begin_legacy_baseline_import`; see below) — and no normal
+  application path can write it.
 - **Event semantics.** INSERT writes `old_values`/`changes = NULL`, a whitelisted
   `new_values`, `action = 'created'`. UPDATE writes whitelisted
   `old_values`/`new_values` plus a `changes` map containing ONLY whitelisted
@@ -729,24 +732,36 @@ audit_id DESC)`, `(actor_advisor_id, occurred_at DESC, audit_id DESC)`,
 `(subject_fellowship_id, occurred_at DESC, audit_id DESC)`, and
 `(occurred_at DESC, audit_id DESC)`. No JSONB GIN index is added by design.
 
-**No-baseline boundary:** no event is created for pre-existing rows.
-`baseline_captured` and the `migration` origin are reserved in the CHECK
-vocabularies but have **no writer** in this rollout; a baseline may only be
-captured by a future, explicitly authorized operation. Rollback is forward-only:
+**Baseline boundary:** no event is created for pre-existing rows by any normal
+application path. `baseline_captured` and the `migration` origin have exactly
+one writer: the trusted, transaction-local legacy baseline import
+(`public.begin_legacy_baseline_import`, `service_role`/DBA only, migration
+`20261020000001`), which validates a trusted technical session, enables the
+context for the current transaction only, and is revalidated by the BEFORE
+normalizer so a caller-set GUC is not authority. Within that transaction each
+imported audited row is captured as `baseline_captured` / `origin = migration` /
+`actor NULL` / `System` with its known current associations; ordinary audit
+behavior resumes after commit. Rollback is forward-only:
 the audit surface is additive and unread by any write path, so application
 rollback can simply stop reading it — there is no down migration and no data
 reset.
 
-**Activity read view (`public.audit_activity`, migration `20261015000002`):**
-an explicit-column `security_invoker` view over `audit_event` exposing only
-audit-safe event fields (`audit_id`, `occurred_at`, `entity_type`, `entity_id`,
-`action`, `actor_advisor_id`, `actor_name_snapshot`, `reason`, `origin`,
-whitelisted `old_values`/`new_values`/`changes`, subject context ids) plus
-display-safe `student_name`/`fellowship_name` labels resolved by correlated
-scalar subqueries (no row multiplication, no current advisor join, no
-Auth-binding column). It is `SELECT`-only, granted to `authenticated` after
+**Activity read view (`public.audit_activity`, migrations `20261015000002` +
+`20261020000001`):** an explicit-column `security_invoker` view over
+`audit_event` exposing only audit-safe event fields (`audit_id`, `occurred_at`,
+`entity_type`, `entity_id`, `action`, `actor_advisor_id`, `actor_name_snapshot`,
+`reason`, `origin`, whitelisted `old_values`/`new_values`/`changes`, subject
+context ids) plus display-safe labels resolved by correlated scalar subqueries
+(no row multiplication, no current advisor join, no Auth-binding column). The
+`20261020000001` migration APPENDS relationship-aware safe scalars —
+`previous_student_name`, `current_student_name`, `previous_fellowship_name`,
+`current_fellowship_name`, and `subject_application_name` — each read only from
+frozen `audit_event_subject` snapshots and NULL when no label is proven, plus the
+`student_subject_ids`/`fellowship_subject_ids` association-ID membership arrays.
+It is `SELECT`-only, granted to `authenticated` after
 revoking `anon`, and remains governed by the underlying active-advisor audit
-RLS. Page-state and ordering (`occurred_at DESC, audit_id DESC`) are enforced
+RLS. One row per `audit_event` is preserved. Page-state and ordering
+(`occurred_at DESC, audit_id DESC`) are enforced
 by server loaders; the existing chronology indexes serve the access paths (no
 new index is added).
 

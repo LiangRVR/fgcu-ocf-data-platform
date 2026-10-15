@@ -1421,15 +1421,25 @@ describe("baseline_captured semantics: trusted and never fabricated (R9)", () =>
     );
   });
 
-  it("fabricates no baseline history on a fresh migration and denies a client impersonation attempt", async () => {
-    const baselineCount = async (): Promise<number> => {
+  it("denies a client impersonation attempt and writes no forged baseline row", async () => {
+    // The immutable-history suite now INTENTIONALLY exercises the trusted,
+    // transaction-local baseline import (creating real
+    // `baseline_captured`/`migration` events), so the former GLOBAL
+    // "no baseline event exists" table total is cross-suite-polluted and is no
+    // longer a valid oracle. The anti-forgery proof is scoped to a unique
+    // marker this suite controls: the denied impersonation must leave no row
+    // carrying that marker. (The baseline vocabulary itself is proven reserved
+    // for the trusted path above and in the upgrade-path suite.)
+    const marker = syntheticName(nextUnique("forged-baseline"));
+    const forgedCount = async (): Promise<number> => {
       const { rows } = await pool.query<{ n: number }>(
         `SELECT count(*)::int AS n FROM public.audit_event
-          WHERE action = 'baseline_captured' OR origin = 'migration'`
+          WHERE action = 'baseline_captured' AND origin = 'migration' AND actor_name_snapshot = $1`,
+        [marker]
       );
       return rows[0].n;
     };
-    expect(await baselineCount(), "a fresh migration writes no baseline_captured/migration event").toBe(0);
+    expect(await forgedCount(), "no forged baseline row exists before the attempt").toBe(0);
 
     // A client cannot fabricate a baseline row: the CHECK vocabulary exists but
     // there is no product-role writer path.
@@ -1437,12 +1447,12 @@ describe("baseline_captured semantics: trusted and never fabricated (R9)", () =>
       entity_type: "student",
       entity_id: 1,
       action: "baseline_captured",
-      actor_name_snapshot: "Fabricated",
+      actor_name_snapshot: marker,
       origin: "migration",
     });
     expect(forged.error, "authenticated baseline impersonation must be denied").not.toBeNull();
     expect(forged.error?.code).toBe("42501");
-    expect(await baselineCount(), "the denied impersonation wrote nothing").toBe(0);
+    expect(await forgedCount(), "the denied impersonation wrote nothing").toBe(0);
   });
 });
 

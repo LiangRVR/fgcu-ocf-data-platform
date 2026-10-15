@@ -742,6 +742,11 @@ describe("audit_activity view: schema and grants (R11)", () => {
       "fellowship_name",
       "student_subject_ids",
       "fellowship_subject_ids",
+      "previous_student_name",
+      "current_student_name",
+      "previous_fellowship_name",
+      "current_fellowship_name",
+      "subject_application_name",
     ]);
   });
 
@@ -777,13 +782,16 @@ describe("audit_activity view: schema and grants (R11)", () => {
     );
     const def = String(rows[0].def).replace(/\s+/g, " ");
 
-    // One outer SELECT plus label and association scalar subqueries:
-    // a SINGLE SQL statement returns event rows AND their labels, so a history
-    // read is one round trip (no per-row N+1 follow-up query).
-    expect((def.match(/\bSELECT\b/gi) ?? []).length, "one statement + four association subqueries").toBe(5);
+    // One outer SELECT plus label and association scalar subqueries (four base
+    // labels/arrays + five relationship-aware scalars): a SINGLE SQL statement
+    // returns event rows AND their labels, so a history read is one round trip
+    // (no per-row N+1 follow-up query).
+    expect((def.match(/\bSELECT\b/gi) ?? []).length, "one statement + nine association subqueries").toBe(10);
     expect(def, "no LATERAL / per-row set-returning join").not.toMatch(/\bLATERAL\b/i);
     expect(def, "student label comes from frozen subject snapshots").toMatch(/aes\.subject_type\s*=\s*'student'/i);
     expect(def, "fellowship label comes from frozen subject snapshots").toMatch(/aes\.subject_type\s*=\s*'fellowship'/i);
+    expect(def, "relationship scalars read frozen subject snapshots").toMatch(/aes\.relationship\s*=\s*'previous'/i);
+    expect(def, "application subject label reads the application association").toMatch(/aes\.subject_type\s*=\s*'application'/i);
     // The frozen actor snapshot is used; the view never joins the live advisor
     // or Auth identity for display labels.
     expect(def, "no live advisor join").not.toMatch(/from\s+(?:public\.)?advisor/i);

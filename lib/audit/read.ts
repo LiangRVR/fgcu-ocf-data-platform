@@ -27,9 +27,16 @@ export const MAX_ENTITY_HISTORY_PAGE_SIZE = 100;
  * Explicit safe projection for the activity view. Only the columns the safe
  * normalizer needs are fetched; the raw snapshot payloads (`old_values`,
  * `new_values`) and Auth-binding/provenance ids are deliberately excluded.
+ *
+ * The relationship-aware scalars (`previous_*`/`current_*` student and
+ * fellowship names, `subject_application_name`) are safe `audit_event_subject`
+ * snapshot aggregates resolved by the view, so a history read can present
+ * event-time previous/current labels without a follow-up query or a live join.
  */
 export const AUDIT_ACTIVITY_SAFE_COLUMNS =
-  "audit_id, occurred_at, entity_type, action, actor_name_snapshot, reason, changes, student_name, fellowship_name";
+  "audit_id, occurred_at, entity_type, action, actor_name_snapshot, reason, changes, " +
+  "student_name, fellowship_name, previous_student_name, current_student_name, " +
+  "previous_fellowship_name, current_fellowship_name, subject_application_name";
 
 export interface EntityHistoryPageOptions {
   /**
@@ -186,6 +193,13 @@ export async function getStudentActivityPage(
 /**
  * One bounded, newest-first page of history for a set of applications, in a
  * single `IN` query (no per-application fan-out).
+ *
+ * The filter uses the event's immutable `subject_application_id` — the same
+ * `application:subject` association id recorded in `audit_event_subject`. An
+ * event has at most ONE application association (an application re-link changes
+ * its student/fellowship endpoints, never its own identity, and an advising
+ * amendment inherits the parent meeting's application), so this scalar is the
+ * complete association membership and no separate application array is needed.
  */
 export async function getApplicationHistoryPage(
   applicationIds: number[],

@@ -8,8 +8,8 @@
 > ⚠️ **Provenance notice (2026-09-25, updated 2026-10-15):** the hosted
 > production database is the physical-schema authority. Its migration ledger
 > records only `20260924065221_advisor_self_activation_lockdown`, while this
-> repository tracks thirty-two migrations (`20260305000000` …
-> `20261018000001_lock_application_relink_parents.sql`), and the deployed
+> repository tracks thirty-four migrations (`20260305000000` …
+> `20261020000001_complete_immutable_history_context.sql`), and the deployed
 > schema materially differs from the repository chain. Do **not** run
 > `supabase db push`, replay migrations, or repair migration history against
 > production. See [Migration deployment freeze](#migration-deployment-freeze).
@@ -35,7 +35,8 @@
 | `scholarship_history_amendment` | Append-only Correction / Void records for scholarship awards | `amendment_id` |
 | `advisor_role_lock` | Server-only per-advisor role-change lease (migration `20261003000001`) | `advisor_id` (FK) |
 | `audit_event` | Immutable, database-authored audit trail of every `student`/`fellowship`/`application`/`advisor` mutation plus historical base/amendment inserts (migrations `20261012000001` + `20261013000001` + `20261015000002`) | `audit_id` (bigint) |
-| `audit_activity` (view) | Explicit-column, `security_invoker` read model over `audit_event` for entity histories and the global activity log (migration `20261015000002`); SELECT-only for `authenticated` | — |
+| `audit_event_subject` | Append-only normalized subject associations for an audit event (`subject`/`previous`/`current`) with frozen event-time labels (migration `20261019000001`, completed by `20261020000001`); active-advisor SELECT-only | `(audit_id, subject_type, subject_id, relationship)` |
+| `audit_activity` (view) | Explicit-column, `security_invoker` read model over `audit_event` for entity histories and the global activity log (migrations `20261015000002` + `20261020000001`), including relationship-aware previous/current subject labels; SELECT-only for `authenticated` | — |
 
 All PKs are **integer sequences** (never UUIDs) except `advisor_role_lock`, whose primary key is the `advisor_id` foreign key (a server-only lock table, never exposed to clients); `audit_event.audit_id` is a `bigint` sequence, every other PK is `integer`. All table names are **singular**.
 
@@ -602,8 +603,10 @@ can fabricate history.
 historical base inserts (`advising_meeting`, `fellowship_thursday`,
 `scholarship_history`) write `created`, and their amendment inserts write
 `correction_added` (a Scholarship Void writes `voided`) through
-`private.audit_historical_record()`. `baseline_captured` remains reserved
-vocabulary with no writer.
+`private.audit_historical_record()`. Since migration `20261020000001`
+`baseline_captured` has a single trusted writer: the transaction-local,
+`service_role`/DBA-only legacy baseline import (validated and revalidated in the
+same transaction); no normal product path writes it.
 
 **Event semantics.**
 
@@ -695,10 +698,14 @@ advisor trigger for its own role write and emits its single explicit
 | `idx_audit_event_subject_fellowship_chronology` | `(subject_fellowship_id, occurred_at DESC, audit_id DESC)` |
 | `idx_audit_event_occurred_at_chronology` | `(occurred_at DESC, audit_id DESC)` |
 
-**No-baseline boundary.** No event is created for pre-existing rows.
-`baseline_captured` and the `migration` origin are reserved in the CHECK
-vocabularies but have **no writer** in this rollout; a baseline may only be
-captured by a future, explicitly authorized operation. Rollback is forward-only:
+**Baseline boundary.** No event is created for pre-existing rows by any normal
+application path. `baseline_captured` and the `migration` origin have exactly one
+writer (migration `20261020000001`): the trusted, transaction-local legacy
+baseline import (`public.begin_legacy_baseline_import`, `service_role`/DBA only),
+which validates a trusted technical session, enables the context for the current
+transaction only, and is revalidated by the BEFORE normalizer so a caller-set GUC
+is not authority. Ordinary audit behavior resumes after commit. Rollback is
+forward-only:
 the audit surface is additive and unread by any write path, so application
 rollback can simply stop reading it — there is no down migration and no data
 reset.
@@ -905,10 +912,16 @@ trusted actor, or `System`).
 over `audit_event` exposing only audit-safe event fields (id, occurred_at,
 entity type/id, action, actor id, frozen `actor_name_snapshot`, reason, origin,
 whitelisted old/new/changes payloads, subject context ids) plus display-safe
-student/fellowship labels resolved by correlated scalar subqueries (no row
-multiplication, no current advisor join, no Auth-binding column). It is
+labels resolved by correlated scalar subqueries (no row multiplication, no
+current advisor join, no Auth-binding column). Migration `20261020000001` APPENDS
+relationship-aware safe scalars (`previous_student_name`, `current_student_name`,
+`previous_fellowship_name`, `current_fellowship_name`, `subject_application_name`)
+read only from frozen `audit_event_subject` snapshots (NULL when unproven) plus
+the `student_subject_ids`/`fellowship_subject_ids` association-ID membership
+arrays. It is
 `SELECT`-only, granted to `authenticated` after revoking `anon`, and remains
-governed by the underlying active-advisor audit RLS. Existing chronology indexes
+governed by the underlying active-advisor audit RLS; one row per `audit_event` is
+preserved. Existing chronology indexes
 serve all documented access paths (no new index is added).
 
 ## Entity Lifecycle & Archive Model (migration `20260930000005`)
@@ -1216,17 +1229,19 @@ fellowship (1) ────────────────┐            �
 | `20261009000001_scholarship_void_serialization.sql` | Scholarship terminal-`Void` serialization (review finding 3 of `2026-10-06-historical-integrity-remediation`): the first action of `set_scholarship_history_amendment_metadata()` on INSERT is now an exclusive `SELECT … FOR UPDATE` lock on the parent `public.scholarship_history` row, so concurrent amendments for the same award serialize on that lock and a loser re-evaluates the terminal-`Void` `EXISTS` guard against the committed state and is rejected (two concurrent Voids, or a Void racing a Correction, can no longer both commit); adds the partial unique index `uidx_scholarship_history_amendment_single_void` (at most one `Void` per award) as a declarative backstop that cannot be bypassed by trigger ordering, failing loudly if history is already inconsistent rather than normalizing; preserves the append-only SELECT/INSERT model, the SECURITY DEFINER trigger with empty `search_path`, service_role-only EXECUTE, RLS, and the effective-value views |
 | `20261010000001_security_invoker_list_views.sql` | Read-only `SECURITY INVOKER` list views (`student_list`, `application_list`, `advising_meeting_list`, `fellowship_thursday_list`, `scholarship_history_list`, `fellowship_list`): explicit columns only (no Auth binding fields), correlated scalar subqueries/EXISTS (never row-multiplying joins), corrected/void-aware by reading the `effective_*` views, and `SELECT`-only granted to `authenticated` |
 | `20261011000001_scholarship_history_operational_summary.sql` | RLS-preserving `SECURITY INVOKER` aggregate `scholarship_history_operational_summary(p_search, p_fellowship_id)` returning the exact non-void award and distinct-student totals over the same filters as the paginated list, without shipping rows to the client; EXECUTE pinned to `authenticated` |
-| `20261012000001_immutable_audit.sql` | Immutable audit trail: `public.audit_event` (CHECK-vocabulary entity/action/origin, explicit jsonb snapshots/diffs, context columns with no FKs), six `audit_id DESC` chronology indexes, RLS with `SELECT`-only active-advisor access and no product-role writer, the `private.audit_current_state_change()` SECURITY DEFINER helper (`SET search_path = ''`, fully qualified), and `AFTER INSERT/UPDATE` triggers on `student`/`fellowship`/`application`; `baseline_captured`/`migration` are reserved with no writer |
+| `20261012000001_immutable_audit.sql` | Immutable audit trail: `public.audit_event` (CHECK-vocabulary entity/action/origin, explicit jsonb snapshots/diffs, context columns with no FKs), six `audit_id DESC` chronology indexes, RLS with `SELECT`-only active-advisor access and no product-role writer, the `private.audit_current_state_change()` SECURITY DEFINER helper (`SET search_path = ''`, fully qualified), and `AFTER INSERT/UPDATE` triggers on `student`/`fellowship`/`application`; `baseline_captured`/`migration` are reserved here and gain their single trusted writer in `20261020000001` |
 | `20261013000001_advisor_admin_immutable_history.sql` | Advisor/admin immutable audit extension: adds the `private.audit_advisor_change()` trigger + `trg_audit_advisor_current_state` on `advisor` with a strict positive allowlist (`advisor_name`/`email`/`role`/`is_active`; binding/claim/token/login-time/role-lock excluded; `last_login_at`-only writes none); trusted-actor validation `private.assert_durable_effective_admin` + transaction-local `private.set_audit_actor`; service-role-only `provision_advisor` (audited `created` attributed to the initiating Admin); replaces `set_advisor_role` (4-arg, required non-blank reason, verified actor, atomic Auth-claim + display write, one explicit `role_changed`) and `lifecycle_transition` (4-arg, required non-blank reason, reason propagated to lifecycle events); and a shared transaction advisory lock enforcing the durable concurrency-safe last-active-bound-Admin invariant for role demotion and advisor deactivation; `audit_current_state_change` re-created only to read `ocf.audit_reason`; decommissions the two legacy direct-write display-role RPCs `fenced_write_advisor_role_display`/`reconcile_advisor_role_display` (EXECUTE revoked, then DROP), leaving `set_advisor_role` as the **single role-changing writer** while the `advisor_role_lock` lease and its read-only `verify`/fenced-read primitives are preserved |
 | `20261014000001_advisor_admin_profile_name.sql` | Closes the review gap in the advisor/admin immutable-history change by adding the authenticated-only SECURITY DEFINER RPC `public.update_advisor_profile_name(p_advisor_id, p_advisor_name)` (`SET search_path = ''`, fully qualified, EXECUTE revoked from `PUBLIC`/`anon`/`service_role` and granted to `authenticated`): an effective Admin (`public.is_effective_admin()`; actor derived from `auth.uid()` only, never a parameter, so a service/technical session is rejected 42501) updates **another** advisor's permitted profile display name. Writes ONLY `advisor.advisor_name` (no email/role/is_active/binding parameter; the existing invoker-security email guard is untouched), requires no reason (ordinary profile edit, R8), refuses the caller's own row, and validates target existence, non-blank trimmed ≤120-char name, and unique name. The single `UPDATE` lets the existing `private.audit_advisor_change` trigger emit exactly one `advisor/updated` event attributed to the acting Admin in the same transaction (a no-op writes none). Additive only; no prior migration, policy, grant, trigger, or audit row is weakened, and no down migration is provided |
 | `20261015000001_protected_current_state_writers.sql` | Protected expected-version writers: adds `row_version`/`updated_at` to `student`/`fellowship`/`application`/`advisor` with the `private.set_current_state_row_version` semantic BEFORE UPDATE trigger (strict meaningful-field allowlist; exactly one version increment per semantic write; no-op/technical restatements preserve both values; technical columns excluded from audit snapshots/diffs). Adds narrow expected-version RPCs (`update_student_profile`, `update_fellowship`, `update_application`, `update_my_advisor_profile`) and versioned replacements of `lifecycle_transition` (5-arg), `set_advisor_role` (5-arg), and `update_advisor_profile_name` (3-arg) — old signatures dropped — plus `provision_advisor` returning version 1. Stale expected versions raise fixed `PT409` before any change (no mutation/version bump/audit event); 22023 for malformed versions. Revokes the authenticated UPDATE table privilege on the four current-state tables and drops their UPDATE policies, making the precondition non-bypassable for authenticated sessions |
 | `20261015000002_historical_audit_activity.sql` | Historical audit + activity read model: `private.audit_historical_record()` (SECURITY DEFINER, empty `search_path`) attached AFTER INSERT to `advising_meeting`/`fellowship_thursday`/`scholarship_history` (`created`) and their `*_amendment` tables (`correction_added`; a Scholarship `Void` is `voided`) with explicit structural-only snapshots (never notes/amendment reason/details/credentials). Adds the explicit-column `security_invoker` view `public.audit_activity` (audit-safe fields + correlated student/fellowship labels, `actor_name_snapshot`, no Auth-binding columns) with SELECT granted to `authenticated` only; underlying active-advisor audit RLS governs. No vocabulary/CHECK/index change was required — existing chronology indexes serve the documented access paths |
 | `20261016000001_insert_metadata_and_positive_version.sql` | Closes two review findings: (1) `private.set_current_state_row_version` gains an INSERT branch forcing `row_version := 1`/`updated_at := now()` (overriding any supplied value) and the four current-state triggers are re-created as BEFORE INSERT OR UPDATE; (2) `private.assert_expected_version(integer)` raises `22023` unless `p_expected_version >= 1` and is called first by every protected existing-row writer (four entity writers, both advisor-profile paths, `set_advisor_role`, and `lifecycle_transition`). The seven public bodies are otherwise byte-for-byte identical to `20261015000001`, so all UPDATE semantics, authorization, locking, last-Admin, audit, and stale-`PT409` behavior is preserved. Additive/replacement definitions only; nothing is edited, deleted, or reset, and there is no down migration |
 | `20261017000001_revoke_advising_meeting_truncate.sql` | Forward-only, privilege-only closure of the normal-role `TRUNCATE` bypass on the advising history surfaced by `tests/contract/historical-audit-activity.test.ts`: `REVOKE TRUNCATE ON public.advising_meeting, public.advising_meeting_amendment FROM PUBLIC, anon, authenticated`. TRUNCATE is a destructive SQL path the local Supabase default privileges grant to `authenticated`/`anon` for newly created objects, so a normal PostgREST-role session could have wiped the entire advising history even though row-level UPDATE/DELETE were denied. This applies the same closure the sibling historical tables received in `20261008000001`. The trusted `service_role` grant is left untouched; no append-only SELECT/INSERT behavior, RLS policy, audit trigger, business row, or audit row is changed. Forward-only; no down migration |
-| `20261018000001_lock_application_relink_parents.sql` | **Final migration.** Forward-only, additive/replacement migration closing a concurrency (TOCTOU) finding on `historical-audit-timeline`: `public.update_application` (the expected-version writer from `20261015000001`, carried forward by `20261016000001`) now locks the prospective parent row `FOR UPDATE` and reads its `archived_at` under that lock **before** the ACTIVE-parent check, but only when an actual parent re-link changes the reference. Because a concurrent `public.lifecycle_transition` archive takes `FOR UPDATE` on the same parent row, an archive and a re-link now serialize — the archive either commits first (the re-link observes an archived parent and is rejected `42501`) or waits until the re-link commits (the parent was still active). Lock order is fixed (application, then prospective student, then prospective fellowship) and no path locks a parent before an application, so the added parent locks cannot deadlock. Only the parent-validation block changes; authorization (`is_active_advisor`, `42501`), the expected-version precondition (`assert_expected_version`, `22023`), the stale `PT409`, the missing-row `P0002`, the permitted fields, the return projection, the revoked direct authenticated UPDATE boundary, and every ACL/RLS policy are identical to `20261016000001`. The REVOKE/GRANT pair is restated for self-documentation. No existing business row, policy, grant, or audit row is edited, deleted, or reset. Forward-only; no down migration |
+| `20261018000001_lock_application_relink_parents.sql` | Forward-only, additive/replacement migration closing a concurrency (TOCTOU) finding on `historical-audit-timeline`: `public.update_application` (the expected-version writer from `20261015000001`, carried forward by `20261016000001`) now locks the prospective parent row `FOR UPDATE` and reads its `archived_at` under that lock **before** the ACTIVE-parent check, but only when an actual parent re-link changes the reference. Because a concurrent `public.lifecycle_transition` archive takes `FOR UPDATE` on the same parent row, an archive and a re-link now serialize — the archive either commits first (the re-link observes an archived parent and is rejected `42501`) or waits until the re-link commits (the parent was still active). Lock order is fixed (application, then prospective student, then prospective fellowship) and no path locks a parent before an application, so the added parent locks cannot deadlock. Only the parent-validation block changes; authorization (`is_active_advisor`, `42501`), the expected-version precondition (`assert_expected_version`, `22023`), the stale `PT409`, the missing-row `P0002`, the permitted fields, the return projection, the revoked direct authenticated UPDATE boundary, and every ACL/RLS policy are identical to `20261016000001`. The REVOKE/GRANT pair is restated for self-documentation. No existing business row, policy, grant, or audit row is edited, deleted, or reset. Forward-only; no down migration |
+| `20261019000001_final_immutable_history_remediation.sql` | Final immutable-history remediation: normalizes subject capture into the append-only `audit_event_subject` relation (`(audit_id, subject_type, subject_id, relationship)` with `subject`/`previous`/`current`, active-advisor SELECT-only RLS, no product-role INSERT/UPDATE/DELETE/TRUNCATE) written by the internal `private.capture_audit_event_subjects` AFTER-INSERT helper; extends the `security_invoker` `public.audit_activity` view with `student_name`/`fellowship_name` frozen-snapshot labels and the `student_subject_ids`/`fellowship_subject_ids` membership arrays (one row per `audit_event`); makes archived Students/Fellowships read-only current-state rows; and reserves the trusted, transaction-local legacy baseline import primitive. Forward-only; no down migration |
+| `20261020000001_complete_immutable_history_context.sql` | **Final migration.** Completes the immutable audit relationship context introduced by `20261019000001` without changing `audit_event` or adding a new audit architecture: (1) a shared trusted-session verifier (`private.assert_trusted_baseline_session`) is invoked both when the `service_role`/DBA-only `public.begin_legacy_baseline_import` enables baseline mode and by the BEFORE normalizer, so a caller-set GUC alone cannot forge `baseline_captured` (`origin = migration`, `System`, actor NULL) inside the transaction-local import; (2) an idempotent, event-only `audit_event_subject` backfill derives associations and frozen labels solely from immutable columns/snapshots/diffs (`ON CONFLICT DO NOTHING`, no mutable joins, no audit event) and deterministically repairs only the provably obsolete post-`20261019000001` Scholarship-History/advising-amendment derived rows; (3) subject capture becomes entity/action aware (application re-links keep both endpoints; Scholarship corrections use the immediately prior effective fellowship as `previous` and the corrected fellowship as `current`; Voids retain the prior effective fellowship as `current`; new meetings capture the application-time fellowship while amendments inherit the parent meeting's immutable creation context); and (4) `public.audit_activity` APPENDS relationship-aware safe scalars (`previous_student_name`, `current_student_name`, `previous_fellowship_name`, `current_fellowship_name`, `subject_application_name`) resolved only from frozen snapshots, preserving `security_invoker`, one row per `audit_event`, and the active-advisor RLS. Forward-only; no down migration |
 
 Migrations 2 and 3 are temporary bootstrap steps. The chain must be applied in
-order and ends with `20261018000001_lock_application_relink_parents.sql`.
+order and ends with `20261020000001_complete_immutable_history_context.sql`.
 `20260318000001_advisor_self_activation_lockdown.sql` is required and must
 follow `20260317000004_active_advisor_rls.sql`; the forward-only
 `20260929000001_advising_application_link.sql` extends the model afterwards,
@@ -1273,7 +1288,7 @@ totals without shipping rows to the client, and
 `20261012000001_immutable_audit.sql` adds the immutable, database-authored
 `public.audit_event` read model plus the internal `SECURITY DEFINER` trigger on
 `student`/`fellowship`/`application` (SELECT-only for active advisors; no client
-writer; no baseline rows), and
+writer), and
 `20261013000001_advisor_admin_immutable_history.sql` extends the same
 `audit_event` model to `advisor`/administrator operations with a strict positive
 allowlist, trusted human attribution, required role/lifecycle reasons, audited
@@ -1303,7 +1318,23 @@ closed in `20261008000001`) with no SELECT/INSERT, RLS, trigger, or data change,
 `FOR UPDATE` before the ACTIVE-parent check (only when the reference actually
 changes), so a re-link can never commit pointing at a parent archived at commit
 time; the lock order is fixed and deadlock-free, and only the parent-validation
-block changes.
+block changes. `20261019000001_final_immutable_history_remediation.sql` adds the
+append-only `audit_event_subject` relation (subject/previous/current associations
+with frozen labels, active-advisor SELECT-only) written by the internal subject
+capture helper, extends `audit_activity` with frozen `student_name`/
+`fellowship_name` labels and the subject-ID membership arrays, and makes archived
+Students/Fellowships read-only current-state rows. `20261020000001_complete_immutable_history_context.sql`
+completes the relationship context: it centralizes and revalidates the trusted,
+transaction-local baseline import (so `baseline_captured` has exactly one
+writer), idempotently backfills `audit_event_subject` from immutable event
+evidence only and repairs the provably obsolete derived rows, refines subject
+capture (application endpoints, effective Scholarship correction/void chain, and
+frozen advising-amendment inheritance), and APPENDS relationship-aware safe
+scalars to `audit_activity` (`previous`/`current` student and fellowship names and
+`subject_application_name`) resolved only from frozen snapshots, preserving
+`security_invoker`, one row per event, and the underlying active-advisor RLS. No
+existing business row, policy, grant, or audit row is edited, deleted, or reset;
+forward-only, no down migration.
 
 **Migration/history limits for `20260929000001`:** the migration is additive
 and forward-only — no existing migration, table, column, row, or RLS policy is
@@ -1383,7 +1414,8 @@ columns never appear in an audit snapshot/diff), a stale expected version is
 rejected with `PT409` before any change, and historical base/amendment inserts
 write their own classified events. The audit read model is readable only by
 active advisors, is writable by no product role (including Admin), mints no
-baseline rows, and fails the source transaction closed if an audit event cannot
+baseline rows outside the trusted transaction-local service-role/DBA import path,
+and fails the source transaction closed if an audit event cannot
 be written. The chain is **not proven equivalent** to the deployed production
 schema.
 
@@ -1391,8 +1423,8 @@ schema.
 
 As of 2026-09-25 the production migration ledger contains only
 `20260924065221_advisor_self_activation_lockdown` while the repository tracks
-thirty-two migrations (`20260305000000` …
-`20261018000001_lock_application_relink_parents.sql`), and the live production
+thirty-four migrations (`20260305000000` …
+`20261020000001_complete_immutable_history_context.sql`), and the live production
 schema materially differs from the repository chain.
 Production is the physical-schema authority. Until a reviewed reconciliation is
 approved:
@@ -1411,7 +1443,7 @@ For a fresh, disposable local Supabase instance only, the chain can be applied
 via the standard Docker-local workflow (`pnpm exec supabase start` then
 `pnpm exec supabase db reset --no-seed`, which applies every file in
 `supabase/migrations/` in order, ending with
-`20261018000001_lock_application_relink_parents.sql`) or via the isolated local
+`20261020000001_complete_immutable_history_context.sql`) or via the isolated local
 harness (`node scripts/schema-inventory/run-local.mjs --out <path>`); both are
 safe and the latter is how the reconciliation baseline is produced. Applying
 the chain to a hosted project remains prohibited while provenance is

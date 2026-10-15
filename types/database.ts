@@ -798,6 +798,11 @@ export type Database = {
           subject_student_id: number | null
           fellowship_subject_ids: number[]
           student_subject_ids: number[]
+          previous_student_name: string | null
+          current_student_name: string | null
+          previous_fellowship_name: string | null
+          current_fellowship_name: string | null
+          subject_application_name: string | null
         }
         Relationships: []
       }
