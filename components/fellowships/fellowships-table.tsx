@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { Award, Eye, Search } from "lucide-react";
-import type { Database } from "@/types/database";
+import type { Fellowship } from "@/components/fellowships/fellowships-list-row";
 import { AppCard, AppCardContent } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
 import { DataToolbar } from "@/components/ui/data-toolbar";
@@ -16,8 +16,9 @@ import { FellowshipEditButton } from "@/components/fellowships/fellowship-edit-b
 import { AddFellowshipButton } from "@/components/fellowships/add-fellowship-button";
 import { updateListSearchParams, type PageSize } from "@/lib/utils/pagination";
 
-type Row = Database["public"]["Views"]["fellowship_list"]["Row"];
-interface Props { fellowships: Row[]; view: string; search: string; page: number; pageSize: PageSize; totalCount: number; totalPages: number; sort: string }
+export type { Fellowship } from "@/components/fellowships/fellowships-list-row";
+
+interface Props { fellowships: Fellowship[]; view: string; search: string; page: number; pageSize: PageSize; totalCount: number; totalPages: number; sort: string }
 
 export function FellowshipsTable({ fellowships, view, search, page, pageSize, totalCount, totalPages, sort }: Props) {
   const router = useRouter();
@@ -28,7 +29,7 @@ export function FellowshipsTable({ fellowships, view, search, page, pageSize, to
     const next = updateListSearchParams(params.toString(), patch);
     const text = next.toString(); return `/fellowships${text ? `?${text}` : ""}`;
   };
-  const actions = (row: Row) => <div className="flex items-center justify-end gap-1">
+  const actions = (row: Fellowship) => <div className="flex items-center justify-end gap-1">
     <Link href={`/fellowships/${row.fellowship_id}`} prefetch={false}><Button variant="ghost" size="icon" title="View fellowship" aria-label="View fellowship"><Eye className="h-4 w-4" /></Button></Link>
     {!archived && <FellowshipEditButton fellowshipId={row.fellowship_id} fellowshipName={row.fellowship_name} />}
     <LifecycleAction entity="fellowship" entityId={row.fellowship_id} entityLabel={row.fellowship_name} action={archived ? "restore" : "archive"} variant="ghost" iconOnly className="text-amber-700" />

@@ -6,7 +6,7 @@ All table names are **singular**. Primary keys are sequence-backed integers (nev
 
 > For a compact one-page overview see [`supabase/SCHEMA.md`](../supabase/SCHEMA.md).
 > For open design decisions (email uniqueness, stage denormalization, etc.) see [`docs/schema-decisions.md`](./schema-decisions.md).
-> The repository migration chain is **forward-only** and currently contains **thirty-four migrations** ending with `20261020000001_complete_immutable_history_context.sql` (see `supabase/SCHEMA.md` for the ordered migration table).
+> The repository migration chain is **forward-only** and currently contains **thirty-seven migrations** ending with `20261023000001_audit_event_raw_payload_boundary.sql` (see `supabase/SCHEMA.md` for the ordered migration table).
 
 ---
 
@@ -602,7 +602,7 @@ decommissioned (EXECUTE revoked, then DROP) in migration `20261013000001`.
 
 ---
 
-### `audit_event` (immutable audit trail — migrations `20261012000001` + `20261013000001` + `20261015000002`)
+### `audit_event` (immutable audit trail — migrations `20261012000001` + `20261013000001` + `20261015000002` + `20261019000001` + `20261020000001` + `20261021000001` + `20261022000001` + `20261023000001`)
 
 Immutable, database-authored audit read model for the current-state `student`,
 `fellowship`, and `application` rows plus trusted `advisor`/administrator
@@ -614,7 +614,7 @@ fabricate history.
 
 | Column | Type | Nullable | Default | Notes |
 | --- | --- | --- | --- | --- |
-| `audit_id` | bigint | NO | nextval | **Primary key**; sequence-backed, never exposed to client roles |
+| `audit_id` | bigint | NO | nextval | **Primary key**; sequence-backed. No product role holds sequence `USAGE` or an `INSERT` grant; the id is exposed to clients only as an opaque read column of the browser-safe projection. |
 | `entity_type` | text | NO | | CHECK — exactly the ten reserved entity names (below) |
 | `entity_id` | integer | NO | | Immutable historical entity id at event time; **no FK** |
 | `action` | text | NO | | CHECK — exactly the ten reserved actions (below) |
@@ -690,11 +690,20 @@ fabricate history.
   only).
 
 **RLS and immutability boundary:** RLS is enabled. ALL privileges are revoked
-from `PUBLIC`/`anon`/`authenticated`; only `authenticated` receives `SELECT`,
-under the sole policy `audit_event_select_active_advisor`
-(`FOR SELECT TO authenticated`, `USING (public.is_active_advisor())`). There is
-no INSERT/UPDATE/DELETE/TRUNCATE grant or policy and no sequence usage for any
-product role, so neither staff nor Admin can write audit rows.
+from `PUBLIC`/`anon`/`authenticated`. `authenticated` holds **column-level
+`SELECT`** (not table-level) on exactly the non-raw event-context columns
+(`audit_id`, `occurred_at`, `entity_type`, `entity_id`, `action`,
+`actor_advisor_id`, `actor_name_snapshot`, `reason`, `origin`, and the three
+`subject_*_id` columns), governed by the sole policy
+`audit_event_select_active_advisor` (`FOR SELECT TO authenticated`,
+`USING (public.is_active_advisor())`). Table-level `SELECT` is revoked and the
+raw payload columns `old_values`/`new_values`/`changes` are explicitly revoked
+from `authenticated`, so an arbitrary/`*` select and the raw audit JSON are
+unreadable to every client role (migration `20261023000001`). There is no
+INSERT/UPDATE/DELETE/TRUNCATE grant or policy and no sequence usage for any
+product role, so neither staff nor Admin can write audit rows. The raw diff is
+fetched only by server-only service-role code, after the browser-safe
+`audit_activity` query has already authorized and bounded the audit ids.
 
 **Triggers:** three `private`-schema `SECURITY DEFINER` helpers, each with
 `SET search_path = ''` and fully qualified references, write the events.
@@ -747,23 +756,68 @@ rollback can simply stop reading it — there is no down migration and no data
 reset.
 
 **Activity read view (`public.audit_activity`, migrations `20261015000002` +
-`20261020000001`):** an explicit-column `security_invoker` view over
-`audit_event` exposing only audit-safe event fields (`audit_id`, `occurred_at`,
-`entity_type`, `entity_id`, `action`, `actor_advisor_id`, `actor_name_snapshot`,
-`reason`, `origin`, whitelisted `old_values`/`new_values`/`changes`, subject
-context ids) plus display-safe labels resolved by correlated scalar subqueries
-(no row multiplication, no current advisor join, no Auth-binding column). The
-`20261020000001` migration APPENDS relationship-aware safe scalars —
+`20261020000001` + `20261021000001` + `20261022000001`):** an explicit-column
+`security_invoker` view over `audit_event` exposing only browser-safe event
+identity/context (`audit_id`, `occurred_at`, `entity_type`, `entity_id`,
+`action`, `actor_advisor_id`, `actor_name_snapshot`, `reason`, `origin`, and the
+three `subject_*_id` columns) plus display-safe labels resolved by correlated
+scalar subqueries (no row multiplication, no current advisor join, no
+Auth-binding column). It deliberately does **not** expose the raw audit JSON
+(`old_values`/`new_values`/`changes`): migration `20261022000001` dropped those
+columns from the projection, and `20261023000001` revoked `authenticated`
+table-level `SELECT` on the base table and granted column-level `SELECT` on
+exactly the non-raw columns, so the raw payload is unreadable to every client
+role. The view is `SELECT`-only (granted to `authenticated` after revoking
+`anon`), stays governed by the underlying active-advisor audit RLS, and
+preserves one row per `audit_event`.
+
+The `20261020000001` migration APPENDS relationship-aware labels —
 `previous_student_name`, `current_student_name`, `previous_fellowship_name`,
 `current_fellowship_name`, and `subject_application_name` — each read only from
-frozen `audit_event_subject` snapshots and NULL when no label is proven, plus the
-`student_subject_ids`/`fellowship_subject_ids` association-ID membership arrays.
-It is `SELECT`-only, granted to `authenticated` after
-revoking `anon`, and remains governed by the underlying active-advisor audit
-RLS. One row per `audit_event` is preserved. Page-state and ordering
-(`occurred_at DESC, audit_id DESC`) are enforced
-by server loaders; the existing chronology indexes serve the access paths (no
-new index is added).
+frozen `audit_event_subject` name snapshots and NULL when no label is proven,
+plus the `student_subject_ids`/`fellowship_subject_ids` association-ID
+membership arrays. The `20261021000001` migration then APPENDS the immutable
+presentation scalars: the paired endpoint ids
+`previous_student_id`/`current_student_id` and
+`previous_fellowship_id`/`current_fellowship_id` (explicit `Entity #id`
+fallbacks); the per-field Fellowship Thursday predecessor/current/amended
+scalars `fellowship_thursday_attended_before`/`_after`/`_amended` and
+`fellowship_thursday_source_before`/`_after`/`_amended` (derived per corrected
+field from the immutable base row plus strictly-earlier amendments); the exact
+Scholarship `void_reason` bound to the event's own amendment id; and the
+immutable parent advising-meeting scalars `advising_meeting_date`,
+`advising_application_id`, and `advising_advisor_id` (the last presented as a
+neutral `Advisor #id`, never a live `advisor` join). Page-state and ordering
+(`occurred_at DESC, audit_id DESC`) are enforced by server loaders; the existing
+chronology indexes serve the access paths (no new index is added).
+
+### `audit_event_subject` (immutable audit subject associations — migrations `20261019000001` + `20261020000001`)
+
+Append-only normalized relationship read model for an audit event. Each row
+records `audit_id`, `subject_type` (`student`/`application`/`fellowship`),
+`subject_id`, `relationship` (`subject`/`previous`/`current`), and an event-time
+`subject_name_snapshot`; the primary key is
+`(audit_id, subject_type, subject_id, relationship)`, with a FK to
+`audit_event(audit_id)` and a `(subject_type, subject_id, audit_id DESC)` lookup
+index. It is written only by the internal `SECURITY DEFINER` capture helper on
+`audit_event` INSERT, so a relationship change (for example an application
+re-link) stays discoverable from both endpoints; the direct `subject_*_id`
+columns on `audit_event` remain the current-context compatibility fields.
+
+**Frozen provenance / backfill:** associations and their labels are derived only
+from immutable event columns, snapshots, and diffs — `previous` uses the
+event-proven OLD value, `current` the event-proven NEW value, and an unprovable
+label stays `NULL`; application labels are never reconstructed from a live row.
+Migration `20261020000001` backfilled existing events once, idempotently
+(`ON CONFLICT DO NOTHING`, no mutable joins, no audit event created) and
+deterministically repaired only the provably obsolete rows left by the
+superseded `20261019000001` helper without modifying or deleting `audit_event`.
+
+**RLS / immutability:** RLS is enabled; all privileges are revoked from
+`PUBLIC`/`anon`/`authenticated`, then `SELECT` is granted to `authenticated`
+under the sole policy `audit_event_subject_select_active_advisor`
+(`USING (public.is_active_advisor())`). No product role has INSERT/UPDATE/DELETE
+or TRUNCATE, so subject history is immutable for staff and Admin alike.
 
 **TypeScript:** `types/database.ts` exposes `public.audit_event` with
 `Row`/`Insert`/`Update` shapes; `Insert`/`Update` are generated for completeness
@@ -854,12 +908,16 @@ archive/deactivate lifecycle: student.archived_at, fellowship.archived_at,
 advisor.is_active — all FKs stay NO ACTION; archived parents reject new
 operational child INSERTs and UPDATE re-links (database boundary).
 
-audit_event (standalone read model, migrations 20261012000001 + 20261013000001 + 20261015000002):
+audit_event (standalone read model, migrations 20261012000001 + 20261013000001 + 20261015000002 + 20261019000001 + 20261020000001):
 entity_id and the subject_student_id / subject_application_id /
 subject_fellowship_id context columns are immutable historical facts with NO
 foreign keys; rows are written ONLY by the internal triggers on
 student/fellowship/application, on advisor, and on the historical
-base/amendment tables, and read by active advisors (SELECT-only).
+base/amendment tables, and read by active advisors (SELECT-only). The raw
+payload columns (old_values/new_values/changes) are unreadable to every client
+role (migration 20261023000001); the browser-safe audit_activity view and the
+immutable audit_event_subject associations (migration 20261019000001, completed
+by 20261020000001) are the read surfaces.
 ```
 
 ---

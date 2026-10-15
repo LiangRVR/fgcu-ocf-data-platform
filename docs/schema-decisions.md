@@ -819,3 +819,61 @@ any prior migration.
 **OCF PRODUCT OWNER DECISION REQUIRED (unchanged):** a Fellowship Thursday
 event-date field and a Scholarship History award year/cycle remain absent — no
 historical value is inferred or backfilled for either.
+
+---
+
+## 20. Browser-safe audit presentation and the database-enforced raw-payload boundary
+
+**Current state (migrations `20261021000001` + `20261022000001` +
+`20261023000001`, ordered after `20261020000001`):** the immutable audit trail is
+complete, but the presentation surface needed to stop shipping raw snapshot JSON
+to the browser and to close the direct base-table read path.
+
+**Design decisions, in contract form:**
+
+- **Bounded presentation scalars, no raw payload (migration `20261021000001`).**
+  `public.audit_activity` is extended — columns APPENDED, `security_invoker`
+  preserved, still one row per `audit_event` — with the safe scalars a human
+  history needs: the paired endpoint ids
+  (`previous_student_id`/`current_student_id`,
+  `previous_fellowship_id`/`current_fellowship_id`, with `Entity #id`
+  fallbacks); the per-field Fellowship Thursday predecessor/current/amended
+  values derived independently from the immutable base row plus strictly-earlier
+  amendments ordered by `(created_at, amendment_id)` (an explicit
+  correction-to-NULL is representable, and a later amendment never rewrites an
+  older event's meaning); the exact Scholarship `void_reason` bound to the
+  event's own amendment id; and the immutable parent advising-meeting
+  `meeting_date`/`application_id`/`advisor_id`, presented as a neutral
+  `Advisor #id` (the view never joins the mutable `advisor` or the current
+  `application`). Every scalar is set-based against unique keys, so a history
+  read stays a single bounded query.
+- **The projection is actually browser-safe (migration `20261022000001`).**
+  `audit_activity` is granted to `authenticated`, so a browser can reach it
+  directly through PostgREST; while it still carried `old_values`/`new_values`/
+  `changes`, the app's own projection let a client select raw audit JSON and
+  bypass the server normalizer. The view is dropped and re-created with the same
+  leading columns minus the three raw payloads (preserving
+  `security_invoker = on`, one row per event, and the safe-column surface). The
+  raw diff required by the safe presentation layer is read only by server-only
+  code from the RLS-governed base table and kept server-side.
+- **The boundary is database-enforced, not a convention (migration
+  `20261023000001`).** `authenticated` table-level `SELECT` on `public.audit_event`
+  is revoked (so an unqualified/`*` select is denied), and `SELECT` is re-granted
+  at the **column level** on exactly the columns `audit_activity` references —
+  the three raw payload columns are explicitly revoked first as a fail-closed
+  guard. `old_values`/`new_values`/`changes` thereby become unreadable to every
+  client role; only server-only service-role code (`lib/supabase/admin.ts`)
+  fetches the raw diff, after the cookie/RLS safe-view query has already
+  authorized and bounded the audit ids. The `audit_event` RLS policy, the
+  `audit_event_subject` ACL/RLS, every write path, and `service_role` are
+  unchanged.
+
+**Preserved unchanged:** `public.audit_event` (immutable; never written here),
+the active-advisor read RLS, the append-only base/amendment rows, and the
+effective operational views. The three migrations are forward-only, additive/
+replacement definitions only, and provide no down migration.
+
+**Operating rule:** never expose a raw `audit_event` payload column on any
+authenticated-readable projection, and never re-grant table-level `SELECT` on
+`audit_event` to a client role. The raw JSON stays server-side; UI concealment
+alone is insufficient.

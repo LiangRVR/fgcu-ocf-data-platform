@@ -7,7 +7,8 @@ import {
   AUDIT_ENTITY_TYPES,
   auditActionLabel,
   auditEntityLabel,
-  type AuditRow,
+  isAuditRow,
+  type AuditActivityViewRow,
 } from "@/lib/audit/presentation";
 import { AUDIT_ACTIVITY_SAFE_COLUMNS, normalizeActivityRows } from "@/lib/audit/read";
 import { resolveNewYorkDateRange } from "@/lib/utils/new-york-date";
@@ -32,7 +33,7 @@ export default async function ActivityPage({ searchParams }: Props) {
   const supabase = createServerClient();
   // Explicit safe projection only — never `select('*')`; raw snapshot payloads
   // (`old_values`/`new_values`) never leave the database.
-  let request = supabase.from("audit_activity").select(AUDIT_ACTIVITY_SAFE_COLUMNS, { count: "exact" });
+  let request = supabase.from("audit_activity").select<string, AuditActivityViewRow>(AUDIT_ACTIVITY_SAFE_COLUMNS, { count: "exact" });
   if (entity) request = request.eq("entity_type", entity);
   if (action) request = request.eq("action", action);
   if (actor) request = request.ilike("actor_name_snapshot", `%${safeLike(actor)}%`);
@@ -44,7 +45,7 @@ export default async function ActivityPage({ searchParams }: Props) {
   // Browser-safe view rows carry no raw JSON; the server-only raw diff is read
   // in one bounded batch from the RLS-governed `audit_event` base table and
   // parsed by the closed presentation allowlist before rendering.
-  const entries = error ? [] : await normalizeActivityRows((data ?? []) as unknown as AuditRow[]);
+  const entries = error ? [] : await normalizeActivityRows((data ?? []).filter(isAuditRow));
   const total = count ?? 0, pages = totalPages(total, paging.pageSize);
   const canonical = new URLSearchParams();
   if (entity) canonical.set("entity", entity);

@@ -5,6 +5,10 @@ import { PageSection } from "@/components/ui/page-section";
 import { StatCard } from "@/components/ui/stat-card";
 import { createServerClient } from "@/lib/supabase/server";
 import { FellowshipThursdayTable } from "@/components/fellowship-thursday/fellowship-thursday-table";
+import {
+  isFellowshipThursdayListRow,
+  type FellowshipThursday,
+} from "@/components/fellowship-thursday/fellowship-thursday-list-row";
 import type { Database } from "@/types/database";
 import { CalendarDays, CircleCheckBig, Tags, Users } from "lucide-react";
 import { redirect } from "next/navigation";
@@ -44,10 +48,6 @@ interface Props {
 
 type EffectiveFellowshipThursday = Database["public"]["Views"]["fellowship_thursday_list"]["Row"];
 
-type FellowshipThursday = EffectiveFellowshipThursday & {
-  student: { full_name: string } | null;
-};
-
 /**
  * Operational Fellowship Thursday reader.
  *
@@ -86,9 +86,20 @@ export async function getFellowshipThursdayRecords(params: { search?: string; so
       return { records: [], count: 0, pagination, pages: 0, error: error as Error };
     }
 
-    const records = (data as EffectiveFellowshipThursday[]) || [];
+    const records = ((data as EffectiveFellowshipThursday[] | null) ?? []).filter(
+      isFellowshipThursdayListRow,
+    );
     const pages = totalPages(count ?? 0, pagination.pageSize);
-    return { records: records.map((record) => ({ ...record, student: { full_name: record.student_name } })), count: count ?? 0, pagination, pages, error: null };
+    return {
+      records: records.map((record) => ({
+        ...record,
+        student: record.student_name !== null ? { full_name: record.student_name } : null,
+      })),
+      count: count ?? 0,
+      pagination,
+      pages,
+      error: null,
+    };
   } catch (cause) {
     return { records: [], count: 0, pagination: resolvePagination(params), pages: 0, error: cause instanceof Error ? cause : new Error(String(cause)) };
   }

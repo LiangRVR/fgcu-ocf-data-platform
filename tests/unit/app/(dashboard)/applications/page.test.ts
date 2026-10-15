@@ -12,7 +12,8 @@ vi.mock("@/lib/supabase/server", () => ({
   createServerClient,
 }));
 
-vi.mock("@/components/applications/applications-table", () => ({
+vi.mock("@/components/applications/applications-table", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/components/applications/applications-table")>()),
   ApplicationsTable: () => null,
 }));
 

@@ -13,7 +13,7 @@ This folder contains detailed documentation for the OCF Fellowship Management Sy
 
 - **[FGCU Design Style Guide](DESIGN_GUIDE.md)** - Official design system, colors, typography, and component guidelines
 - **[UI/UX Refactor Summary](UI_UX_REFACTOR.md)** - Dashboard transformation details and file changelog
-- **[Students Dashboard Upgrade](STUDENTS_DASHBOARD_UPGRADE.md)** - Students page CRUD, sort, filter, and pagination details
+- **[Students Dashboard Upgrade](STUDENTS_DASHBOARD_UPGRADE.md)** - Students page table, sort, filter, and pagination details
 
 ### Database
 
@@ -30,6 +30,7 @@ This folder contains detailed documentation for the OCF Fellowship Management Sy
 
 ### Project Information
 
+- **[FGCU/OCF IT Handoff](it-handoff.md)** — owner boundaries (real data migration, environment/secrets, SSO, domains/networking, backups, monitoring), the trusted legacy-baseline import transaction pattern, and the two open OCF product decisions
 - **[License](../LICENSE)** - License information
 
 ---

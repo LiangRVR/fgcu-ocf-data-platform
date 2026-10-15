@@ -10,19 +10,20 @@
 
 ### ✅ Database Schema
 
-The repository tracks a **forward-only chain of thirty-four migrations** ending with
-`supabase/migrations/20261020000001_complete_immutable_history_context.sql`. The chain
+The repository tracks a **forward-only chain of thirty-seven migrations** ending with
+`supabase/migrations/20261023000001_audit_event_raw_payload_boundary.sql`. The chain
 is applied in order to a fresh, disposable **local Supabase (Docker)** instance
 via `supabase start` + `supabase db reset`; it must **not** be pushed to the
 hosted production database (see the production freeze below).
 
-- **12-table schema** with advisor-backed auth, applied via the Git migration chain:
+- **13-table schema** with advisor-backed auth, applied via the Git migration chain:
   - Core tables: `student`, `advisor`, `fellowship`, `application`,
     `advising_meeting`, `fellowship_thursday`, `scholarship_history`
   - Append-only corrections: `advising_meeting_amendment`,
     `fellowship_thursday_amendment`, `scholarship_history_amendment`
   - Server-only role-change lock: `advisor_role_lock` (never exposed to clients)
-  - Immutable audit trail: `audit_event` (read-only to active advisors)
+  - Immutable audit trail: `audit_event` (read-only to active advisors) and its
+    `audit_event_subject` relationship read model
   - Auth chain (migrations 1–6): `20260305000000_initial_schema.sql` →
     `20260305000001_allow_anon_read.sql` → `20260305000002_allow_anon_write.sql`
     (temporary bootstrap) → `20260317000003_advisor_auth.sql` →
@@ -63,7 +64,10 @@ hosted production database (see the production freeze below).
     `20261018000001_lock_application_relink_parents.sql`
   - Immutable history relationship context:
     `20261019000001_final_immutable_history_remediation.sql` →
-    `20261020000001_complete_immutable_history_context.sql` (final)
+    `20261020000001_complete_immutable_history_context.sql` →
+    `20261021000001_audit_presentation_projection.sql` →
+    `20261022000001_audit_activity_browser_safe.sql` →
+    `20261023000001_audit_event_raw_payload_boundary.sql` (final)
 - Documented in `docs/schema-reference.md` and `supabase/SCHEMA.md` (which
   contains the full ordered migration table)
 
@@ -122,19 +126,43 @@ hosted production database (see the production freeze below).
 > written. It fabricates or backfills no legacy rows because their former
 > relationships and labels are unknown, and there is no down migration.
 >
-> `20261020000001_complete_immutable_history_context.sql` is the current final
-> migration. It completes the immutable audit relationship context the previous
-> migration deliberately left incomplete: an event-only, `ON CONFLICT DO NOTHING`
-> idempotent backfill of `audit_event_subject` from immutable event payloads
-> (never joining a mutable business table); deterministic label provenance
-> (event-proven `previous`/`current` sides, NULL otherwise); semantic subject
-> capture for application re-links and Scholarship History amendments; removal of
-> only the provably obsolete derived rows produced by the superseded
-> `20261019000001` helper; shared trusted baseline-session revalidation
+> `20261020000001_complete_immutable_history_context.sql` completes the immutable
+> audit relationship context the previous migration deliberately left incomplete:
+> an event-only, `ON CONFLICT DO NOTHING` idempotent backfill of
+> `audit_event_subject` from immutable event payloads (never joining a mutable
+> business table); deterministic label provenance (event-proven
+> `previous`/`current` sides, NULL otherwise); semantic subject capture for
+> application re-links and Scholarship History amendments; removal of only the
+> provably obsolete derived rows produced by the superseded `20261019000001`
+> helper; shared trusted baseline-session revalidation
 > (`private.assert_trusted_baseline_session`); and the relationship-extended
 > `security_invoker` `public.audit_activity` view (columns appended, still one row
 > per `audit_event`). `public.audit_event` remains immutable and is never written
 > here, and there is no down migration.
+>
+> `20261021000001_audit_presentation_projection.sql` appends bounded safe scalars
+> to the `security_invoker` `audit_activity` view: paired relationship endpoint
+> ids (`previous`/`current` student and fellowship, `Entity #id` fallbacks), the
+> per-field Fellowship Thursday predecessor/current/amended values (immutable
+> base plus strictly-earlier amendments, explicit correction-to-NULL
+> representable), the exact Scholarship `void_reason`, and immutable parent
+> advising-meeting `meeting_date`/`application_id`/`advisor_id`. Still one row per
+> `audit_event`; no write path changes.
+>
+> `20261022000001_audit_activity_browser_safe.sql` drops the raw payload columns
+> (`old_values`/`new_values`/`changes`) from `audit_activity` (drop/recreate, same
+> leading columns, `security_invoker` preserved), so an authenticated browser
+> client can no longer select raw audit JSON through the projection; the raw diff
+> stays server-side.
+>
+> `20261023000001_audit_event_raw_payload_boundary.sql` is the current final
+> migration. It revokes `authenticated` table-level `SELECT` on
+> `public.audit_event` and grants column-level `SELECT` on exactly the non-raw
+> columns (the three raw payload columns are explicitly revoked as a fail-closed
+> guard), so the raw audit JSON is unreadable to every client role and is fetched
+> only by server-only service-role code. `audit_event` RLS, `audit_event_subject`
+> ACL/RLS, every write path, and `service_role` are unchanged, and there is no
+> down migration.
 
 ### ✅ Live Data and Auth Features
 
@@ -235,7 +263,7 @@ recovery links); it does not come from `supabase status -o env`.
 > the hosted **production** database while provenance is unresolved —
 > production is the physical-schema authority, its migration ledger records only
 > `20260924065221_advisor_self_activation_lockdown`, and the deployed schema
-> materially differs from this repository chain (which tracks thirty-four
+> materially differs from this repository chain (which tracks thirty-seven
 > migrations). `supabase db push`, historical replay, and migration-history
 > repair against production are prohibited until a separately approved
 > reconciliation exists. See
@@ -245,7 +273,7 @@ recovery links); it does not come from `supabase status -o env`.
 
 #### Method A: Local Supabase (Docker) — recommended for development and testing
 
-This is the supported local workflow; it applies the **full thirty-four-migration
+This is the supported local workflow; it applies the **full thirty-seven-migration
 chain** to a disposable Docker instance and requires no hosted project:
 
 ```bash
@@ -263,7 +291,7 @@ pnpm exec supabase stop --no-backup
 ```
 
 `supabase db reset` applies every file in `supabase/migrations/` in order,
-ending with `20261020000001_complete_immutable_history_context.sql`. Migrations 2 and 3
+ending with `20261023000001_audit_event_raw_payload_boundary.sql`. Migrations 2 and 3
 (`allow_anon_read`, `allow_anon_write`) are temporary bootstrap steps only;
 after the full chain, authenticated active advisors are the intended steady
 state.
@@ -313,7 +341,10 @@ the repository's own `supabase/` project is never started, reset, or stopped.
    `20261017000001_revoke_advising_meeting_truncate.sql`,
    `20261018000001_lock_application_relink_parents.sql`,
    `20261019000001_final_immutable_history_remediation.sql`,
-   and `20261020000001_complete_immutable_history_context.sql` (last).
+   `20261020000001_complete_immutable_history_context.sql`,
+   `20261021000001_audit_presentation_projection.sql`,
+   `20261022000001_audit_activity_browser_safe.sql`,
+   and `20261023000001_audit_event_raw_payload_boundary.sql` (last).
 10. **Only after the full chain is applied (steps 2–9):** provision each advisor
     before first sign-in via the server-only provisioning module
     (`lib/provisioning/*`): it invites/creates the auth account and
@@ -343,8 +374,8 @@ the repository's own `supabase/` project is never started, reset, or stopped.
 > ❗ Do **not** use `npx supabase link` + `npx supabase db push` against the
 > hosted **production** project: the production migration ledger records only
 > `20260924065221_advisor_self_activation_lockdown`, while this repository
-> tracks thirty-four migrations ending with
-> `20261020000001_complete_immutable_history_context.sql`, and the deployed schema
+> tracks thirty-seven migrations ending with
+> `20261023000001_audit_event_raw_payload_boundary.sql`, and the deployed schema
 > differs materially. Generic `db push`, historical replay, and
 > migration-history repair against production are prohibited until a separately
 > approved reconciliation exists.
@@ -421,7 +452,7 @@ Before relying on the app day to day:
   are effective-Admin-only by design and cannot create the first Admin.
 - Confirm the advisor row is **pre-bound**: `public.advisor.auth_user_id` must already equal the sign-in user's auth UUID. Binding is admin-only and one-time; it happens before first sign-in via the server-only provisioning module, never by email match or auto-linking.
 - Confirm the advisor row has `is_active = true`.
-- Confirm the complete migration chain through `20261020000001_complete_immutable_history_context.sql` was applied **before** any advisor was provisioned/pre-bound.
+- Confirm the complete migration chain through `20261023000001_audit_event_raw_payload_boundary.sql` was applied **before** any advisor was provisioned/pre-bound.
 - Confirm the chain order: `20260318000001_advisor_self_activation_lockdown.sql`
   after `20260317000004_active_advisor_rls.sql`; then
   `20260929000001_advising_application_link.sql` … `20260930000004_advising_meeting_amendments.sql`;
@@ -433,7 +464,8 @@ Before relying on the app day to day:
   `20261008000001_historical_integrity_remediation.sql`; then the immutable-audit
   and concurrency migrations `20261009000001`–`20261018000001`; then the
   immutable-history migrations `20261019000001`–`20261020000001`; and finally
-  `20261020000001_complete_immutable_history_context.sql` last.
+  `20261021000001`–`20261023000001`, with
+  `20261023000001_audit_event_raw_payload_boundary.sql` last.
 
 ### Connection failed
 
@@ -448,15 +480,17 @@ Before relying on the app day to day:
 - [Schema Reference](schema-reference.md)
 - [Schema Design Decisions](schema-decisions.md) — rationale plus the deferred OCF event-date / award-cycle decisions
 - [Schema Verification](schema-verification.md)
+- [FGCU/OCF IT Handoff](it-handoff.md) — owner boundaries and the trusted legacy-baseline import pattern
 - [Supabase Docs](https://supabase.com/docs)
 
 ## 🎓 What You Have Now
 
-1. **12 database tables** — 10 business tables (students, advisors,
+1. **13 database tables** — 10 business tables (students, advisors,
    fellowships, applications, advising meetings, advising amendments,
    Thursday attendance, Thursday attendance corrections, scholarship history,
-   scholarship amendments), the server-only role-change lock table, and the
-   immutable `audit_event` trail (read-only to active advisors).
+   scholarship amendments), the server-only role-change lock table, the
+   immutable `audit_event` trail (read-only to active advisors), and its
+   `audit_event_subject` relationship read model.
 2. **11 sidebar destinations** — 10 for active advisors (Dashboard, Reports,
    Activity, My Account, Students, Advising, Fellowships, Applications,
    Fellowship Thursday, Scholarship History) plus the admin-only **Advisor
@@ -472,7 +506,8 @@ Before relying on the app day to day:
    `advising_meeting`/`advising_meeting_amendment` tables explicitly revoke
    `TRUNCATE` from `PUBLIC`/`anon`/`authenticated` (migration
    `20261017000001`); the `/activity` page is a
-   server-paginated read of the `audit_activity` view; archive/deactivate is the
+   server-paginated read of the browser-safe `audit_activity` view, whose raw
+   audit JSON is unreadable to every client role; archive/deactivate is the
    only removal path for current-state entities.
 5. **Type-safe Supabase access** with generated database types.
 6. **Operational docs** covering schema, setup, and verification.
@@ -491,11 +526,13 @@ admin API + UI), CSV export for students, the reports surface (system totals,
 applications by stage, finalists & awarded by fellowship/cycle, students by
 class standing, advising activity by advisor, advising sessions by student /
 student-application / fellowship, no-show trend, advised-without-application,
-and the Fellowship Thursday → application funnel), and add/edit/delete
-operations on the mutable main tables (advising meetings, Fellowship Thursday,
-and Scholarship History base rows plus their amendments are append-only
-history; corrections are recorded as amendment rows, and scholarship `Void`
-amendments exclude an award from operational counts). The immutable audit trail,
+and the Fellowship Thursday → application funnel), and create/correct
+operations over the operational records: current-state rows (students,
+fellowships, applications, advisors) are edited only through the database-owned
+expected-version writers, while advising meetings, Fellowship Thursday, and
+Scholarship History base rows plus their amendments are append-only history
+(corrections are recorded as amendment rows, and scholarship `Void` amendments
+exclude an award from operational counts). The immutable audit trail,
 the `/activity` view, and the expected-version concurrency writers are covered
 by contract/RLS tests against a Docker-local instance.
 

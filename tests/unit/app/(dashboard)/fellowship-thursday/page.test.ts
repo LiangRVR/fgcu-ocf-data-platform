@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // The page loader is the unit under test; the client table component is
 // irrelevant here, so it is stubbed to keep the module graph narrow.
 
-vi.mock("@/components/fellowship-thursday/fellowship-thursday-table", () => ({
+vi.mock("@/components/fellowship-thursday/fellowship-thursday-table", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/components/fellowship-thursday/fellowship-thursday-table")>()),
   FellowshipThursdayTable: () => null,
 }));
 

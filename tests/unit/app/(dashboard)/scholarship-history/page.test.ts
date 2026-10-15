@@ -239,7 +239,7 @@ describe("getScholarshipHistory", () => {
     // filter builder: the database scopes it to the whole filtered relation.
     expect(operational).toBeDefined();
     expect(operational?.range).toBeUndefined();
-    expect(operational?.rpcArgs).toEqual({ p_search: null, p_fellowship_id: null });
+    expect(operational?.rpcArgs).toEqual({ p_search: undefined, p_fellowship_id: undefined });
     // The former unbounded `student_id` projection must be gone entirely.
     expect(
       listQueries(client).some((call) => call.columns === "student_id"),
@@ -282,8 +282,8 @@ describe("getScholarshipHistory", () => {
 
     expect(pageQuery(client)?.filters.some((f) => f.column === "fellowship_id")).toBe(false);
     expect(operationalQuery(client)?.rpcArgs).toEqual({
-      p_search: null,
-      p_fellowship_id: null,
+      p_search: undefined,
+      p_fellowship_id: undefined,
     });
   });
 
@@ -295,8 +295,8 @@ describe("getScholarshipHistory", () => {
 
     expect(pageQuery(client)?.filters.some((f) => f.column === "fellowship_id")).toBe(false);
     expect(operationalQuery(client)?.rpcArgs).toEqual({
-      p_search: null,
-      p_fellowship_id: null,
+      p_search: undefined,
+      p_fellowship_id: undefined,
     });
   });
 
@@ -325,7 +325,7 @@ describe("getScholarshipHistory", () => {
     // The aggregate receives the SAME escaped pattern.
     expect(operationalQuery(client)?.rpcArgs).toEqual({
       p_search: "%A\\*B%",
-      p_fellowship_id: null,
+      p_fellowship_id: undefined,
     });
   });
 

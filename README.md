@@ -80,6 +80,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 - **[Database Schema](supabase/SCHEMA.md)** — one-page reference: tables, keys, business rules, and the ordered migration table
 - **[Schema Design Decisions](docs/schema-decisions.md)** — rationale for key data-model choices
 - **[Schema Verification](docs/schema-verification.md)** — database setup checklist
+- **[FGCU/OCF IT Handoff](docs/it-handoff.md)** — owner boundaries, the trusted legacy-baseline import pattern, and the two open OCF product questions
 - **[Testing & Verification](aidlc-docs/project/testing.md)** — command semantics and prerequisites for the test suites
 
 ---
@@ -110,7 +111,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 ├── lib/                    # Server-side auth/session helpers, config, Supabase clients
 ├── types/                  # TypeScript types (auto-generated database + app-level)
 ├── supabase/
-│   ├── migrations/         # Forward-only migration chain (32 migrations)
+│   ├── migrations/         # Forward-only migration chain (37 migrations, through 20261023000001)
 │   ├── SCHEMA.md           # One-page schema reference
 │   └── README.md           # Supabase setup guide
 ├── docs/                   # Project documentation
@@ -147,6 +148,10 @@ Management page) and the reports surface, see the
 - **Activity** — `/activity` is an authenticated, server-paginated read of the
   `public.audit_activity` view over the immutable `audit_event` trail, with
   filters for record type, change, actor, student, fellowship, and date range.
+  `audit_activity` is a `security_invoker`, browser-safe projection: it exposes
+  frozen relationship labels (from `audit_event_subject`) and never exposes the
+  raw audit JSON snapshots (`old_values`/`new_values`/`changes`), which are
+  unreadable to every client role and fetched only by server-only service-role code.
 
 ### Immutable history invariant
 
@@ -172,6 +177,18 @@ Corrections are represented as separate amendment records (and `Void` for
 wrongly recorded awards), never as edits or deletes. Effective-value views
 (`effective_fellowship_thursday`, `effective_scholarship_history`) apply the
 newest amendment without rewriting the base facts.
+
+Every audit event also receives immutable, normalized subject associations in
+`audit_event_subject` (`subject` / `previous` / `current` links, with an
+event-time name snapshot), so a re-link or correction stays discoverable from
+both endpoints. Those associations and their frozen labels are derived only from
+immutable event payloads; existing events were backfilled once, idempotently,
+without joining any mutable table and without fabricating an event. No row of
+history is created for pre-existing business data by any normal path:
+`baseline_captured` / `origin = migration` has exactly one writer — the trusted,
+transaction-local `service_role`/DBA-only import helper used by FGCU IT (see
+[the IT handoff](docs/it-handoff.md)) — and ordinary later writes remain
+`created` / `origin = user`.
 
 > **Advising-history privilege closure.** The append-only `advising_meeting`
 > and `advising_meeting_amendment` tables also revoke the destructive
@@ -239,8 +256,10 @@ FGCU IT after handoff:
 - **Backups** — institutional backup and recovery procedures
 - **Monitoring** — production monitoring and alerting
 
-The repository ships no hosted/production configuration and must not be
-deployed against the hosted production database while the
+See [FGCU/OCF IT Handoff](docs/it-handoff.md) for the concise owner boundary and
+the approved trusted legacy-baseline import procedure. The repository ships no
+hosted/production configuration, no credentials, and no production runbook, and
+must not be deployed against the hosted production database while the
 [production provenance freeze](supabase/SCHEMA.md#migration-deployment-freeze)
 is in effect.
 

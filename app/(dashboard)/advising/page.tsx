@@ -28,6 +28,35 @@ interface Props {
   }>;
 }
 
+type AdvisingMeetingListRow = Database["public"]["Views"]["advising_meeting_list"]["Row"];
+
+/**
+ * Identity-complete `advising_meeting_list` row. The generated view marks every
+ * column nullable, but the meeting identity/rendering columns derive directly
+ * from non-null base `advising_meeting` columns; {@link isAdvisingMeetingListRow}
+ * fails a row that does not carry them closed rather than coercing it.
+ */
+type AdvisingMeetingListNarrow = AdvisingMeetingListRow & {
+  meeting_id: number;
+  meeting_date: string;
+  meeting_mode: string;
+  no_show: boolean;
+  created_at: string;
+  student_id: number;
+};
+
+/** Guard a generated `advising_meeting_list` row into a usable shape. */
+function isAdvisingMeetingListRow(row: AdvisingMeetingListRow): row is AdvisingMeetingListNarrow {
+  return (
+    row.meeting_id !== null &&
+    row.meeting_date !== null &&
+    row.meeting_mode !== null &&
+    row.no_show !== null &&
+    row.created_at !== null &&
+    row.student_id !== null
+  );
+}
+
 type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
   student: { full_name: string } | null;
   advisor: { advisor_name: string } | null;
@@ -112,8 +141,9 @@ async function getAdvisingMeetings(params: {
       return { meetings: [], count: 0, pagination, pages: 0 };
     }
 
-    const rows =
-      (data as Database["public"]["Views"]["advising_meeting_list"]["Row"][] | null) ?? [];
+    const rows = (
+      (data as Database["public"]["Views"]["advising_meeting_list"]["Row"][] | null) ?? []
+    ).filter(isAdvisingMeetingListRow);
     const ids = rows.map((row) => row.meeting_id);
 
     type AmendmentRow = Database["public"]["Tables"]["advising_meeting_amendment"]["Row"] & {

@@ -31,10 +31,10 @@ import Link from "next/link";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
 import type { Database } from "@/types/database";
+import type { FellowshipThursday } from "@/components/fellowship-thursday/fellowship-thursday-list-row";
 
-type FellowshipThursday = Database["public"]["Views"]["fellowship_thursday_list"]["Row"] & {
-    student: { full_name: string } | null;
-  };
+export type { FellowshipThursday } from "@/components/fellowship-thursday/fellowship-thursday-list-row";
+
 type Amendment = Database["public"]["Tables"]["fellowship_thursday_amendment"]["Row"] & { created_by: { advisor_name: string } | null };
 
 type StudentRow = Pick<

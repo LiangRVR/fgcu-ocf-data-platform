@@ -17,6 +17,7 @@ import { AlertTriangle, Award, FileText, GraduationCap, Users } from "lucide-rea
 import { createServerClient } from "@/lib/supabase/server";
 import { resolvePagination, totalPages } from "@/lib/utils/pagination";
 import { StudentsTable } from "@/components/students/students-table";
+import { isListedStudent, type Student } from "@/components/students/students-list-row";
 import type { Database } from "@/types/database";
 import Link from "next/link";
 
@@ -94,7 +95,7 @@ type RosterCounts = { baseCount: number; chCount: number };
 type StudentsResult =
   | {
       ok: true;
-      students: StudentListRow[];
+      students: Student[];
       count: number;
       pagination: ReturnType<typeof resolvePagination>;
       pages: number;
@@ -220,7 +221,7 @@ export async function getStudents(params: {
     }
     return {
       ok: true,
-      students: (data as StudentListRow[]) || [],
+      students: ((data as StudentListRow[] | null) ?? []).filter(isListedStudent),
       count: count ?? 0,
       pagination,
       pages: totalPages(count ?? 0, pagination.pageSize),

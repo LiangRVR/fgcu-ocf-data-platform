@@ -12,6 +12,10 @@ import { PageSection } from "@/components/ui/page-section";
 import { StatCard } from "@/components/ui/stat-card";
 import { createServerClient } from "@/lib/supabase/server";
 import { ApplicationsTable } from "@/components/applications/applications-table";
+import {
+  isApplicationRow,
+  type Application,
+} from "@/components/applications/applications-list-row";
 import type { Database } from "@/types/database";
 import { AlertTriangle, Award, FileText, Trophy, Users } from "lucide-react";
 import { redirect } from "next/navigation";
@@ -84,11 +88,6 @@ interface Props {
   }>;
 }
 
-type Application = Database["public"]["Views"]["application_list"]["Row"] & {
-  student: { full_name: string } | null;
-  fellowship: { fellowship_name: string } | null;
-};
-
 type StudentRow = Pick<
   Database["public"]["Tables"]["student"]["Row"],
   "student_id" | "full_name"
@@ -136,7 +135,18 @@ export async function getApplications(params: { search?: string; stage?: string;
     if (error) {
       return { ok: false };
     }
-    return { ok: true, applications: ((data as Database["public"]["Views"]["application_list"]["Row"][]) || []).map(row => ({ ...row, student: { full_name: row.student_name }, fellowship: { fellowship_name: row.fellowship_name } })), count: count ?? 0, pagination, pages: totalPages(count ?? 0, pagination.pageSize) };
+    const rows = (data ?? []) as Database["public"]["Views"]["application_list"]["Row"][];
+    return {
+      ok: true,
+      applications: rows.filter(isApplicationRow).map((row) => ({
+        ...row,
+        student: row.student_name !== null ? { full_name: row.student_name } : null,
+        fellowship: row.fellowship_name !== null ? { fellowship_name: row.fellowship_name } : null,
+      })),
+      count: count ?? 0,
+      pagination,
+      pages: totalPages(count ?? 0, pagination.pageSize),
+    };
   } catch {
     return { ok: false };
   }

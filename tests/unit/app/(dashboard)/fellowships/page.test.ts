@@ -3,7 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock(
   "@/components/fellowships/fellowships-table",
-  () => ({ FellowshipsTable: () => null })
+  async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@/components/fellowships/fellowships-table")>()),
+    FellowshipsTable: () => null,
+  })
 );
 vi.mock(
   "@/components/fellowships/add-fellowship-button",

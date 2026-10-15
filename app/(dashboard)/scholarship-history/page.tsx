@@ -29,6 +29,7 @@ type ScholarshipHistoryAmendment =
   };
 
 export type ScholarshipHistory = ScholarshipHistoryListRow & {
+  history_id: number;
   student: { full_name: string } | null;
   fellowship: { fellowship_name: string } | null;
   effective: ScholarshipHistoryListRow;
@@ -131,8 +132,8 @@ export async function getScholarshipHistory(
     const { data: operationalRows, error: operationalError } = await supabase.rpc(
       "scholarship_history_operational_summary",
       {
-        p_search: searchPattern,
-        p_fellowship_id: fellowship ? Number(fellowship) : null,
+        p_search: searchPattern ?? undefined,
+        p_fellowship_id: fellowship ? Number(fellowship) : undefined,
       },
     );
     if (operationalError) {
@@ -165,7 +166,10 @@ export async function getScholarshipHistory(
       };
     }
 
-    const records = (data as ScholarshipHistoryListRow[] | null) ?? [];
+    const records = ((data as ScholarshipHistoryListRow[] | null) ?? []).filter(
+      (record): record is ScholarshipHistoryListRow & { history_id: number } =>
+        record.history_id !== null,
+    );
     const pages = totalPages(count ?? 0, pagination.pageSize);
     if (pages > 0 && pagination.page > pages) {
       // Out of range: the page canonicalizes to the last valid page.
@@ -197,8 +201,9 @@ export async function getScholarshipHistory(
       records: records.map((record) => ({
         ...record,
         effective: record,
-        student: { full_name: record.student_name },
-        fellowship: { fellowship_name: record.fellowship_name },
+        student: record.student_name !== null ? { full_name: record.student_name } : null,
+        fellowship:
+          record.fellowship_name !== null ? { fellowship_name: record.fellowship_name } : null,
         amendments: trails[record.history_id] ?? [],
       })),
       count: count ?? 0,

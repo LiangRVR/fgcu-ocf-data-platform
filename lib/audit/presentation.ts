@@ -38,7 +38,42 @@ export interface AuditChange {
   newValue: string;
 }
 
-export type AuditRow = import("@/types/database").Database["public"]["Views"]["audit_activity"]["Row"];
+/** The generated browser-safe `audit_activity` view row (every column nullable). */
+export type AuditActivityViewRow =
+  import("@/types/database").Database["public"]["Views"]["audit_activity"]["Row"];
+
+/**
+ * The identity-complete audit row the presentation layer requires.
+ *
+ * The generated view marks every column nullable, but an event without its
+ * immutable identity (`audit_id`, `occurred_at`, `entity_type`, `action`) can be
+ * neither keyed, paginated, nor normalized safely. {@link isAuditRow} narrows a
+ * generated view row to this shape and fails such a row closed instead of
+ * coercing missing identity into a presentable value.
+ */
+export type AuditRow = Omit<
+  AuditActivityViewRow,
+  "audit_id" | "occurred_at" | "entity_type" | "action"
+> & {
+  audit_id: number;
+  occurred_at: string;
+  entity_type: string;
+  action: string;
+};
+
+/**
+ * Guard a generated view row into the identity-complete {@link AuditRow}. A row
+ * missing any immutable identity column fails closed (returns `false`) and is
+ * dropped by the caller rather than being rendered under a fabricated identity.
+ */
+export function isAuditRow(row: AuditActivityViewRow): row is AuditRow {
+  return (
+    row.audit_id !== null &&
+    row.occurred_at !== null &&
+    row.entity_type !== null &&
+    row.action !== null
+  );
+}
 
 /**
  * Server-only normalization input: a browser-safe `audit_activity` view row plus

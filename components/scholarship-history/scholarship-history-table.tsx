@@ -20,6 +20,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 type ScholarshipHistoryListRow = Database["public"]["Views"]["scholarship_history_list"]["Row"];
 
 type ScholarshipHistory = ScholarshipHistoryListRow & {
+  history_id: number;
   student: { full_name: string } | null;
   fellowship: { fellowship_name: string } | null;
   effective?: Effective;
@@ -445,7 +446,20 @@ export function ScholarshipHistoryTable({
     if (!reason.trim()) { setFormError("A reason is required."); return; }
     setLoading(true);
     try {
-      const { error } = await supabaseBrowserClient.from("scholarship_history_amendment").insert({ history_id: amendTarget.history_id, amendment_type: amendType, reason: reason.trim(), corrected_fellowship_id: amendType === "Correction" && correctedFellowship ? Number(correctedFellowship) : null });
+      // `created_by_advisor_id` is derived server-side by the
+      // `set_scholarship_history_amendment_metadata` trigger from the
+      // authenticated advisor, but the generated insert type marks it required,
+      // so resolve the acting advisor and pass it explicitly (the trigger still
+      // overrides it with the authoritative value).
+      const { data: userData, error: userError } = await supabaseBrowserClient.auth.getUser();
+      if (userError || !userData.user) throw userError ?? new Error("Sign in required.");
+      const { data: advisor, error: advisorError } = await supabaseBrowserClient
+        .from("advisor")
+        .select("advisor_id")
+        .eq("auth_user_id", userData.user.id)
+        .single();
+      if (advisorError) throw advisorError;
+      const { error } = await supabaseBrowserClient.from("scholarship_history_amendment").insert({ history_id: amendTarget.history_id, created_by_advisor_id: advisor.advisor_id, amendment_type: amendType, reason: reason.trim(), corrected_fellowship_id: amendType === "Correction" && correctedFellowship ? Number(correctedFellowship) : null });
       if (error) throw error;
       toast.success(amendType === "Void" ? "Award record voided." : "Correction added.");
       setAmendTarget(null); setReason(""); setCorrectedFellowship(""); setFormError("");

@@ -3,12 +3,11 @@ import { redirect } from "next/navigation";
 import { PageHeader } from "@/components/layout/page-header";
 import { AddFellowshipButton } from "@/components/fellowships/add-fellowship-button";
 import { FellowshipsTable } from "@/components/fellowships/fellowships-table";
+import { isFellowshipListRow } from "@/components/fellowships/fellowships-list-row";
 import { createServerClient } from "@/lib/supabase/server";
 import { resolvePagination, totalPages } from "@/lib/utils/pagination";
-import type { Database } from "@/types/database";
 
 export const metadata: Metadata = { title: "Fellowships" };
-type Row = Database["public"]["Views"]["fellowship_list"]["Row"];
 type Params = Record<string, string | string[] | undefined>;
 
 function one(value: string | string[] | undefined) { return Array.isArray(value) ? value[0] : value; }
@@ -55,6 +54,6 @@ export default async function FellowshipsPage({ searchParams }: { searchParams: 
     <nav className="mb-6 flex flex-wrap gap-2" aria-label="Fellowship views">
       {([ ["all","Active Fellowships"], ["archived","Archived Fellowships"], ["no-applicants","No Applicants Yet"] ] as const).map(([key,label]) => <a key={key} href={key === "all" ? "/fellowships" : `/fellowships?view=${key}`} className={`rounded-full border px-3 py-1.5 text-xs font-medium ${safeView === key ? "border-slate-900 bg-slate-900 text-white" : "border-border bg-white text-slate-600"}`}>{label}</a>)}
     </nav>
-    <FellowshipsTable fellowships={(data ?? []) as Row[]} view={safeView} search={search} page={pagination.page} pageSize={pagination.pageSize} totalCount={total} totalPages={pages} sort={safeSort} />
+    <FellowshipsTable fellowships={(data ?? []).filter(isFellowshipListRow)} view={safeView} search={search} page={pagination.page} pageSize={pagination.pageSize} totalCount={total} totalPages={pages} sort={safeSort} />
   </>;
 }

@@ -61,10 +61,10 @@ import {
   updateListSearchParams,
   type ListQueryPatch,
 } from "@/lib/utils/pagination";
+import type { Student } from "@/components/students/students-list-row";
 import type { Database } from "@/types/database";
 
-/** Explicit list row from the read-only `student_list` view. */
-type Student = Database["public"]["Views"]["student_list"]["Row"];
+export type { Student } from "@/components/students/students-list-row";
 
 /** Sort columns the server loader allowlists; mirrors the page loader. */
 const SORT_FIELDS = ["full_name", "major", "gpa", "class_standing"] as const;

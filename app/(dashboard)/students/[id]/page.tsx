@@ -167,7 +167,13 @@ export async function getScholarshipHistory(studentId: number): Promise<Scholars
     if (error) return [];
 
     const records = (data as Database["public"]["Views"]["effective_scholarship_history"]["Row"][]) || [];
-    const fellowshipIds = [...new Set(records.map((record) => record.fellowship_id))];
+    const fellowshipIds = [
+      ...new Set(
+        records
+          .map((record) => record.fellowship_id)
+          .filter((id): id is number => id !== null),
+      ),
+    ];
     const fellowshipNameById = new Map<number, string>();
     if (fellowshipIds.length > 0) {
       const { data: fellowships } = await supabase
@@ -179,12 +185,16 @@ export async function getScholarshipHistory(studentId: number): Promise<Scholars
       }
     }
 
-    return records.map((record) => ({
-      ...record,
-      fellowship: fellowshipNameById.has(record.fellowship_id)
-        ? { fellowship_name: fellowshipNameById.get(record.fellowship_id)! }
-        : null,
-    }));
+    return records.map((record) => {
+      const fellowshipName =
+        record.fellowship_id !== null
+          ? fellowshipNameById.get(record.fellowship_id)
+          : undefined;
+      return {
+        ...record,
+        fellowship: fellowshipName !== undefined ? { fellowship_name: fellowshipName } : null,
+      };
+    });
   } catch {
     return [];
   }

@@ -1,7 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/components/students/students-table", () => ({ StudentsTable: () => null }));
+vi.mock("@/components/students/students-table", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/components/students/students-table")>()),
+  StudentsTable: () => null,
+}));
 
 const { createServerClient, queries } = vi.hoisted(() => ({
   createServerClient: vi.fn(),

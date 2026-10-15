@@ -1,6 +1,12 @@
 import { createServerClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { normalizeAuditRow, type AuditActivity, type AuditRow } from "@/lib/audit/presentation";
+import {
+  isAuditRow,
+  normalizeAuditRow,
+  type AuditActivity,
+  type AuditActivityViewRow,
+  type AuditRow,
+} from "@/lib/audit/presentation";
 import type { AuditHistoryCursor } from "@/lib/audit/history-api";
 
 /**
@@ -233,7 +239,7 @@ export async function getEntityHistoryPage(
   const request = applyWindow(
     supabase
       .from("audit_activity")
-      .select(AUDIT_ACTIVITY_SAFE_COLUMNS)
+      .select<string, AuditActivityViewRow>(AUDIT_ACTIVITY_SAFE_COLUMNS)
       .eq("entity_type", entityType)
       .eq("entity_id", entityId),
     options
@@ -243,7 +249,7 @@ export async function getEntityHistoryPage(
     .order("audit_id", { ascending: false })
     .range(0, limit);
   if (error) return EMPTY_PAGE;
-  return toPage((data ?? []) as unknown as AuditRow[], limit, options?.highWatermark ?? null);
+  return toPage((data ?? []).filter(isAuditRow), limit, options?.highWatermark ?? null);
 }
 
 /**
@@ -261,7 +267,7 @@ export async function getStudentActivityPage(
   const request = applyWindow(
     supabase
        .from("audit_activity")
-       .select(AUDIT_ACTIVITY_SAFE_COLUMNS)
+       .select<string, AuditActivityViewRow>(AUDIT_ACTIVITY_SAFE_COLUMNS)
        .contains("student_subject_ids", [studentId]),
     options
   );
@@ -270,7 +276,7 @@ export async function getStudentActivityPage(
     .order("audit_id", { ascending: false })
     .range(0, limit);
   if (error) return EMPTY_PAGE;
-  return toPage((data ?? []) as unknown as AuditRow[], limit, options?.highWatermark ?? null);
+  return toPage((data ?? []).filter(isAuditRow), limit, options?.highWatermark ?? null);
 }
 
 /**
@@ -294,7 +300,7 @@ export async function getApplicationHistoryPage(
   const request = applyWindow(
     supabase
       .from("audit_activity")
-      .select(AUDIT_ACTIVITY_SAFE_COLUMNS)
+      .select<string, AuditActivityViewRow>(AUDIT_ACTIVITY_SAFE_COLUMNS)
       .in("subject_application_id", applicationIds),
     options
   );
@@ -303,7 +309,7 @@ export async function getApplicationHistoryPage(
     .order("audit_id", { ascending: false })
     .range(0, limit);
   if (error) return EMPTY_PAGE;
-  return toPage((data ?? []) as unknown as AuditRow[], limit, options?.highWatermark ?? null);
+  return toPage((data ?? []).filter(isAuditRow), limit, options?.highWatermark ?? null);
 }
 
 /**

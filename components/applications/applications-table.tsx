@@ -56,11 +56,9 @@ import type { Database } from "@/types/database";
 import { Pagination } from "@/components/pagination/pagination";
 import { updateListSearchParams } from "@/lib/utils/pagination";
 import { ApplicationHistoryButton } from "@/components/applications/application-history-button";
+import type { Application } from "@/components/applications/applications-list-row";
 
-type Application = Database["public"]["Views"]["application_list"]["Row"] & {
-  student: { full_name: string } | null;
-  fellowship: { fellowship_name: string } | null;
-};
+export type { Application } from "@/components/applications/applications-list-row";
 
 type StudentRow = Pick<
   Database["public"]["Tables"]["student"]["Row"],
