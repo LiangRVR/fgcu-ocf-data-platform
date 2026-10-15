@@ -871,6 +871,7 @@ describe("historical integrity remediation steady state (migration 2026100800000
       "attended",
       "source_info",
       "has_amendments",
+      "event_date",
     ]);
 
     const shColumns = await query(
@@ -889,6 +890,7 @@ describe("historical integrity remediation steady state (migration 2026100800000
       "void_amendment_id",
       "voided_at",
       "voided_by_advisor_id",
+      "award_year",
     ]);
 
     for (const view of ["effective_fellowship_thursday", "effective_scholarship_history"]) {

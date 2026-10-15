@@ -63,9 +63,9 @@ links) is also required and does not come from `supabase status -o env`.
 > the hosted **production** database while provenance is unresolved —
 > production is the physical-schema authority, its migration ledger records
 > only `20260924065221_advisor_self_activation_lockdown`, and the deployed
-> schema materially differs from this repository chain (which tracks **thirty-seven**
+> schema materially differs from this repository chain (which tracks **thirty-eight**
 > forward-only migrations ending with
-> `20261023000001_audit_event_raw_payload_boundary.sql`). See
+> `20261024000001_dated_attendance_award_year.sql`). See
 > [SCHEMA.md — Migration deployment freeze](./SCHEMA.md#migration-deployment-freeze)
 > and the approval-gated
 > [reconciliation runbook](../aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
@@ -95,7 +95,7 @@ to match `public.advisor.email`.
   self-link, and no self-service fallback — an unbound, email-matched account
   reads zero advisor rows by design.
 - Provisioning is sequenced **after** the complete migration chain: apply the
-  full chain through `20261023000001_audit_event_raw_payload_boundary.sql` first —
+  full chain through `20261024000001_dated_attendance_award_year.sql` first —
   the lockdown migration (`20260318000001_advisor_self_activation_lockdown.sql`)
   removes the remaining email self-link write path and installs the
   one-time-bind guard under which the trusted `service_role` bind is written.
@@ -113,7 +113,7 @@ Admin API** — never a public endpoint, and never with service credentials
 exposed, committed, or logged.
 
 Steps (after the complete migration chain through
-`20261023000001_audit_event_raw_payload_boundary.sql` is applied):
+`20261024000001_dated_attendance_award_year.sql` is applied):
 
 1. Confirm the confirmed FGCU advisor email is present on an **active**
    `public.advisor` row (`is_active = true`).
@@ -139,7 +139,7 @@ are never a part of the running application.
 ### Local workflow (Docker) — recommended
 
 This is the supported local development/testing workflow. It applies the full
-**thirty-seven-migration** chain to a disposable Docker-local instance and requires
+**thirty-eight-migration** chain to a disposable Docker-local instance and requires
 no hosted project:
 
 ```bash
@@ -157,7 +157,7 @@ pnpm exec supabase stop --no-backup
 ```
 
 `supabase db reset` applies every file in `supabase/migrations/` in order,
-ending with `20261023000001_audit_event_raw_payload_boundary.sql`. The contract and
+ending with `20261024000001_dated_attendance_award_year.sql`. The contract and
 E2E suites run the same chain automatically against a throwaway isolated
 instance (`scripts/test-support/supabase-isolation.mjs`) and never touch the
 repository's own `supabase/` project.
@@ -207,13 +207,14 @@ repository's own `supabase/` project.
 38. Repeat steps 3–6 for `supabase/migrations/20261020000001_complete_immutable_history_context.sql` — completes the immutable audit relationship context with an event-only, `ON CONFLICT DO NOTHING` idempotent backfill of `audit_event_subject` from immutable event payloads, deterministic label provenance, semantic subject capture for application re-links and Scholarship History amendments, removal of only the provably obsolete superseded-helper (20261019000001) rows, shared trusted baseline-session revalidation (`private.assert_trusted_baseline_session`), and the relationship-extended `security_invoker` `public.audit_activity` view (one row per `audit_event`). `public.audit_event` remains immutable, and there is no down migration.
 39. Repeat steps 3–6 for `supabase/migrations/20261021000001_audit_presentation_projection.sql` — appends bounded safe scalars to the `security_invoker` `audit_activity` view (paired endpoint ids, per-field Fellowship Thursday predecessor/current/amended values, the exact Scholarship Void reason, and immutable parent advising-meeting `meeting_date`/`application_id`/`advisor_id`); still one row per `audit_event`, no write path changed.
 40. Repeat steps 3–6 for `supabase/migrations/20261022000001_audit_activity_browser_safe.sql` — drops the raw payload columns (`old_values`/`new_values`/`changes`) from `audit_activity` (drop/recreate, same leading columns, `security_invoker` preserved), so an authenticated browser client cannot select raw audit JSON through the projection.
-41. Repeat steps 3–6 for `supabase/migrations/20261023000001_audit_event_raw_payload_boundary.sql` — **final migration**: revokes `authenticated` table-level `SELECT` on `public.audit_event` and grants column-level `SELECT` on exactly the non-raw columns (the raw payload columns are explicitly revoked), so the raw audit JSON is unreadable to every client role and is fetched only by server-only service-role code. `audit_event` RLS, `audit_event_subject` ACL/RLS, every write path, and `service_role` are unchanged, and there is no down migration.
-42. **Only after the complete migration chain is applied (through step 41):** provision each advisor via the admin pre-binding path (see [Advisor identity binding](#advisor-identity-binding-admin-pre-binding-not-email-self-link) above) — never create auth users to "self-link" by email. Use the protected `/api/advisors` endpoints (effective-Admin only). Because those endpoints require an existing effective Admin, **first** bootstrap the first effective Admin out of band (see [Bootstrap the first effective Admin](#bootstrap-the-first-effective-admin-trusted-operator-out-of-band)), then provision every other advisor normally.
-43. Verify the first active advisor (the bootstrapped Admin) can sign in — the pre-bound `auth_user_id` resolves their advisor row, `is_active` is `true`, and the strict-boolean `ocf_admin` claim grants effective admin.
+41. Repeat steps 3–6 for `supabase/migrations/20261023000001_audit_event_raw_payload_boundary.sql` — revokes `authenticated` table-level `SELECT` on `public.audit_event` and grants column-level `SELECT` on exactly the non-raw columns (the raw payload columns are explicitly revoked), so the raw audit JSON is unreadable to every client role and is fetched only by server-only service-role code. `audit_event` RLS, `audit_event_subject` ACL/RLS, every write path, and `service_role` are unchanged, and there is no down migration.
+42. Repeat steps 3–6 for `supabase/migrations/20261024000001_dated_attendance_award_year.sql` — **final migration**: adds nullable `fellowship_thursday.event_date date` and `scholarship_history.award_year integer` (null-tolerant CHECK 1000–9999) with no default, so every pre-existing row keeps a truthful NULL. Authenticated-insert guards require each new operational record to supply its identifier (`42501` when omitted, trusted no-JWT service/import/seed inserts excepted); the identifiers are appended to the effective/list views and the base insert's immutable `created` audit event. No legacy date or year is inferred or backfilled, corrections cannot change either value, and there is no down migration.
+43. **Only after the complete migration chain is applied (through step 42):** provision each advisor via the admin pre-binding path (see [Advisor identity binding](#advisor-identity-binding-admin-pre-binding-not-email-self-link) above) — never create auth users to "self-link" by email. Use the protected `/api/advisors` endpoints (effective-Admin only). Because those endpoints require an existing effective Admin, **first** bootstrap the first effective Admin out of band (see [Bootstrap the first effective Admin](#bootstrap-the-first-effective-admin-trusted-operator-out-of-band)), then provision every other advisor normally.
+44. Verify the first active advisor (the bootstrapped Admin) can sign in — the pre-bound `auth_user_id` resolves their advisor row, `is_active` is `true`, and the strict-boolean `ocf_admin` claim grants effective admin.
 
 Migrations `20260305000001_allow_anon_read.sql` and
 `20260305000002_allow_anon_write.sql` are temporary bootstrap steps. After the
-full chain ending with `20261023000001_audit_event_raw_payload_boundary.sql`,
+full chain ending with `20261024000001_dated_attendance_award_year.sql`,
 bootstrap anon access is no longer the intended steady state. Operational
 access comes only from authenticated active advisors, `advisor.auth_user_id`
 binding is admin-only, and history is append-only (base records and amendments
@@ -224,8 +225,8 @@ are SELECT/INSERT-only).
 > ⛔ `supabase link` + `supabase db push` must **not** be run against the
 > hosted **production** project. The production migration ledger records only
 > `20260924065221_advisor_self_activation_lockdown`, while this repository
-> tracks thirty-seven migrations ending with
-> `20261023000001_audit_event_raw_payload_boundary.sql`, and the deployed schema
+> tracks thirty-eight migrations ending with
+> `20261024000001_dated_attendance_award_year.sql`, and the deployed schema
 > differs materially. Generic `db push`, historical replay, and
 > migration-history repair against production are prohibited until a separately
 > approved reconciliation exists. See the
@@ -247,8 +248,8 @@ provisioning a fresh hosted project.
 
 ## Step 3: Generate TypeScript Types
 
-> The repository migration chain now contains **thirty-seven** migrations and ends
-> with `20261023000001_audit_event_raw_payload_boundary.sql`.
+> The repository migration chain now contains **thirty-eight** migrations and ends
+> with `20261024000001_dated_attendance_award_year.sql`.
 
 After applying the schema, generate TypeScript types for type-safe database access:
 
@@ -333,6 +334,14 @@ historical records are append-only amendments.
 | Immutable base | `advising_meeting`, `fellowship_thursday`, `scholarship_history` | `SELECT`/`INSERT` only for normal roles; rows are never updated or deleted (audited `created`). |
 | Append-only amendment | `advising_meeting_amendment`, `fellowship_thursday_amendment`, `scholarship_history_amendment` | Appended corrections (`correction_added`; a Scholarship `Void` is `voided`); effective-value views apply corrections without rewriting base facts. |
 
+New operational records in the **immutable base** tables must identify their
+history: a Fellowship Thursday attendance record requires its weekly calendar
+`event_date`, and a Scholarship History award requires its four-digit `award_year`
+(1000–9999). The requirement is enforced at the database boundary by
+authenticated-insert guards; genuinely unknown legacy rows keep a truthful `NULL`,
+and no date or year is ever inferred or backfilled (trusted no-JWT
+import/seed inserts may retain `NULL`).
+
 The product `Admin` role is **not** a PostgreSQL superuser; the immutable Auth
 `app_metadata.ocf_admin = true` claim plus an active, pre-bound advisor is the
 only effective-admin authority. A `service_role`/DBA session is a separate
@@ -376,7 +385,7 @@ If you're getting permission errors:
 5. For a new advisor, complete the admin pre-binding/invite path (see the
    identity-binding subsection above) before asking them to sign in
 6. Confirm the complete chain through
-   `20261023000001_audit_event_raw_payload_boundary.sql` was applied before
+   `20261024000001_dated_attendance_award_year.sql` was applied before
    any advisor was provisioned
 7. A fresh project has **no effective Admin** until the first effective Admin
    is bootstrapped out of band via the service role / Supabase Admin API (see
@@ -421,11 +430,12 @@ If you're getting permission errors:
 33. ✅ Apply complete immutable-history context migration (`20261020000001_complete_immutable_history_context.sql`)
 34. ✅ Apply audit presentation projection migration (`20261021000001_audit_presentation_projection.sql`) — bounded safe `audit_activity` scalars
 35. ✅ Apply browser-safe activity projection migration (`20261022000001_audit_activity_browser_safe.sql`) — raw payload columns dropped from `audit_activity`
-36. ✅ Apply raw audit payload boundary migration (`20261023000001_audit_event_raw_payload_boundary.sql`) — final migration; raw audit JSON unreadable to client roles
-37. ✅ Provision each advisor via the admin pre-binding path (invite/create the auth account and bind its UUID to the unbound `advisor` row **before first sign-in**; one-time bind, no email self-link) — done only after the full migration chain (items 2–36) is applied
-38. ✅ Verify the first active advisor can sign in (pre-bound `auth_user_id` resolves the advisor row; `is_active = true`)
-39. ✅ Generate TypeScript types
-40. ✅ Verify connection
+36. ✅ Apply raw audit payload boundary migration (`20261023000001_audit_event_raw_payload_boundary.sql`) — raw audit JSON unreadable to client roles
+37. ✅ Apply dated attendance + award-year migration (`20261024000001_dated_attendance_award_year.sql`) — **final migration**; nullable `fellowship_thursday.event_date`/`scholarship_history.award_year` (legacy NULL preserved), authenticated-insert guards require the identifier for new operational records
+38. ✅ Provision each advisor via the admin pre-binding path (invite/create the auth account and bind its UUID to the unbound `advisor` row **before first sign-in**; one-time bind, no email self-link) — done only after the full migration chain (items 2–37) is applied
+39. ✅ Verify the first active advisor can sign in (pre-bound `auth_user_id` resolves the advisor row; `is_active = true`)
+40. ✅ Generate TypeScript types
+41. ✅ Verify connection
 
 ## Auth and Account Notes
 

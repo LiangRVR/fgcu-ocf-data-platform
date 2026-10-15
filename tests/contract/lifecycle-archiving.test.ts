@@ -1374,6 +1374,7 @@ describe("archived students/fellowships reject new and re-linked operational chi
       student_id: archivedStudentId,
       attended: true,
       source_info: "OCF",
+      event_date: "2026-09-01",
     });
     expect(data ?? [], "archived-student attendance INSERT must return no row").toHaveLength(0);
     expect(error, "archived-student attendance INSERT must be denied").not.toBeNull();
@@ -1390,8 +1391,8 @@ describe("archived students/fellowships reject new and re-linked operational chi
       await seedArchivedParents();
 
     const cases: Array<{ label: string; payload: Record<string, unknown> }> = [
-      { label: "archived student", payload: { student_id: archivedStudentId, fellowship_id: activeFellowshipId } },
-      { label: "archived fellowship", payload: { student_id: activeStudentId, fellowship_id: archivedFellowshipId } },
+      { label: "archived student", payload: { student_id: archivedStudentId, fellowship_id: activeFellowshipId, award_year: 2026 } },
+      { label: "archived fellowship", payload: { student_id: activeStudentId, fellowship_id: archivedFellowshipId, award_year: 2026 } },
     ];
     for (const c of cases) {
       const { data, error } = await staffActive.client.from("scholarship_history").insert(c.payload);
@@ -1451,7 +1452,7 @@ describe("archived students/fellowships reject new and re-linked operational chi
     // Attendance: active reference first, then a denied re-link to the archived student.
     const { data: attendance, error: attendanceInsertError } = await staffActive.client
       .from("fellowship_thursday")
-      .insert({ student_id: activeStudentId, attended: true, source_info: "OCF" })
+      .insert({ student_id: activeStudentId, attended: true, source_info: "OCF", event_date: "2026-09-01" })
       .select("attendance_id")
       .single();
     expect(attendanceInsertError, "active-reference attendance INSERT").toBeNull();
@@ -1472,7 +1473,7 @@ describe("archived students/fellowships reject new and re-linked operational chi
     // fellowship to the archived fellowship.
     const { data: history, error: historyInsertError } = await staffActive.client
       .from("scholarship_history")
-      .insert({ student_id: activeStudentId, fellowship_id: activeFellowshipId })
+      .insert({ student_id: activeStudentId, fellowship_id: activeFellowshipId, award_year: 2026 })
       .select("history_id")
       .single();
     expect(historyInsertError, "active-reference history INSERT").toBeNull();
@@ -1589,7 +1590,7 @@ describe("archived students/fellowships reject new and re-linked operational chi
 
     const { data: attendance, error: attendanceError } = await staffActive.client
       .from("fellowship_thursday")
-      .insert({ student_id: activeStudentId, attended: true, source_info: "OCF" })
+      .insert({ student_id: activeStudentId, attended: true, source_info: "OCF", event_date: "2026-09-01" })
       .select("attendance_id")
       .single();
     expect(attendanceError, "active-reference attendance INSERT").toBeNull();
@@ -1597,7 +1598,7 @@ describe("archived students/fellowships reject new and re-linked operational chi
 
     const { data: history, error: historyError } = await staffActive.client
       .from("scholarship_history")
-      .insert({ student_id: activeStudentId, fellowship_id: activeFellowshipId })
+      .insert({ student_id: activeStudentId, fellowship_id: activeFellowshipId, award_year: 2026 })
       .select("history_id")
       .single();
     expect(historyError, "active-reference history INSERT").toBeNull();

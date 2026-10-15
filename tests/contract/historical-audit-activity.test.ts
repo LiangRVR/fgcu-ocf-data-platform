@@ -205,9 +205,9 @@ async function readAudit(entityType: string, entityId: number): Promise<AuditRow
 const EXPECTED_PAYLOAD_KEYS: Record<string, string[]> = {
   advising_meeting: ["advisor_id", "application_id", "meeting_date", "meeting_id", "meeting_mode", "no_show", "student_id"].sort(),
   advising_meeting_amendment: ["amendment_id", "meeting_id"].sort(),
-  fellowship_thursday: ["attendance_id", "attended", "source_info", "student_id"].sort(),
+  fellowship_thursday: ["attendance_id", "attended", "event_date", "source_info", "student_id"].sort(),
   fellowship_thursday_amendment: ["amendment_id", "attendance_id", "corrected_attended", "corrected_source_info", "corrects_source_info"].sort(),
-  scholarship_history: ["fellowship_id", "history_id", "student_id"].sort(),
+  scholarship_history: ["award_year", "fellowship_id", "history_id", "student_id"].sort(),
   scholarship_history_amendment: ["amendment_id", "amendment_type", "corrected_fellowship_id", "history_id"].sort(),
 };
 
@@ -392,7 +392,7 @@ describe("historical base-record audit events (R5)", () => {
   it("emits exactly one attributed fellowship_thursday/created event", async () => {
     const { data, error } = await staff.client
       .from("fellowship_thursday")
-      .insert({ student_id: student.studentId, attended: true, source_info: "OCF" })
+      .insert({ student_id: student.studentId, attended: true, source_info: "OCF", event_date: "2026-09-03" })
       .select("attendance_id")
       .single();
     expect(error, "authenticated fellowship_thursday INSERT").toBeNull();
@@ -420,7 +420,7 @@ describe("historical base-record audit events (R5)", () => {
   it("emits exactly one attributed scholarship_history/created event with subject fellowship context", async () => {
     const { data, error } = await staff.client
       .from("scholarship_history")
-      .insert({ student_id: student.studentId, fellowship_id: fellowship.fellowshipId })
+      .insert({ student_id: student.studentId, fellowship_id: fellowship.fellowshipId, award_year: 2026 })
       .select("history_id")
       .single();
     expect(error, "authenticated scholarship_history INSERT").toBeNull();
@@ -519,7 +519,7 @@ describe("historical amendment audit events (R5)", () => {
   it("emits exactly one fellowship_thursday_amendment/correction_added event with the structural correction fields", async () => {
     const { data: attendance } = await staff.client
       .from("fellowship_thursday")
-      .insert({ student_id: student.studentId, attended: true, source_info: "OCF" })
+      .insert({ student_id: student.studentId, attended: true, source_info: "OCF", event_date: "2026-09-03" })
       .select("attendance_id")
       .single();
     const attendanceId = attendance!.attendance_id as number;
@@ -563,7 +563,7 @@ describe("historical amendment audit events (R5)", () => {
   it("classifies a Scholarship History Correction as correction_added and a Void as voided, each with exactly one event", async () => {
     const { data: history } = await staff.client
       .from("scholarship_history")
-      .insert({ student_id: student.studentId, fellowship_id: fellowship.fellowshipId })
+      .insert({ student_id: student.studentId, fellowship_id: fellowship.fellowshipId, award_year: 2026 })
       .select("history_id")
       .single();
     const historyId = history!.history_id as number;
@@ -951,7 +951,7 @@ describe("audit_activity view: RLS applies through the view (R12)", () => {
     for (let i = 0; i < 2; i += 1) {
       const { data, error } = await staff.client
         .from("fellowship_thursday")
-        .insert({ student_id: student.studentId, attended: i % 2 === 0, source_info: "OCF" })
+        .insert({ student_id: student.studentId, attended: i % 2 === 0, source_info: "OCF", event_date: "2026-09-24" })
         .select("attendance_id")
         .single();
       expect(error, "paging seed insert").toBeNull();

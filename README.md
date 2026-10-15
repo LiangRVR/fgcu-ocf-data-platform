@@ -80,7 +80,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 - **[Database Schema](supabase/SCHEMA.md)** — one-page reference: tables, keys, business rules, and the ordered migration table
 - **[Schema Design Decisions](docs/schema-decisions.md)** — rationale for key data-model choices
 - **[Schema Verification](docs/schema-verification.md)** — database setup checklist
-- **[FGCU/OCF IT Handoff](docs/it-handoff.md)** — owner boundaries, the trusted legacy-baseline import pattern, and the two open OCF product questions
+- **[FGCU/OCF IT Handoff](docs/it-handoff.md)** — owner boundaries, the trusted legacy-baseline import pattern, and the resolved OCF identifier requirements
 - **[Testing & Verification](aidlc-docs/project/testing.md)** — command semantics and prerequisites for the test suites
 
 ---
@@ -111,7 +111,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 ├── lib/                    # Server-side auth/session helpers, config, Supabase clients
 ├── types/                  # TypeScript types (auto-generated database + app-level)
 ├── supabase/
-│   ├── migrations/         # Forward-only migration chain (37 migrations, through 20261023000001)
+│   ├── migrations/         # Forward-only migration chain (38 migrations, through 20261024000001)
 │   ├── SCHEMA.md           # One-page schema reference
 │   └── README.md           # Supabase setup guide
 ├── docs/                   # Project documentation
@@ -145,6 +145,15 @@ Management page) and the reports surface, see the
   and `scholarship_history_amendment` rows, never as edits or deletes.
   Scholarship `Void` amendments keep the original award in the audit trail
   while excluding it from operational counts.
+- **Required identifiers on new records** — every new Fellowship Thursday
+  attendance record must carry its weekly event calendar date (`event_date`) and
+  every new Scholarship History award must carry its four-digit award year
+  (`award_year`, 1000–9999). The requirement is enforced at the authoritative
+  database write boundary (an authenticated insert missing the identifier is
+  rejected), not only in the UI. The columns are additive and nullable:
+  genuinely unknown legacy rows keep a truthful `NULL`, and no date or year is
+  ever inferred or backfilled. Both are immutable base facts — corrections
+  cannot add or change them.
 - **Activity** — `/activity` is an authenticated, server-paginated read of the
   `public.audit_activity` view over the immutable `audit_event` trail, with
   filters for record type, change, actor, student, fellowship, and date range.

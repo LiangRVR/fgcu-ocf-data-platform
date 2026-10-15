@@ -295,31 +295,47 @@ reports.
 
 ---
 
-## 9. Fellowship Thursday event date & Scholarship award cycle — deferred (OCF decision required)
+## 9. Fellowship Thursday event date & Scholarship History award year — resolved (required for new records)
 
-**Current state:** `fellowship_thursday` records attendance
-(`student_id`, `attended`, `source_info`) against the weekly Thursday meeting
-but has **no event/meeting date column**. `scholarship_history` records awards
-(`student_id`, `fellowship_id`) but has **no award cycle/year column**.
+**Current state (change `dated-attendance-award-year`, migration
+`20261024000001_dated_attendance_award_year.sql`):** OCF confirmed both
+identifiers, so the schema now carries two additive, nullable immutable base
+facts:
 
-**Why deferred (recorded in the 2026-10-06 historical-integrity
-remediation):** OCF must decide whether weekly Fellowship Thursday needs an
-event date and whether historical awards need an award cycle **before either
-schema is changed**. These values cannot be inferred safely from the existing
-data, and any backfill would fabricate history.
+- `fellowship_thursday.event_date date` — the calendar date of the weekly
+  Thursday event. A `date` (date only), never a timestamp, time zone, weekday,
+  or recurrence model.
+- `scholarship_history.award_year integer` — the four-digit award year, bounded
+  by a null-tolerant CHECK to `1000–9999`.
 
-**Decision required from OCF (product owner):**
+**New-record requirement, enforced at the database boundary:** a normal
+operational insert carries a request identity (`auth.uid()`), and an insert that
+omits the identifier is rejected fail-closed (`42501`) by authenticated-insert
+guard triggers. Client/UI validation is a usability layer only; it is never the
+authority.
 
-1. Does Fellowship Thursday need an event/meeting date on each attendance
-   record? If so, at what granularity (e.g. the date of the weekly meeting)?
-2. Does Scholarship History need an award cycle/year? If so, how is an unknown
-   legacy cycle represented?
+**Legacy-NULL / no-backfill policy:** both columns are added with no `DEFAULT`,
+so every pre-existing row keeps a truthful `NULL`. Unknown legacy dates/years are
+never inferred, guessed, or backfilled, and historic rows are never rewritten. A
+trusted, no-JWT `service_role`/DBA import/seed insert may retain `NULL` under the
+existing technical trust boundary; no browser/product route uses it.
 
-Until OCF decides, neither field is added, no historical value is inferred or
-backfilled, and displays render unknown context as "date unknown" / "year
-unknown" rather than a guess. Once OCF decides, the field would be added in a
-future forward-only migration together with a matching amendment model — never
-by mutating existing rows.
+**Immutable base facts:** both identifiers are properties of the immutable base
+row. Corrections remain append-only amendments and cannot add or change either
+value (the amendment tables do not reference the new columns). A future
+correction model for an erroneously entered identifier would be a separate change
+with predecessor/audit semantics.
+
+**Read surfaces:** the identifiers are appended to the effective-value views
+(`effective_fellowship_thursday.event_date`,
+`effective_scholarship_history.award_year`) and the read-only list views
+(`fellowship_thursday_list`, `scholarship_history_list`), preserving
+`security_invoker`, one-row-per-base-row behavior, and correction/Void logic. A
+successful new base insert records the structural identifier in its immutable
+`created` audit event. Date-only rendering treats the stored `date` as a calendar
+value — never `new Date("YYYY-MM-DD")`, which can shift the calendar day by the
+viewer's time zone. Until a value is known, displays render an explicit
+"date unknown" / "year unknown" rather than a guess.
 
 ---
 
@@ -763,11 +779,11 @@ superuser. Product roles cannot fabricate, update, delete, or truncate audit or
 audit-subject history. FGCU infrastructure/database administrators remain
 technically privileged outside the application guarantee.
 
-**OCF PRODUCT OWNER DECISION REQUIRED:** Do not add a Fellowship Thursday
-event-date field until OCF confirms whether each attendance must identify a
-specific weekly session. Do not add a Scholarship History award year/cycle until
-OCF confirms whether historical awards require one. Existing data must not be
-inferred for either decision.
+**Resolved OCF identifiers (change `dated-attendance-award-year`):** the
+Fellowship Thursday `event_date` and Scholarship History `award_year` fields are
+now implemented as required-for-new-records immutable base facts with preserved
+legacy NULLs — see §9. Historic data is still never inferred for either
+identifier.
 
 ---
 
@@ -816,9 +832,11 @@ any prior migration.
   `audit_event_subject` snapshots and NULL when the immutable event proves no
   label. `audit_event_subject` stays active-advisor `SELECT`-only.
 
-**OCF PRODUCT OWNER DECISION REQUIRED (unchanged):** a Fellowship Thursday
-event-date field and a Scholarship History award year/cycle remain absent — no
-historical value is inferred or backfilled for either.
+**OCF identifiers resolved (change `dated-attendance-award-year`):** the
+Fellowship Thursday `event_date` and Scholarship History `award_year` fields are
+implemented in `20261024000001_dated_attendance_award_year.sql` as
+required-for-new-records immutable base facts with preserved legacy NULLs (see
+§9) — no historical value is inferred or backfilled for either.
 
 ---
 

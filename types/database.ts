@@ -436,18 +436,21 @@ export type Database = {
         Row: {
           attendance_id: number
           attended: boolean
+          event_date: string | null
           source_info: string | null
           student_id: number
         }
         Insert: {
           attendance_id?: number
           attended: boolean
+          event_date?: string | null
           source_info?: string | null
           student_id: number
         }
         Update: {
           attendance_id?: number
           attended?: boolean
+          event_date?: string | null
           source_info?: string | null
           student_id?: number
         }
@@ -535,16 +538,19 @@ export type Database = {
       }
       scholarship_history: {
         Row: {
+          award_year: number | null
           fellowship_id: number
           history_id: number
           student_id: number
         }
         Insert: {
+          award_year?: number | null
           fellowship_id: number
           history_id?: number
           student_id: number
         }
         Update: {
+          award_year?: number | null
           fellowship_id?: number
           history_id?: number
           student_id?: number
@@ -974,6 +980,7 @@ export type Database = {
           attended: boolean | null
           base_attended: boolean | null
           base_source_info: string | null
+          event_date: string | null
           has_amendments: boolean | null
           source_info: string | null
           student_id: number | null
@@ -997,6 +1004,7 @@ export type Database = {
       }
       effective_scholarship_history: {
         Row: {
+          award_year: number | null
           base_fellowship_id: number | null
           fellowship_id: number | null
           has_correction: boolean | null
@@ -1081,6 +1089,7 @@ export type Database = {
           attended: boolean | null
           base_attended: boolean | null
           base_source_info: string | null
+          event_date: string | null
           has_amendments: boolean | null
           source_info: string | null
           student_id: number | null
@@ -1105,6 +1114,7 @@ export type Database = {
       }
       scholarship_history_list: {
         Row: {
+          award_year: number | null
           base_fellowship_id: number | null
           fellowship_id: number | null
           fellowship_name: string | null

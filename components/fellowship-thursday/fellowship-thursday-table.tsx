@@ -58,6 +58,7 @@ interface FellowshipThursdayTableProps {
 
 const EMPTY_FORM = {
   student_id: "",
+  event_date: "",
   attended: true,
   source_info: "" as SourceInfo | "",
 };
@@ -204,6 +205,7 @@ export function FellowshipThursdayTable({
   const validateForm = (f: typeof form): Record<string, string> => {
     const errors: Record<string, string> = {};
     if (!f.student_id) errors.student_id = "Student is required.";
+    if (!f.event_date) errors.event_date = "Event date is required.";
     return errors;
   };
 
@@ -218,6 +220,7 @@ export function FellowshipThursdayTable({
         .from("fellowship_thursday")
         .insert({
           student_id: Number(form.student_id),
+          event_date: form.event_date,
           attended: form.attended,
           source_info: form.source_info || null,
         });
@@ -522,6 +525,7 @@ export function FellowshipThursdayTable({
 
 function RecordAudit({ record, amendments, onCorrect, sourceLabel }: { record: FellowshipThursday; amendments: Amendment[]; onCorrect: () => void; sourceLabel: Record<string, string> }) {
   return <div className="space-y-2 text-xs">
+    <div className="font-medium text-slate-700">Event date: {record.event_date ? formatDateOnly(record.event_date) : "Unknown (legacy record)"}</div>
     <div className="text-slate-500">Original: {(record.base_attended ?? record.attended) ? "Attended" : "Not attended"} · {(record.base_source_info ?? record.source_info) ? sourceLabel[(record.base_source_info ?? record.source_info)!] ?? (record.base_source_info ?? record.source_info) : "No source"}</div>
     <div className="font-medium text-slate-700">Current: {record.attended ? "Attended" : "Not attended"} · {record.source_info ? sourceLabel[record.source_info] ?? record.source_info : "No source"}</div>
     {amendments.map((a) => <div key={a.amendment_id} className="border-l-2 border-[#006747]/30 pl-2 text-slate-500">
@@ -533,6 +537,12 @@ function RecordAudit({ record, amendments, onCorrect, sourceLabel }: { record: F
     </div>)}
     <Button variant="outline" size="sm" className="h-8" onClick={onCorrect}>Add correction</Button>
   </div>;
+}
+
+/** Format a PostgreSQL DATE without parsing it as a UTC timestamp. */
+function formatDateOnly(value: string): string {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Intl.DateTimeFormat(undefined, { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" }).format(new Date(Date.UTC(year, month - 1, day)));
 }
 
 interface ThursdayFormProps {
@@ -549,6 +559,11 @@ interface ThursdayFormProps {
 function ThursdayForm({ form, setForm, formErrors, students, studentSearch, setStudentSearch, loading, onSelectStudent }: ThursdayFormProps) {
   return (
     <div className="grid gap-4 py-2">
+      <div className="grid gap-1.5">
+        <Label htmlFor="ft_event_date">Event date <span className="text-red-500">*</span></Label>
+        <Input id="ft_event_date" type="date" required aria-required="true" value={form.event_date} onChange={(event) => setForm((prev) => ({ ...prev, event_date: event.target.value }))} aria-invalid={Boolean(formErrors.event_date)} aria-describedby={formErrors.event_date ? "ft_event_date_error" : undefined} />
+        {formErrors.event_date && <p id="ft_event_date_error" role="alert" className="text-xs text-red-600">{formErrors.event_date}</p>}
+      </div>
       {/* Student */}
       <div className="grid gap-1.5">
         <Label htmlFor="ft_student_id">

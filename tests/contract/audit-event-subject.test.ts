@@ -470,7 +470,7 @@ describe("scholarship correction chain and Void (R5)", () => {
 
     const { data: history, error: historyError } = await staff.client
       .from("scholarship_history")
-      .insert({ student_id: studentId, fellowship_id: goldwater })
+      .insert({ student_id: studentId, fellowship_id: goldwater, award_year: 2026 })
       .select("history_id")
       .single();
     expect(historyError, "scholarship_history base insert").toBeNull();

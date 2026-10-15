@@ -6,7 +6,7 @@ All table names are **singular**. Primary keys are sequence-backed integers (nev
 
 > For a compact one-page overview see [`supabase/SCHEMA.md`](../supabase/SCHEMA.md).
 > For open design decisions (email uniqueness, stage denormalization, etc.) see [`docs/schema-decisions.md`](./schema-decisions.md).
-> The repository migration chain is **forward-only** and currently contains **thirty-seven migrations** ending with `20261023000001_audit_event_raw_payload_boundary.sql` (see `supabase/SCHEMA.md` for the ordered migration table).
+> The repository migration chain is **forward-only** and currently contains **thirty-eight migrations** ending with `20261024000001_dated_attendance_award_year.sql` (see `supabase/SCHEMA.md` for the ordered migration table).
 
 ---
 
@@ -479,6 +479,7 @@ Tracks student attendance at the weekly Thursday fellowship meeting.
 | `student_id` | integer | NO | | FK → `student.student_id` |
 | `attended` | boolean | NO | | |
 | `source_info` | varchar | YES | | CHECK (nullable): `OCF`, `HC`, `MM` |
+| `event_date` | date | YES | | Calendar date of the weekly Thursday event (date only). **Required for new authenticated operational inserts** (database guard, `42501` when omitted); NULL is preserved legacy/unknown truth and is never inferred or backfilled. |
 
 **Append-only base records (historical-integrity remediation):** base
 attendance rows are immutable for normal authenticated sessions. The database
@@ -492,10 +493,18 @@ applicable amendment per corrected field, ordered by `(created_at, amendment_id)
 descending — so amendment rows are never counted as independent attendance
 records.
 
-The table has **no event/meeting date column**: whether Fellowship Thursday
-needs an event date is an OCF decision recorded in
-`schema-decisions.md` §9; the schema is **not** changed until OCF decides (no
-date is ever inferred or backfilled).
+**Required event date on new records (change `dated-attendance-award-year`):**
+`event_date` is the calendar date of the weekly Thursday meeting (a `date`, not a
+timestamp or time zone). Every **new authenticated operational** attendance
+record must supply it: an authenticated insert (a request carries `auth.uid()`)
+that omits `event_date` is rejected at the database boundary (`42501`) by the
+`guard_fellowship_thursday_event_date_required` trigger. The column is nullable
+and additive, so genuinely unknown **legacy** rows keep a truthful `NULL`; no date
+is ever inferred or backfilled. A trusted, no-JWT `service_role`/DBA
+import/seed insert may retain `NULL`. `event_date` is an immutable base fact —
+attendance corrections are amendments and cannot add or change it. It is exposed
+unchanged by `effective_fellowship_thursday` and `fellowship_thursday_list`, and
+is recorded in the insert's immutable `created` audit event.
 
 The archive-parent boundary (migration `20260930000007`) still denies `INSERT`
 of a row referencing an archived student.
@@ -540,6 +549,7 @@ Records past scholarships/fellowships that a student has already received.
 | `history_id` | integer | NO | nextval | **Primary key** |
 | `student_id` | integer | NO | | FK → `student.student_id` |
 | `fellowship_id` | integer | NO | | FK → `fellowship.fellowship_id` |
+| `award_year` | integer | YES | | Four-digit award year. CHECK (nullable): `1000–9999` when present. **Required for new authenticated operational inserts** (database guard, `42501` when omitted); NULL is preserved legacy/unknown truth and is never inferred or backfilled. |
 
 **Append-only base records (historical-integrity remediation):** base award
 rows are immutable for normal authenticated sessions. The database replaces the
@@ -548,10 +558,18 @@ operational UPDATE/DELETE access with explicit active-advisor
 `scholarship_history_amendment` row referencing the original `history_id`,
 never as an edit or delete of the base row.
 
-The table has **no award cycle/year column**: whether historical awards need
-an award cycle is an OCF decision recorded in `schema-decisions.md` §9; the
-schema is **not** changed until OCF decides (no cycle is ever inferred or
-backfilled).
+**Required award year on new records (change `dated-attendance-award-year`):**
+`award_year` is the four-digit award year (`1000–9999`), constrained by a
+null-tolerant CHECK. Every **new authenticated operational** Scholarship History
+award must supply it: an authenticated insert (a request carries `auth.uid()`)
+that omits `award_year` is rejected at the database boundary (`42501`) by the
+`guard_scholarship_history_award_year_required` trigger. The column is nullable
+and additive, so genuinely unknown **legacy** awards keep a truthful `NULL`; no
+year is ever inferred or backfilled. A trusted, no-JWT `service_role`/DBA
+import/seed insert may retain `NULL`. `award_year` is an immutable base fact —
+corrections/voids are amendments and cannot add or change it. It is exposed
+unchanged by `effective_scholarship_history` and `scholarship_history_list`, and
+is recorded in the insert's immutable `created` audit event.
 
 The archive-parent boundary (migration `20260930000007`) still denies `INSERT`
 of a row referencing an archived student or fellowship.

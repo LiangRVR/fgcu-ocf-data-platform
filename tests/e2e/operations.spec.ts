@@ -899,6 +899,8 @@ test.describe("operational surfaces", () => {
     await page.goto("/fellowship-thursday");
     await page.getByRole("button", { name: "Add Record" }).click();
 
+    await page.locator("#ft_event_date").fill("2026-10-15");
+
     // Fellowship Thursday resolves students with the same lazy bounded
     // typeahead: type at least two characters, then choose the bounded option.
     await page.locator("#ft_student_id").fill(STUDENT_NAME);
@@ -1020,6 +1022,7 @@ test.describe("operational surfaces", () => {
     await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
     await page.locator("#sh_fellowship_id").fill(FELLOWSHIP_NAME);
     await page.getByRole("option", { name: FELLOWSHIP_NAME, exact: true }).click();
+    await page.locator("#sh_award_year").fill("2026");
 
     await page.getByRole("dialog").getByRole("button", { name: "Add Record" }).click();
 
@@ -1052,7 +1055,7 @@ test.describe("operational surfaces", () => {
     const correctedFellowshipId = await insertFellowship(correctedFellowshipName);
     const { data: award, error: awardError } = await service
       .from("scholarship_history")
-      .insert({ student_id: studentId, fellowship_id: fellowshipId })
+      .insert({ student_id: studentId, fellowship_id: fellowshipId, award_year: 2026 })
       .select("history_id")
       .single();
     if (awardError) throw new Error(`seed SH award: ${awardError.message}`);
@@ -1167,7 +1170,7 @@ test.describe("operational surfaces", () => {
 
     const { data: attendance, error: attendanceError } = await service
       .from("fellowship_thursday")
-      .insert({ student_id: studentId, attended: true, source_info: "OCF" })
+      .insert({ student_id: studentId, attended: true, source_info: "OCF", event_date: "2026-10-15" })
       .select("attendance_id")
       .single();
     if (attendanceError) throw new Error(`seed FT chain attendance: ${attendanceError.message}`);
@@ -1317,7 +1320,7 @@ test.describe("operational surfaces", () => {
     const correctedFellowshipId = await insertFellowship(correctedFellowshipName);
     const { data: award, error: awardError } = await service
       .from("scholarship_history")
-      .insert({ student_id: studentId, fellowship_id: priorFellowshipId })
+      .insert({ student_id: studentId, fellowship_id: priorFellowshipId, award_year: 2026 })
       .select("history_id")
       .single();
     if (awardError) throw new Error(`seed SH timeline award: ${awardError.message}`);

@@ -40,6 +40,7 @@
 - [x] Audit presentation projection migration (`supabase/migrations/20261021000001_audit_presentation_projection.sql`) — appends bounded safe scalars to the `security_invoker` `audit_activity` view: paired endpoint ids (`previous`/`current` student and fellowship, `Entity #id` fallbacks); per-field Fellowship Thursday predecessor/current/amended values (immutable base + strictly-earlier amendments, explicit correction-to-NULL representable); the exact Scholarship `void_reason` bound to the event's own amendment id; and immutable parent advising-meeting `meeting_date`/`application_id`/`advisor_id` (neutral `Advisor #id`, no live joins); still one row per `audit_event`, no write path changed
 - [x] Browser-safe activity projection migration (`supabase/migrations/20261022000001_audit_activity_browser_safe.sql`) — drops the three raw payload columns (`old_values`/`new_values`/`changes`) from `audit_activity` (drop/recreate, same leading columns, `security_invoker` and one-row-per-event preserved) so an authenticated browser client can no longer select raw audit JSON through the projection; the raw diff stays server-side
 - [x] Raw audit payload boundary migration (`supabase/migrations/20261023000001_audit_event_raw_payload_boundary.sql`) — revokes `authenticated` table-level `SELECT` on `public.audit_event` and grants column-level `SELECT` on exactly the non-raw columns (the three raw payload columns are explicitly revoked as a fail-closed guard), so `old_values`/`new_values`/`changes` are unreadable to every client role and are fetched only by server-only service-role code; `audit_event` RLS, `audit_event_subject` ACL/RLS, every write path, and `service_role` unchanged
+- [x] Dated attendance + award-year migration (`supabase/migrations/20261024000001_dated_attendance_award_year.sql`) — additive nullable `fellowship_thursday.event_date date` and `scholarship_history.award_year integer` (null-tolerant `1000–9999` CHECK) with every pre-existing row left NULL; authenticated-insert guards requiring each new operational record to supply its identifier (`42501` when omitted, trusted no-JWT inserts excepted); the identifiers appended to the effective/list views; and the base insert's immutable `created` audit event extended with the structural identifier — no legacy value inferred or backfilled
 - [x] Schema documentation (`docs/schema-reference.md`, `supabase/SCHEMA.md`)
 - [x] Auto-generated TypeScript types (`types/database.ts`)
 - [x] Application-level types (`types/index.ts`)
@@ -67,8 +68,8 @@
    - ⚠️ Do **not** run these migrations against the hosted production database.
      Production is the physical-schema authority; its migration ledger records
      only `20260924065221_advisor_self_activation_lockdown` while the repository
-     tracks **thirty-seven** forward-only migrations ending with
-     `20261023000001_audit_event_raw_payload_boundary.sql`, and the deployed schema
+     tracks **thirty-eight** forward-only migrations ending with
+     `20261024000001_dated_attendance_award_year.sql`, and the deployed schema
      differs materially. See
      [`supabase/SCHEMA.md`](../supabase/SCHEMA.md#migration-deployment-freeze)
      and the approval-gated
@@ -84,8 +85,8 @@
 
 ## Schema Mapping
 
-The **thirty-seven-migration** repository chain ends with
-`20261023000001_audit_event_raw_payload_boundary.sql`. The full chain enforces, at
+The **thirty-eight-migration** repository chain ends with
+`20261024000001_dated_attendance_award_year.sql`. The full chain enforces, at
 the database boundary: append-only advising meetings and amendments; archive /
 deactivate lifecycle for students, fellowships, and advisors; a DELETE lockdown
 on the core historical entities; an explicit `Admin`/`Advisor` role model
@@ -109,7 +110,12 @@ Fellowship Thursday predecessor values, the exact Scholarship Void reason, and
 immutable advising-meeting scalars, no raw payload) and the raw audit JSON is
 database-enforced as unreadable to every client role — `authenticated` holds
 only column-level `SELECT` on the non-raw `audit_event` columns, and the raw
-diff is fetched solely by server-only service-role code.
+diff is fetched solely by server-only service-role code. Since
+`20261024000001` a new Fellowship Thursday attendance record must carry its
+weekly calendar `event_date` and a new Scholarship History award must carry its
+four-digit `award_year`, enforced at the database boundary by authenticated-insert
+guards, with genuinely unknown legacy values preserved as `NULL` and never
+inferred or backfilled.
 
 The durable invariant is: **no normal application access may change business
 history without an atomic, immutable audit record.** Entities fall into three
@@ -176,14 +182,14 @@ Our database schema aligns with the application needs:
 
 - **Table**: `fellowship_thursday`
 - **Primary Key**: `attendance_id` (integer)
-- **Key Fields**: student_id, attended, source_info
+- **Key Fields**: student_id, attended, source_info, event_date (weekly calendar date; required for new authenticated inserts, NULL for unknown legacy rows)
 - **Notes**: immutable base record (historical-integrity remediation) — authenticated UPDATE/DELETE denied, SELECT/INSERT only; new rows cannot reference archived students; corrections are appended as `fellowship_thursday_amendment` rows
 
 ### Scholarship History
 
 - **Table**: `scholarship_history`
 - **Primary Key**: `history_id` (integer)
-- **Key Fields**: student_id, fellowship_id
+- **Key Fields**: student_id, fellowship_id, award_year (four-digit year; required for new authenticated inserts, NULL for unknown legacy rows)
 - **Notes**: immutable base record (historical-integrity remediation) — authenticated UPDATE/DELETE denied, SELECT/INSERT only; new rows cannot reference archived students/fellowships; corrections/voids are appended as `scholarship_history_amendment` rows (a `Void` is terminal for operational counts)
 
 ### Server-only Role-Change Lock
@@ -249,6 +255,7 @@ Before using the application with real data:
 - [ ] Audit presentation projection migration applied (`20261021000001_audit_presentation_projection.sql`) — bounded safe scalars appended to `audit_activity` (endpoint ids, Fellowship Thursday predecessor/current values, exact Scholarship Void reason, immutable advising-meeting scalars), still one row per event and `security_invoker`
 - [ ] Browser-safe activity projection migration applied (`20261022000001_audit_activity_browser_safe.sql`) — the raw payload columns are absent from `audit_activity`
 - [ ] Raw audit payload boundary migration applied (`20261023000001_audit_event_raw_payload_boundary.sql`) — `authenticated` holds only column-level `SELECT` on `audit_event`; `old_values`/`new_values`/`changes` are unreadable to every client role
+- [ ] Dated attendance + award-year migration applied (`20261024000001_dated_attendance_award_year.sql`) — nullable `fellowship_thursday.event_date`/`scholarship_history.award_year` (null-tolerant `1000–9999` CHECK) added with every pre-existing row left NULL; authenticated-insert guards require the identifier for new operational records; the identifiers are appended to the effective/list views and the base `created` audit event
 - [ ] Advisors provisioned via the admin pre-binding path: each auth account's exact UUID bound to its `advisor.auth_user_id` while unbound, before first sign-in (no email self-link, no sign-in auto-linking)
 - [ ] First effective Admin bootstrapped out of band via the service role / Supabase Admin API (`app_metadata.ocf_admin = true` + a pre-bound active advisor row); no public bootstrap endpoint exists and service credentials are never exposed
 - [ ] After the first Admin exists, provisioning a new advisor through the protected `/api/advisors` (effective-Admin-only) path succeeds
@@ -267,6 +274,7 @@ Before using the application with real data:
 - [ ] A new child record (application/meeting/attendance/history) referencing an archived student or fellowship is denied at the database boundary
 - [ ] Authenticated DELETE of `advisor`/`student`/`fellowship`/`application` is denied; `fellowship_thursday`/`scholarship_history` base rows are also append-only (no authenticated UPDATE/DELETE), with corrections/voids recorded via amendments
 - [ ] Fellowship Thursday and Scholarship History base rows cannot be updated or deleted by an active advisor; an appended amendment (attendance correction; scholarship `Correction`/`Void`) succeeds, is rejected with forged creator/timestamp, and a `Void` is excluded from operational counts while staying in the audit history
+- [ ] A new authenticated Fellowship Thursday attendance insert without an `event_date`, or a new authenticated Scholarship History insert without an `award_year`, is rejected at the database boundary (`42501`); supplying a valid value succeeds; an `award_year` outside `1000–9999` is rejected; a trusted no-JWT `service_role` insert may still record NULL; existing legacy NULL rows are unchanged and a correction/amendment cannot add or change either identifier
 - [ ] Application stages include `Did Not Submit` and `Withdrawn` (non-finalist/non-awarded terminal states) and `application_year` is rejected outside `NULL` or `2000–2100` at the database boundary
 - [ ] A new authenticated advising meeting without a conducting `advisor_id` is rejected at the database boundary; legacy `advisor_id IS NULL` rows remain readable
 - [ ] An INSERT/UPDATE of `student`/`fellowship`/`application` writes exactly one `audit_event` with the correct `action` (`created`/`updated`/`archived`/`restored`), actor snapshot, and whitelisted `changes`; a no-op or technical-only update writes none

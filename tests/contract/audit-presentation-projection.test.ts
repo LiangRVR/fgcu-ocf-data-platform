@@ -232,7 +232,7 @@ describe("Fellowship Thursday per-field predecessor chain", () => {
     const attendanceId = (
       await staff.client
         .from("fellowship_thursday")
-        .insert({ student_id: studentId, attended: true, source_info: "OCF" })
+        .insert({ student_id: studentId, attended: true, source_info: "OCF", event_date: "2026-09-17" })
         .select("attendance_id")
         .single()
     ).data!.attendance_id as number;
@@ -282,7 +282,7 @@ describe("Scholarship amendment projection", () => {
     const historyId = (
       await staff.client
         .from("scholarship_history")
-        .insert({ student_id: studentId, fellowship_id: goldwater })
+        .insert({ student_id: studentId, fellowship_id: goldwater, award_year: 2026 })
         .select("history_id")
         .single()
     ).data!.history_id as number;

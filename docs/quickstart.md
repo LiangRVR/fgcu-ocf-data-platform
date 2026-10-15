@@ -10,8 +10,8 @@
 
 ### ✅ Database Schema
 
-The repository tracks a **forward-only chain of thirty-seven migrations** ending with
-`supabase/migrations/20261023000001_audit_event_raw_payload_boundary.sql`. The chain
+The repository tracks a **forward-only chain of thirty-eight migrations** ending with
+`supabase/migrations/20261024000001_dated_attendance_award_year.sql`. The chain
 is applied in order to a fresh, disposable **local Supabase (Docker)** instance
 via `supabase start` + `supabase db reset`; it must **not** be pushed to the
 hosted production database (see the production freeze below).
@@ -67,7 +67,8 @@ hosted production database (see the production freeze below).
     `20261020000001_complete_immutable_history_context.sql` →
     `20261021000001_audit_presentation_projection.sql` →
     `20261022000001_audit_activity_browser_safe.sql` →
-    `20261023000001_audit_event_raw_payload_boundary.sql` (final)
+    `20261023000001_audit_event_raw_payload_boundary.sql`
+  - Dated attendance + award year: `20261024000001_dated_attendance_award_year.sql` (final)
 - Documented in `docs/schema-reference.md` and `supabase/SCHEMA.md` (which
   contains the full ordered migration table)
 
@@ -155,14 +156,27 @@ hosted production database (see the production freeze below).
 > client can no longer select raw audit JSON through the projection; the raw diff
 > stays server-side.
 >
-> `20261023000001_audit_event_raw_payload_boundary.sql` is the current final
-> migration. It revokes `authenticated` table-level `SELECT` on
+> `20261023000001_audit_event_raw_payload_boundary.sql` revokes
+> `authenticated` table-level `SELECT` on
 > `public.audit_event` and grants column-level `SELECT` on exactly the non-raw
 > columns (the three raw payload columns are explicitly revoked as a fail-closed
 > guard), so the raw audit JSON is unreadable to every client role and is fetched
 > only by server-only service-role code. `audit_event` RLS, `audit_event_subject`
 > ACL/RLS, every write path, and `service_role` are unchanged, and there is no
 > down migration.
+>
+> `20261024000001_dated_attendance_award_year.sql` is the current final
+> migration. It makes the two confirmed OCF identifiers explicit for new
+> operational history: nullable `fellowship_thursday.event_date date` (the weekly
+> event's calendar date) and nullable `scholarship_history.award_year integer`
+> (four-digit year, null-tolerant `1000–9999` CHECK), both added with no default
+> so every pre-existing row keeps a truthful NULL. Authenticated-insert guards
+> reject (`42501`) a normal product insert that omits the identifier, while a
+> trusted no-JWT `service_role`/DBA import/seed insert may retain NULL; the
+> identifiers are appended to the effective/list views and recorded in the base
+> insert's immutable `created` audit event. No legacy date or year is inferred or
+> backfilled; corrections cannot add or change either value; there is no down
+> migration.
 
 ### ✅ Live Data and Auth Features
 
@@ -176,6 +190,13 @@ hosted production database (see the production freeze below).
   `fellowship_thursday_amendment` / `scholarship_history_amendment` rows, and a
   scholarship `Void` excludes an award from operational counts while keeping
   it in the audit history.
+- **Required identifiers on new records:** every new Fellowship Thursday
+  attendance must carry its weekly calendar `event_date` and every new
+  Scholarship History award must carry its four-digit `award_year` (1000–9999),
+  enforced at the database boundary (an authenticated insert missing the value is
+  rejected), not only in the UI. Genuinely unknown legacy rows keep a truthful
+  `NULL`; no date or year is ever inferred or backfilled, and corrections cannot
+  change either value.
 - Student/fellowship **archive** and advisor **deactivate/reactivate** flows
   (`lifecycle_transition` RPC) with preserved historical relationships
 - Explicit **Admin** / **Advisor** roles (effective admin = Auth claim + active
@@ -263,7 +284,7 @@ recovery links); it does not come from `supabase status -o env`.
 > the hosted **production** database while provenance is unresolved —
 > production is the physical-schema authority, its migration ledger records only
 > `20260924065221_advisor_self_activation_lockdown`, and the deployed schema
-> materially differs from this repository chain (which tracks thirty-seven
+> materially differs from this repository chain (which tracks thirty-eight
 > migrations). `supabase db push`, historical replay, and migration-history
 > repair against production are prohibited until a separately approved
 > reconciliation exists. See
@@ -273,7 +294,7 @@ recovery links); it does not come from `supabase status -o env`.
 
 #### Method A: Local Supabase (Docker) — recommended for development and testing
 
-This is the supported local workflow; it applies the **full thirty-seven-migration
+This is the supported local workflow; it applies the **full thirty-eight-migration
 chain** to a disposable Docker instance and requires no hosted project:
 
 ```bash
@@ -291,7 +312,7 @@ pnpm exec supabase stop --no-backup
 ```
 
 `supabase db reset` applies every file in `supabase/migrations/` in order,
-ending with `20261023000001_audit_event_raw_payload_boundary.sql`. Migrations 2 and 3
+ending with `20261024000001_dated_attendance_award_year.sql`. Migrations 2 and 3
 (`allow_anon_read`, `allow_anon_write`) are temporary bootstrap steps only;
 after the full chain, authenticated active advisors are the intended steady
 state.
@@ -344,7 +365,8 @@ the repository's own `supabase/` project is never started, reset, or stopped.
    `20261020000001_complete_immutable_history_context.sql`,
    `20261021000001_audit_presentation_projection.sql`,
    `20261022000001_audit_activity_browser_safe.sql`,
-   and `20261023000001_audit_event_raw_payload_boundary.sql` (last).
+   `20261023000001_audit_event_raw_payload_boundary.sql`,
+   and `20261024000001_dated_attendance_award_year.sql` (last).
 10. **Only after the full chain is applied (steps 2–9):** provision each advisor
     before first sign-in via the server-only provisioning module
     (`lib/provisioning/*`): it invites/creates the auth account and
@@ -374,8 +396,8 @@ the repository's own `supabase/` project is never started, reset, or stopped.
 > ❗ Do **not** use `npx supabase link` + `npx supabase db push` against the
 > hosted **production** project: the production migration ledger records only
 > `20260924065221_advisor_self_activation_lockdown`, while this repository
-> tracks thirty-seven migrations ending with
-> `20261023000001_audit_event_raw_payload_boundary.sql`, and the deployed schema
+> tracks thirty-eight migrations ending with
+> `20261024000001_dated_attendance_award_year.sql`, and the deployed schema
 > differs materially. Generic `db push`, historical replay, and
 > migration-history repair against production are prohibited until a separately
 > approved reconciliation exists.
@@ -452,7 +474,7 @@ Before relying on the app day to day:
   are effective-Admin-only by design and cannot create the first Admin.
 - Confirm the advisor row is **pre-bound**: `public.advisor.auth_user_id` must already equal the sign-in user's auth UUID. Binding is admin-only and one-time; it happens before first sign-in via the server-only provisioning module, never by email match or auto-linking.
 - Confirm the advisor row has `is_active = true`.
-- Confirm the complete migration chain through `20261023000001_audit_event_raw_payload_boundary.sql` was applied **before** any advisor was provisioned/pre-bound.
+- Confirm the complete migration chain through `20261024000001_dated_attendance_award_year.sql` was applied **before** any advisor was provisioned/pre-bound.
 - Confirm the chain order: `20260318000001_advisor_self_activation_lockdown.sql`
   after `20260317000004_active_advisor_rls.sql`; then
   `20260929000001_advising_application_link.sql` … `20260930000004_advising_meeting_amendments.sql`;
@@ -463,9 +485,9 @@ Before relying on the app day to day:
   `20261007000001_atomic_advisor_role_change.sql`; then
   `20261008000001_historical_integrity_remediation.sql`; then the immutable-audit
   and concurrency migrations `20261009000001`–`20261018000001`; then the
-  immutable-history migrations `20261019000001`–`20261020000001`; and finally
-  `20261021000001`–`20261023000001`, with
-  `20261023000001_audit_event_raw_payload_boundary.sql` last.
+  immutable-history migrations `20261019000001`–`20261020000001`; then
+  `20261021000001`–`20261023000001`; and finally
+  `20261024000001_dated_attendance_award_year.sql` last.
 
 ### Connection failed
 
@@ -478,7 +500,7 @@ Before relying on the app day to day:
 - [Root project README](../README.md) — project overview and institutional handoff boundary
 - [Supabase Setup Guide](../supabase/README.md)
 - [Schema Reference](schema-reference.md)
-- [Schema Design Decisions](schema-decisions.md) — rationale plus the deferred OCF event-date / award-cycle decisions
+- [Schema Design Decisions](schema-decisions.md) — rationale for key data-model choices, including the resolved OCF event-date / award-year identifier requirements and the legacy-NULL policy
 - [Schema Verification](schema-verification.md)
 - [FGCU/OCF IT Handoff](it-handoff.md) — owner boundaries and the trusted legacy-baseline import pattern
 - [Supabase Docs](https://supabase.com/docs)

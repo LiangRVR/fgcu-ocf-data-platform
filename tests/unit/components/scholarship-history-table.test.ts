@@ -79,6 +79,12 @@ describe("ScholarshipHistoryTable", () => {
     expect(markup).toContain("Grace Hopper");
   });
 
+  it("shows the award year and labels genuinely unknown legacy years", () => {
+    const markup = render({ initialRecords: [record({ award_year: null })] });
+    expect(markup).toContain("Award year: Unknown (legacy record)");
+    expect(render({ initialRecords: [record({ award_year: 2024 })] })).toContain("Award year: 2024");
+  });
+
   it("renders the shared pagination control from the server page metadata", () => {
     const markup = render({
       initialRecords: [record({})],

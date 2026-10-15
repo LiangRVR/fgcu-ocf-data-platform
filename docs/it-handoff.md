@@ -1,8 +1,8 @@
 # FGCU / OCF IT Handoff
 
 This repository is a **source-code handoff for the local platform**. It ships the
-application, the forward-only database migration chain (37 migrations, ending
-with `20261023000001_audit_event_raw_payload_boundary.sql`), tests, and
+application, the forward-only database migration chain (38 migrations, ending
+with `20261024000001_dated_attendance_award_year.sql`), tests, and
 documentation. It ships **no hosted/production configuration and no
 credentials**, and it does not instruct a production operation.
 
@@ -119,17 +119,35 @@ boundaries — not configuration options:
 - Current-state edits carry an expected `row_version`; a stale version is
   rejected with `PT409` before any change.
 
-## 5. Open OCF product-owner questions (the only unresolved items)
+## 5. Resolved OCF identifier requirements (event date and award year)
 
-Two decisions remain with the OCF product owner and are intentionally **not**
-implemented, because the schema must never infer or backfill them:
+The two OCF product-owner questions about identifying operational history are now
+**settled and implemented** (change `dated-attendance-award-year`, migration
+`20261024000001_dated_attendance_award_year.sql`). The schema never infers or
+backfills a value for historic data, so these requirements apply to **new
+operational records only**:
 
-1. **Fellowship Thursday event date** — does each weekly attendance record
-   require a specific event/meeting date?
-2. **Scholarship History award cycle** — does a recorded award require an award
-   year/cycle?
+1. **Fellowship Thursday event date** — each new Fellowship Thursday attendance
+   record must identify the calendar date of its weekly event (`event_date`,
+   a `date` — not a timestamp, time zone, or recurrence model).
+2. **Scholarship History award year** — each new Scholarship History award must
+   identify its four-digit award year (`award_year`, 1000–9999).
 
-Neither question authorizes a schema or product change in the current release.
-Until OCF decides, no such column is added and no historical value is inferred.
-See [`docs/schema-decisions.md`](./schema-decisions.md) §9 (and the cross
-references in §18/§19).
+Rules for these identifiers:
+
+- **Enforced at the database boundary.** A normal product insert carries a request
+  identity (`auth.uid()`); one that omits the identifier is rejected
+  fail-closed, so the requirement holds regardless of any UI path.
+- **Legacy values stay NULL.** Both columns are nullable and additive; every
+  pre-existing row keeps a truthful `NULL`, and no date or year is ever inferred,
+  guessed, or backfilled.
+- **Trusted import compatibility.** A trusted, no-JWT `service_role`/DBA
+  import/seed insert may retain `NULL` under the existing technical trust
+  boundary; no browser/product route uses it.
+- **Immutable base facts.** Corrections are amendments and cannot add or change
+  either identifier; a future correction model for an erroneously entered
+  identifier would be a separate change.
+
+See [`docs/schema-decisions.md`](./schema-decisions.md) §9 for the design
+rationale and §18/§19 for the interaction with trusted baseline imports (which
+must never invent an event date or award year the source data does not prove).

@@ -30,7 +30,7 @@ This folder contains detailed documentation for the OCF Fellowship Management Sy
 
 ### Project Information
 
-- **[FGCU/OCF IT Handoff](it-handoff.md)** — owner boundaries (real data migration, environment/secrets, SSO, domains/networking, backups, monitoring), the trusted legacy-baseline import transaction pattern, and the two open OCF product decisions
+- **[FGCU/OCF IT Handoff](it-handoff.md)** — owner boundaries (real data migration, environment/secrets, SSO, domains/networking, backups, monitoring), the trusted legacy-baseline import transaction pattern, and the resolved OCF event-date / award-year identifier requirements
 - **[License](../LICENSE)** - License information
 
 ---

@@ -8,8 +8,8 @@
 > ⚠️ **Provenance notice (2026-09-25, updated 2026-10-15):** the hosted
 > production database is the physical-schema authority. Its migration ledger
 > records only `20260924065221_advisor_self_activation_lockdown`, while this
-> repository tracks thirty-seven migrations (`20260305000000` …
-> `20261023000001_audit_event_raw_payload_boundary.sql`), and the deployed
+> repository tracks thirty-eight migrations (`20260305000000` …
+> `20261024000001_dated_attendance_award_year.sql`), and the deployed
 > schema materially differs from the repository chain. Do **not** run
 > `supabase db push`, replay migrations, or repair migration history against
 > production. See [Migration deployment freeze](#migration-deployment-freeze).
@@ -439,6 +439,7 @@ chronologically ordered), `created_by_advisor_id`.
 | `student_id` | integer | NO | — | **FK → `student.student_id`** |
 | `attended` | boolean | NO | — | |
 | `source_info` | varchar | YES | — | CHECK (nullable): `OCF` `HC` `MM` |
+| `event_date` | date | YES | — | Calendar date of the weekly Thursday event (date only). **Required for new authenticated operational inserts** (`42501` when omitted); NULL = preserved legacy/unknown truth |
 
 **`source_info` codes:** `OCF` = direct OCF referral · `HC` = Honors College · `MM` = McNair / Miami Mosaic
 
@@ -455,10 +456,18 @@ boundary: for each corrected field, the newest applicable amendment ordered by
 `(created_at, amendment_id)` descending wins, so amendments can never inflate
 attendance counts.
 
-The table has **no event/meeting date column**. Whether Fellowship Thursday
-needs an event date is a deferred OCF decision — see
-[`docs/schema-decisions.md` §9](../docs/schema-decisions.md) — and the schema
-is **not** changed until OCF decides; no date is inferred or backfilled.
+**Required event date on new records (change `dated-attendance-award-year`):**
+`event_date` is the calendar date of the weekly Thursday meeting (a `date`, not a
+timestamp/time zone). A new authenticated operational insert (a request carries
+`auth.uid()`) that omits `event_date` is rejected at the database boundary
+(`42501`) by the `guard_fellowship_thursday_event_date_required` trigger — the UI
+validation is a usability layer only. The column is nullable and additive, so
+unknown **legacy** rows keep a truthful `NULL`; no date is ever inferred or
+backfilled, and a trusted no-JWT `service_role`/DBA import/seed insert may retain
+`NULL`. `event_date` is an immutable base fact (corrections cannot add or change
+it) and is appended unchanged to `effective_fellowship_thursday` and
+`fellowship_thursday_list` and recorded in the insert's immutable `created` audit
+event.
 
 The archive-parent boundary (migration `20260930000007`) still denies `INSERT`
 of a row referencing an archived student.
@@ -505,6 +514,7 @@ in-progress pipeline. Only stores fellowships the student has already received.
 | `history_id` | integer | NO | nextval | **PK** |
 | `student_id` | integer | NO | — | **FK → `student.student_id`** |
 | `fellowship_id` | integer | NO | — | **FK → `fellowship.fellowship_id`** |
+| `award_year` | integer | YES | — | Four-digit award year; CHECK (nullable): `1000–9999` when present. **Required for new authenticated operational inserts** (`42501` when omitted); NULL = preserved legacy/unknown truth |
 
 Indexed: `student_id`, `fellowship_id`.
 
@@ -517,10 +527,18 @@ base row, and **Void** is terminal for normal operations (the original award
 remains in the audit history but is excluded from active/operational award
 counts).
 
-The table has **no award cycle/year column**. Whether historical awards need
-an award cycle is a deferred OCF decision — see
-[`docs/schema-decisions.md` §9](../docs/schema-decisions.md) — and the schema
-is **not** changed until OCF decides; no cycle is inferred or backfilled.
+**Required award year on new records (change `dated-attendance-award-year`):**
+`award_year` is the four-digit award year (`1000–9999`, null-tolerant CHECK). A
+new authenticated operational insert (a request carries `auth.uid()`) that omits
+`award_year` is rejected at the database boundary (`42501`) by the
+`guard_scholarship_history_award_year_required` trigger — the UI validation is a
+usability layer only. The column is nullable and additive, so unknown **legacy**
+awards keep a truthful `NULL`; no year is ever inferred or backfilled, and a
+trusted no-JWT `service_role`/DBA import/seed insert may retain `NULL`.
+`award_year` is an immutable base fact (corrections/voids cannot add or change
+it) and is appended unchanged to `effective_scholarship_history` and
+`scholarship_history_list` and recorded in the insert's immutable `created` audit
+event.
 
 The archive-parent boundary (migration `20260930000007`) still denies `INSERT`
 of a row referencing an archived student or fellowship.
@@ -1260,10 +1278,11 @@ fellowship (1) ────────────────┐            �
 | `20261020000001_complete_immutable_history_context.sql` | Completes the immutable audit relationship context introduced by `20261019000001` without changing `audit_event` or adding a new audit architecture: (1) a shared trusted-session verifier (`private.assert_trusted_baseline_session`) is invoked both when the `service_role`/DBA-only `public.begin_legacy_baseline_import` enables baseline mode and by the BEFORE normalizer, so a caller-set GUC alone cannot forge `baseline_captured` (`origin = migration`, `System`, actor NULL) inside the transaction-local import; (2) an idempotent, event-only `audit_event_subject` backfill derives associations and frozen labels solely from immutable columns/snapshots/diffs (`ON CONFLICT DO NOTHING`, no mutable joins, no audit event) and deterministically repairs only the provably obsolete post-`20261019000001` Scholarship-History/advising-amendment derived rows; (3) subject capture becomes entity/action aware (application re-links keep both endpoints; Scholarship corrections use the immediately prior effective fellowship as `previous` and the corrected fellowship as `current`; Voids retain the prior effective fellowship as `current`; new meetings capture the application-time fellowship while amendments inherit the parent meeting's immutable creation context); and (4) `public.audit_activity` APPENDS relationship-aware safe scalars (`previous_student_name`, `current_student_name`, `previous_fellowship_name`, `current_fellowship_name`, `subject_application_name`) resolved only from frozen snapshots, preserving `security_invoker`, one row per `audit_event`, and the active-advisor RLS. Forward-only; no down migration. |
 | `20261021000001_audit_presentation_projection.sql` | Appends bounded presentation scalars to the `security_invoker` `public.audit_activity` view (columns appended; still one row per `audit_event`, `security_invoker` preserved): the paired relationship endpoint ids (`previous_student_id`/`current_student_id`, `previous_fellowship_id`/`current_fellowship_id`, explicit `Entity #id` fallbacks); the per-field Fellowship Thursday predecessor/current/amended values derived independently from the immutable base row plus strictly-earlier amendments ordered by `(created_at, amendment_id)` (an explicit correction-to-NULL is representable); the exact Scholarship `void_reason` bound to the event's own amendment id; and the immutable parent advising-meeting `meeting_date`/`application_id`/`advisor_id` (a neutral `Advisor #id`, never a live `advisor`/current-`application` join). Every scalar is set-based against unique keys, so a history read stays one bounded query. Writes/modifies no audit/base/amendment row and touches no policy, grant, or effective operational view; forward-only, no down migration |
 | `20261022000001_audit_activity_browser_safe.sql` | Makes the activity projection an actual browser-safe read boundary: drops and re-creates `public.audit_activity` (same leading columns, `security_invoker = on`, one row per `audit_event`) WITHOUT the raw payload columns `old_values`/`new_values`/`changes`, because `authenticated` can reach the view directly through PostgREST and the raw JSON otherwise bypassed the server normalizer. The raw diff needed by the safe presentation layer is read directly from the RLS-governed `audit_event` base table by server-only code. The active-advisor `audit_event` RLS and all ACLs are otherwise unchanged; forward-only, no down migration |
-| `20261023000001_audit_event_raw_payload_boundary.sql` | **Final migration.** DB-enforces the raw audit JSON boundary: `REVOKE SELECT ON public.audit_event FROM authenticated` (so an arbitrary/`*` select is denied), an explicit fail-closed `REVOKE SELECT (old_values, new_values, changes)` guard, and a column-level `GRANT SELECT` on exactly the columns `audit_activity` references (`audit_id`, `occurred_at`, `entity_type`, `entity_id`, `action`, `actor_advisor_id`, `actor_name_snapshot`, `reason`, `origin`, `subject_student_id`, `subject_application_id`, `subject_fellowship_id`). The raw payload columns become unreadable to every client role and are fetched only by server-only service-role code (`lib/supabase/admin.ts`), after the cookie/RLS safe-view query has authorized and bounded the audit ids. `audit_event` RLS, `audit_event_subject` ACL/RLS, every write path, and `service_role` are unchanged; forward-only, no down migration |
+| `20261023000001_audit_event_raw_payload_boundary.sql` | DB-enforces the raw audit JSON boundary: `REVOKE SELECT ON public.audit_event FROM authenticated` (so an arbitrary/`*` select is denied), an explicit fail-closed `REVOKE SELECT (old_values, new_values, changes)` guard, and a column-level `GRANT SELECT` on exactly the columns `audit_activity` references (`audit_id`, `occurred_at`, `entity_type`, `entity_id`, `action`, `actor_advisor_id`, `actor_name_snapshot`, `reason`, `origin`, `subject_student_id`, `subject_application_id`, `subject_fellowship_id`). The raw payload columns become unreadable to every client role and are fetched only by server-only service-role code (`lib/supabase/admin.ts`), after the cookie/RLS safe-view query has authorized and bounded the audit ids. `audit_event` RLS, `audit_event_subject` ACL/RLS, every write path, and `service_role` are unchanged; forward-only, no down migration |
+| `20261024000001_dated_attendance_award_year.sql` | **Final migration.** Dated Fellowship Thursday + award year (change `dated-attendance-award-year`): adds nullable `fellowship_thursday.event_date date` and nullable `scholarship_history.award_year integer` (null-tolerant CHECK bounded to `1000–9999`), both without a default so every pre-existing row keeps a truthful NULL (never inferred or backfilled). Adds authenticated-insert boundary guards `guard_fellowship_thursday_event_date_required` / `guard_scholarship_history_award_year_required` (SECURITY INVOKER, empty `search_path`, fully qualified, EXECUTE revoked from `PUBLIC`/`anon`/`authenticated` and pinned to `service_role`) that reject (`42501`) a normal product insert (non-NULL `auth.uid()`) omitting the identifier while trusted no-JWT service/import/seed inserts keep legacy-NULL compatibility. Appends `event_date`/`award_year` to `effective_fellowship_thursday`/`effective_scholarship_history` and `fellowship_thursday_list`/`scholarship_history_list` (SECURITY INVOKER, grants, one-row-per-base-row, and correction/Void logic preserved), and re-creates `private.audit_historical_record()` so a successful base insert records the structural identifier in its immutable `created` event (amendments and the browser projection are unchanged). No existing business row, policy, grant, or audit row is edited, deleted, or reset; forward-only, no down migration |
 
 Migrations 2 and 3 are temporary bootstrap steps. The chain must be applied in
-order and ends with `20261023000001_audit_event_raw_payload_boundary.sql`.
+order and ends with `20261024000001_dated_attendance_award_year.sql`.
 `20260318000001_advisor_self_activation_lockdown.sql` is required and must
 follow `20260317000004_active_advisor_rls.sql`; the forward-only
 `20260929000001_advising_application_link.sql` extends the model afterwards,
@@ -1365,7 +1384,15 @@ cannot select raw audit JSON through it. `20261023000001_audit_event_raw_payload
 completes the boundary by revoking `authenticated` table-level `SELECT` on
 `audit_event` and granting column-level `SELECT` on exactly the non-raw columns,
 so the raw audit JSON is unreadable to every client role and is fetched only by
-server-only service-role code. No
+server-only service-role code. `20261024000001_dated_attendance_award_year.sql`
+then makes the two confirmed OCF identifiers explicit for future operational
+history: it adds nullable `fellowship_thursday.event_date` and
+`scholarship_history.award_year` (null-tolerant `1000–9999` CHECK),
+authenticated-insert guards that require each new operational record to supply its
+identifier (`42501` when omitted, trusted no-JWT inserts excepted), appends both
+columns to the effective/list views, and records them in the base insert's
+immutable `created` event — preserving every legacy NULL and inferring or
+backfilling nothing. No
 existing business row, policy, grant, or audit row is edited, deleted, or reset;
 forward-only, no down migration.
 
@@ -1456,8 +1483,8 @@ schema.
 
 As of 2026-09-25 the production migration ledger contains only
 `20260924065221_advisor_self_activation_lockdown` while the repository tracks
-thirty-seven migrations (`20260305000000` …
-`20261023000001_audit_event_raw_payload_boundary.sql`), and the live production
+thirty-eight migrations (`20260305000000` …
+`20261024000001_dated_attendance_award_year.sql`), and the live production
 schema materially differs from the repository chain.
 Production is the physical-schema authority. Until a reviewed reconciliation is
 approved:
@@ -1476,7 +1503,7 @@ For a fresh, disposable local Supabase instance only, the chain can be applied
 via the standard Docker-local workflow (`pnpm exec supabase start` then
 `pnpm exec supabase db reset --no-seed`, which applies every file in
 `supabase/migrations/` in order, ending with
-`20261023000001_audit_event_raw_payload_boundary.sql`) or via the isolated local
+`20261024000001_dated_attendance_award_year.sql`) or via the isolated local
 harness (`node scripts/schema-inventory/run-local.mjs --out <path>`); both are
 safe and the latter is how the reconciliation baseline is produced. Applying
 the chain to a hosted project remains prohibited while provenance is

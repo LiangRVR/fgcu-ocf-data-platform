@@ -159,6 +159,7 @@ const EXPECTED_COLUMNS: Record<(typeof VIEWS)[number], string[]> = {
     "source_info",
     "has_amendments",
     "student_name",
+    "event_date",
   ],
   scholarship_history_list: [
     "history_id",
@@ -170,6 +171,7 @@ const EXPECTED_COLUMNS: Record<(typeof VIEWS)[number], string[]> = {
     "voided_at",
     "student_name",
     "fellowship_name",
+    "award_year",
   ],
   fellowship_list: [
     "fellowship_id",

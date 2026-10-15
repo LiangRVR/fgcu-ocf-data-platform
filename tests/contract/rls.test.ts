@@ -207,9 +207,9 @@ function operationalInsertPayload(table: OperationalTable): Record<string, unkno
       // the conducting advisor at the database boundary.
       return { student_id: fixtures.studentId, advisor_id: fixtures.advisorSelfId, meeting_date: "2026-09-20", meeting_mode: "Virtual" };
     case "fellowship_thursday":
-      return { student_id: fixtures.studentId, attended: true, source_info: "OCF" };
+      return { student_id: fixtures.studentId, attended: true, source_info: "OCF", event_date: "2026-09-20" };
     case "scholarship_history":
-      return { student_id: fixtures.studentId, fellowship_id: fixtures.fellowshipId };
+      return { student_id: fixtures.studentId, fellowship_id: fixtures.fellowshipId, award_year: 2026 };
   }
 }
 
