@@ -151,7 +151,7 @@ async function advisorRowByEmail(email: string) {
   const service = serviceClient();
   const { data, error } = await service
     .from("advisor")
-    .select("advisor_id, email, role, is_active, auth_user_id")
+    .select("advisor_id, email, role, is_active, auth_user_id, row_version")
     .eq("email", email)
     .maybeSingle();
   if (error) throw new Error(`read advisor row (${email}): ${error.message}`);
@@ -208,17 +208,25 @@ test.describe("advisor permissions", () => {
       });
       expect(provision.status()).toBe(403);
 
-      // Both role and active-state mutations require a non-blank reason by
-      // schema (validated before authorization), so the payloads must be
-      // schema-valid to reach the admin gate — then the 403 below proves
-      // authorization is what rejects the non-admin session.
+      // Both role and active-state mutations require a non-blank reason and a
+      // positive expectedVersion by schema (validated before authorization), so
+      // the payloads must be schema-valid to reach the admin gate — then the
+      // 403 below proves authorization is what rejects the non-admin session.
       const promotePeer = await page.request.patch(`/api/advisors/${activeRow.advisor_id}`, {
-        data: { role: "Admin", reason: "E2E denied peer role change" },
+        data: {
+          role: "Admin",
+          reason: "E2E denied peer role change",
+          expectedVersion: activeRow.row_version,
+        },
       });
       expect(promotePeer.status()).toBe(403);
 
       const deactivatePeer = await page.request.patch(`/api/advisors/${activeRow.advisor_id}`, {
-        data: { isActive: false, reason: "E2E denied peer deactivation" },
+        data: {
+          isActive: false,
+          reason: "E2E denied peer deactivation",
+          expectedVersion: activeRow.row_version,
+        },
       });
       expect(deactivatePeer.status()).toBe(403);
     } finally {

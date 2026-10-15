@@ -9,9 +9,12 @@
  *   - a valid request returns ONLY safe `AuditActivity` fields — raw snapshot
  *     payload columns (`old_values`/`new_values`), unknown diff fields, and
  *     Auth-binding ids never appear in the JSON body (the browser can no longer
- *     read `audit_activity select('*')`);
- *   - the request is a single bounded query (no N+1) whose continuation uses
- *     the keyset cursor + high-watermark bounds, not an offset.
+ *     read raw audit JSON: the `audit_activity` projection omits it, the raw
+ *     `changes` column is revoked from every client role, and the server reads
+ *     the raw diff through the server-only service-role client);
+ *   - the request is one bounded browser-safe view page query plus ONE bounded
+ *     server-only raw-diff batch (no N+1) whose continuation uses the keyset
+ *     cursor + high-watermark bounds, not an offset.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -21,26 +24,27 @@ vi.mock("@/lib/auth/session", () => ({ getSessionUser }));
 const { createServerClient } = vi.hoisted(() => ({ createServerClient: vi.fn() }));
 vi.mock("@/lib/supabase/server", () => ({ createServerClient }));
 
+const { createAdminClient } = vi.hoisted(() => ({ createAdminClient: vi.fn() }));
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient }));
+
 import { GET } from "@/app/api/audit/history/route";
-import type { AuditRow } from "@/lib/audit/presentation";
+import type { AuditNormalizationInput } from "@/lib/audit/presentation";
 
 const SECRET_OLD = "secret-old@example.com";
 const SECRET_NEW = "secret-new@example.com";
 const SECRET_DIFF = "internal-secret-note";
 
-function makeAuditRow(overrides: Partial<AuditRow> = {}): AuditRow {
+function makeAuditRow(overrides: Partial<AuditNormalizationInput> = {}): AuditNormalizationInput {
   return {
-    action: "updated",
+    action: "role_changed",
     actor_advisor_id: 12,
     actor_name_snapshot: "Jordan Lee",
     audit_id: 77,
-    changes: { gpa: { old: 3.0, new: 3.4 }, internal_note: { old: SECRET_DIFF, new: SECRET_DIFF } },
+    changes: { role: { old: "Advisor", new: "Admin" }, internal_note: { old: SECRET_DIFF, new: SECRET_DIFF } },
     entity_id: 7,
     entity_type: "advisor",
     fellowship_name: null,
-    new_values: { email: SECRET_NEW },
     occurred_at: "2026-10-12T14:30:00.000Z",
-    old_values: { email: SECRET_OLD },
     origin: "api",
     reason: "Promoted",
     student_name: "Sam Student",
@@ -54,6 +58,20 @@ function makeAuditRow(overrides: Partial<AuditRow> = {}): AuditRow {
     previous_fellowship_name: null,
     current_fellowship_name: null,
     subject_application_name: null,
+    previous_student_id: null,
+    current_student_id: null,
+    previous_fellowship_id: null,
+    current_fellowship_id: null,
+    fellowship_thursday_attended_before: null,
+    fellowship_thursday_attended_after: null,
+    fellowship_thursday_attended_amended: null,
+    fellowship_thursday_source_before: null,
+    fellowship_thursday_source_after: null,
+    fellowship_thursday_source_amended: null,
+    void_reason: null,
+    advising_meeting_date: null,
+    advising_application_id: null,
+    advising_advisor_id: null,
     ...overrides,
   };
 }
@@ -66,7 +84,7 @@ interface QueryRecord {
   range: [number, number] | null;
 }
 
-function makeSupabase(rows: AuditRow[]) {
+function makeSupabase(rows: AuditNormalizationInput[]) {
   const calls: QueryRecord[] = [];
   const client = {
     from: vi.fn(() => {
@@ -90,6 +108,7 @@ function makeSupabase(rows: AuditRow[]) {
     }),
   };
   createServerClient.mockReturnValue(client);
+  createAdminClient.mockReturnValue(client);
   return { client, calls };
 }
 
@@ -158,10 +177,10 @@ describe("GET /api/audit/history safe projection", () => {
     ]);
     expect(body.items[0]).toMatchObject({
       id: "77",
-      action: "updated",
+      action: "role_changed",
       actor: "Jordan Lee",
       summary: "Promoted",
-      changes: [{ field: "gpa", label: "GPA", oldValue: "3", newValue: "3.4" }],
+      changes: [{ field: "role", label: "Advisor role", oldValue: "Advisor", newValue: "Admin" }],
     });
 
     const serialized = JSON.stringify(body);
@@ -179,16 +198,20 @@ describe("GET /api/audit/history safe projection", () => {
     }
   });
 
-  it("reads a single bounded query with the explicit safe columns", async () => {
+  it("reads one bounded safe view query plus one bounded server-only raw-diff batch", async () => {
     const { client, calls } = makeSupabase([makeAuditRow()]);
 
     await GET(request("?kind=entity&entityType=advisor&entityId=7&limit=5000"));
 
-    expect(client.from).toHaveBeenCalledTimes(1);
+    expect(client.from).toHaveBeenCalledTimes(2);
     expect(calls[0].select).not.toContain("old_values");
     expect(calls[0].select).not.toContain("new_values");
     // Oversized limit is clamped to the hard ceiling.
     expect(calls[0].range).toEqual([0, 100]);
+    // The raw diff is read through the server-only service-role client, bounded
+    // to the page's already-authorized ids.
+    expect(calls[1].select).toBe("audit_id, changes");
+    expect(calls[1].range).toEqual([0, 0]);
   });
 });
 

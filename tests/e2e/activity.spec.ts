@@ -255,6 +255,33 @@ function activityList(page: Page) {
   return page.locator("main section[aria-label='Recent changes'] ol");
 }
 
+/**
+ * A deterministic fingerprint of each rendered activity row, for the
+ * reload-stability (ordering) assertions.
+ *
+ * The timestamp's VISIBLE text is deliberately excluded: `AuditTimestamp`
+ * intentionally renders a UTC-stable string on the server and first client
+ * render, then swaps to the browser's locale/time zone after an effect runs, so
+ * the formatted text is not stable across a reload (hydration races the
+ * assertion). The deterministic identity is instead the ISO `dateTime`
+ * attribute (server-rendered, timezone-independent) plus the remaining
+ * server-rendered content (action/entity heading, summary, changes, actor),
+ * which together still prove the same events in the same order.
+ */
+function activityRowFingerprints(page: Page): Promise<string[]> {
+  return activityList(page)
+    .locator("li")
+    .evaluateAll((rows) =>
+      rows.map((row) => {
+        const occurredAt = row.querySelector("time")?.getAttribute("datetime") ?? "";
+        const content = row.cloneNode(true) as HTMLElement;
+        content.querySelectorAll("time").forEach((node) => node.remove());
+        const text = (content.textContent ?? "").replace(/\s+/g, " ").trim();
+        return `${occurredAt}::${text}`;
+      }),
+    );
+}
+
 // ─── Multi-advisor cross-role workflow helpers (R8) ──────────────────────────
 // The same deterministic local-only password convention used by the seed
 // fixture and the other specs: assembled from harmless fragments so no complete
@@ -410,6 +437,155 @@ async function deleteAdvisingMeeting(meetingId: number): Promise<void> {
   if (error) throw new Error(`cleanup advising meeting ${meetingId}: ${error.message}`);
 }
 
+// ─── Completed-audit-history journey helpers ─────────────────────────────────
+// These support the immutable-history experience: approved profile fields
+// (Student email yes, Advisor email no), relationship re-links rendered as
+// frozen names rather than ids, exactly-once subject associations across the
+// unified student timeline, and the OCF-office (America/New_York) date-filter
+// boundaries. Every fixture is seeded and torn down through the service role
+// (test-support only, never the browser); audit rows are generated the same way
+// production writes them — one exception, `insertSyntheticAuditEvent`, is called
+// out below.
+
+/** Seed a fresh active fellowship; returns its id. */
+async function seedFellowship(name: string): Promise<number> {
+  const service = serviceClient();
+  const { data, error } = await service
+    .from("fellowship")
+    .insert({ fellowship_name: name })
+    .select("fellowship_id")
+    .single();
+  if (error) throw new Error(`seed fellowship(${name}): ${error.message}`);
+  return data.fellowship_id as number;
+}
+
+async function deleteFellowshipById(fellowshipId: number): Promise<void> {
+  const service = serviceClient();
+  const { error } = await service.from("fellowship").delete().eq("fellowship_id", fellowshipId);
+  if (error) throw new Error(`cleanup fellowship ${fellowshipId}: ${error.message}`);
+}
+
+/** Seed one application linking a student/fellowship pair; returns its id. */
+async function seedApplication(studentId: number, fellowshipId: number): Promise<number> {
+  const service = serviceClient();
+  const { data, error } = await service
+    .from("application")
+    .insert({
+      student_id: studentId,
+      fellowship_id: fellowshipId,
+      destination_country: "E2E Relink",
+      application_year: 2026,
+      stage_of_application: "Submitted",
+      is_semi_finalist: false,
+      is_finalist: false,
+    })
+    .select("application_id")
+    .single();
+  if (error) throw new Error(`seed application for student ${studentId}: ${error.message}`);
+  return data.application_id as number;
+}
+
+async function deleteApplicationById(applicationId: number): Promise<void> {
+  const service = serviceClient();
+  const { error } = await service.from("application").delete().eq("application_id", applicationId);
+  if (error) throw new Error(`cleanup application ${applicationId}: ${error.message}`);
+}
+
+/**
+ * Perform one meaningful profile write through the versioned writer RPC that
+ * changes ONLY the student's email (every other permitted field is re-sent
+ * unchanged). Returns the writer's returned row (carrying the new row_version).
+ */
+async function writeStudentEmail(
+  client: SupabaseClient,
+  studentId: number,
+  email: string,
+): Promise<Record<string, unknown>> {
+  const { data: row, error: readError } = await client
+    .from("student")
+    .select("*")
+    .eq("student_id", studentId)
+    .single();
+  if (readError) throw new Error(`read student for email write: ${readError.message}`);
+
+  const { data, error } = await client.rpc("update_student_profile", {
+    p_student_id: studentId,
+    p_expected_version: row.row_version,
+    p_full_name: row.full_name,
+    p_email: email,
+    p_is_ch_student: row.is_ch_student,
+    p_major: row.major,
+    p_minor: row.minor,
+    p_gpa: row.gpa,
+    p_class_standing: row.class_standing,
+    p_us_citizen: row.us_citizen,
+    p_age: row.age,
+    p_gender: row.gender,
+    p_pronouns: row.pronouns,
+    p_race_ethnicity: row.race_ethnicity,
+    p_languages: row.languages,
+    p_first_gen: row.first_gen,
+    p_honors_college: row.honors_college,
+  });
+  if (error) {
+    throw new Error(`update_student_profile(email): ${error.code ?? ""} ${error.message}`);
+  }
+  const updated = Array.isArray(data) ? data[0] : data;
+  if (!updated) throw new Error("update_student_profile(email) returned no row");
+  return updated as Record<string, unknown>;
+}
+
+/**
+ * Insert one synthetic `audit_event` at a controlled `occurred_at` instant.
+ *
+ * The Activity date filters are OCF-office (America/New_York) calendar-day
+ * bounds. Proving the late-evening-NY / next-UTC-day boundary and the two
+ * DST-transition days deterministically requires an event whose NY calendar
+ * date differs from its UTC date, which no wall-clock business write can
+ * produce. This test-support fixture writes through the service role (the
+ * trusted technical identity the lane already uses for setup/teardown) and is
+ * removed in the caller's `finally`. It writes a normal `created` event (never
+ * a forged baseline/provenance row) so the normalizer presents it like any
+ * other created row.
+ */
+async function insertSyntheticAuditEvent(props: {
+  occurredAt: string;
+  actor: string;
+  subjectStudentId: number;
+}): Promise<number> {
+  const service = serviceClient();
+  const { data, error } = await service
+    .from("audit_event")
+    .insert({
+      entity_type: "student",
+      entity_id: props.subjectStudentId,
+      action: "created",
+      actor_advisor_id: null,
+      actor_name_snapshot: props.actor,
+      occurred_at: props.occurredAt,
+      origin: "system",
+      subject_student_id: props.subjectStudentId,
+    })
+    .select("audit_id")
+    .single();
+  if (error) throw new Error(`insert synthetic audit_event (${props.actor}): ${error.message}`);
+  return data.audit_id as number;
+}
+
+/** Remove a synthetic audit event and its derived subject rows (FK order). */
+async function deleteSyntheticAuditEvent(auditId: number): Promise<void> {
+  const service = serviceClient();
+  const { error: subjectError } = await service
+    .from("audit_event_subject")
+    .delete()
+    .eq("audit_id", auditId);
+  if (subjectError) {
+    throw new Error(`cleanup synthetic audit subject ${auditId}: ${subjectError.message}`);
+  }
+  const { error } = await service.from("audit_event").delete().eq("audit_id", auditId);
+  if (error) throw new Error(`cleanup synthetic audit_event ${auditId}: ${error.message}`);
+}
+
 test.describe("audit history and activity surfaces", () => {
   test.setTimeout(120_000);
 
@@ -446,12 +622,15 @@ test.describe("audit history and activity surfaces", () => {
 
       // Every audited category for the seeded student is present with the
       // student's name as the subject.
+      // The friendly entity wording comes from the shared presentation module
+      // (R8): "Student", "Application", "Advising meeting", "Fellowship
+      // Thursday", "Scholarship record". Matching is case-insensitive.
       const categoryRows: [string, RegExp][] = [
-        ["profile", /Created student/],
-        ["application", /Created application/],
-        ["advising", /Created advising meeting/],
-        ["attendance", /Created fellowship thursday/],
-        ["scholarship", /Created scholarship history/],
+        ["profile", /Created Student/i],
+        ["application", /Created Application/i],
+        ["advising", /Created Advising meeting/i],
+        ["attendance", /Created Fellowship Thursday/i],
+        ["scholarship", /Created Scholarship record/i],
       ];
       for (const [category, pattern] of categoryRows) {
         const row = history.locator("li", { hasText: pattern });
@@ -461,7 +640,7 @@ test.describe("audit history and activity surfaces", () => {
 
       // The newest event is the advisor-authored profile update, above the
       // seeded creation, with friendly (not raw) field changes.
-      const updatedRow = history.locator("li", { hasText: /Updated student/ });
+      const updatedRow = history.locator("li", { hasText: /Updated Student/i });
       await expect(updatedRow).toContainText(STUDENT_NAME);
       await expect(updatedRow).toContainText(`By ${ACTIVE_ADVISOR_NAME}`);
       await expect(updatedRow).toContainText("Major");
@@ -471,8 +650,8 @@ test.describe("audit history and activity surfaces", () => {
       // Newest-first chronology (comparing rendered TEXT keeps markup-tag
       // splitting between the action label and the entity label out of scope).
       const items = await history.locator("li").allTextContents();
-      const updatedIndex = items.findIndex((text) => text.includes("Updated student:"));
-      const createdIndex = items.findIndex((text) => text.includes("Created student:"));
+      const updatedIndex = items.findIndex((text) => text.toLowerCase().includes("updated student"));
+      const createdIndex = items.findIndex((text) => text.toLowerCase().includes("created student"));
       expect(updatedIndex).toBeGreaterThan(-1);
       expect(createdIndex).toBeGreaterThan(updatedIndex);
 
@@ -548,18 +727,21 @@ test.describe("audit history and activity surfaces", () => {
       await expect(activityList(page).locator("li")).toHaveCount(Math.min(showing.total, 25));
       await expect(page.getByText(/Page 1 of [2-9]\d*/)).toBeVisible();
 
-      // Newest first: the generated "Updated student" writes top the page.
-      await expect(activityList(page).locator("li").first()).toContainText("Updated student");
+      // Newest first: the generated "Updated Student" writes top the page.
+      await expect(activityList(page).locator("li").first()).toContainText(/Updated Student/i);
 
       // The seeded fellowship's creation is OLD (advisors, then fellowships),
       // so it sits beyond the initial page.
       await expect(activityList(page).locator("li", { hasText: FELLOWSHIP_NAME })).toHaveCount(0);
 
       // ── Deterministic order: reloading yields the identical sequence ───────
-      const pageOneText = await activityList(page).locator("li").allTextContents();
+      // Compare deterministic row identity/content (ISO dateTime + server-
+      // rendered content), not the browser-local timestamp text that hydrates
+      // asynchronously after the reload.
+      const pageOneFingerprints = await activityRowFingerprints(page);
       await page.reload();
       await expect(activityList(page).locator("li")).toHaveCount(Math.min(showing.total, 25));
-      expect(await activityList(page).locator("li").allTextContents()).toEqual(pageOneText);
+      expect(await activityRowFingerprints(page)).toEqual(pageOneFingerprints);
 
       // ── Page 2: reaches the seeded fellowship's creation event ─────────────
       const next = page.getByRole("link", { name: "Next" });
@@ -568,9 +750,9 @@ test.describe("audit history and activity surfaces", () => {
       await expect(page).toHaveURL(/page=2/);
       await expect(page.getByText(/Page 2 of \d+/)).toBeVisible();
       await expect(activityList(page).locator("li", { hasText: FELLOWSHIP_NAME })).toHaveCount(1);
-      const pageTwoText = await activityList(page).locator("li").allTextContents();
+      const pageTwoFingerprints = await activityRowFingerprints(page);
       await page.reload();
-      expect(await activityList(page).locator("li").allTextContents()).toEqual(pageTwoText);
+      expect(await activityRowFingerprints(page)).toEqual(pageTwoFingerprints);
 
       // ── Page-size contract: 100 rows per page renders the bounded range ────
       await page.goto("/activity?page=1&pageSize=100");
@@ -589,7 +771,7 @@ test.describe("audit history and activity surfaces", () => {
       await page.getByRole("button", { name: "Apply filters" }).click();
       await expect(page).toHaveURL(/entity=fellowship/);
       await expect(activityList(page).locator("li", { hasText: FELLOWSHIP_NAME })).toHaveCount(1);
-      await expect(activityList(page).locator("li", { hasText: /student:/ })).toHaveCount(0);
+      await expect(activityList(page).locator("li", { hasText: /Created Student/i })).toHaveCount(0);
       const entityShowing = parseShowing(await pagination.getByText(/Showing/).innerText());
       expect(entityShowing.total).toBeLessThan(25);
 
@@ -632,7 +814,7 @@ test.describe("audit history and activity surfaces", () => {
       await page.getByRole("button", { name: "Apply filters" }).click();
       await expect(page).toHaveURL(/from=/);
       await expect(page).toHaveURL(/to=/);
-      await expect(activityList(page).locator("li").first()).toContainText("Updated student");
+      await expect(activityList(page).locator("li").first()).toContainText(/Updated Student/i);
 
       // ── Privacy: raw JSON / secrets never reach the rendered page ──────────
       // The /activity page renders its own <main> inside the dashboard shell's
@@ -671,7 +853,7 @@ test.describe("audit history and activity surfaces", () => {
 
     // The application-scoped trail shows the seeded creation for this
     // application, newest-first, attributed to the System seed write.
-    const createdAppRow = dialog.locator("li", { hasText: /Created application/ });
+    const createdAppRow = dialog.locator("li", { hasText: /Created Application/i });
     await expect(createdAppRow).toContainText(STUDENT_NAME);
     await expect(createdAppRow).toContainText("By System");
 
@@ -845,7 +1027,7 @@ test.describe("audit history and activity surfaces", () => {
       await expect(roleRow).toContainText(`By ${ACTIVE_ADVISOR_NAME}`);
       // Provisioning was performed by the Admin (admin-attributed creation).
       await expect(
-        advisorHistory.locator("li", { hasText: /Created advisor/ }).filter({
+        advisorHistory.locator("li", { hasText: /Created Advisor/i }).filter({
           hasText: `By ${ACTIVE_ADVISOR_NAME}`,
         }),
       ).toHaveCount(1);
@@ -864,41 +1046,43 @@ test.describe("audit history and activity surfaces", () => {
       // Advisor B authored an advising creation and a correction.
       await expect(
         history
-          .locator("li", { hasText: /Created advising meeting/ })
+          .locator("li", { hasText: /Created Advising meeting/i })
           .filter({ hasText: `By ${advisorBName}` }),
       ).toHaveCount(1);
       await expect(
         history
-          .locator("li", { hasText: /Correction Added advising meeting amendment/ })
+          .locator("li", { hasText: /Correction Added Advising meeting/i })
           .filter({ hasText: `By ${advisorBName}` }),
       ).toHaveCount(1);
 
       // Both advisors updated the SAME student; each update keeps its own actor
       // and friendly Major before/after values.
       const updatedByB = history
-        .locator("li", { hasText: /Updated student/ })
+        .locator("li", { hasText: /Updated Student/i })
         .filter({ hasText: `By ${advisorBName}` });
       await expect(updatedByB).toHaveCount(1);
       await expect(updatedByB).toContainText("Major");
       await expect(updatedByB).toContainText(majorB);
       const updatedByAdmin = history
-        .locator("li", { hasText: /Updated student/ })
+        .locator("li", { hasText: /Updated Student/i })
         .filter({ hasText: `By ${ACTIVE_ADVISOR_NAME}` });
       await expect(updatedByAdmin).toHaveCount(1);
       await expect(updatedByAdmin).toContainText(majorB);
       await expect(updatedByAdmin).toContainText(majorA);
 
       // Lifecycle transitions keep their required reasons and Admin attribution.
-      const archivedEvent = history.locator("li", { hasText: /Archived student/ });
+      const archivedEvent = history.locator("li", { hasText: /Archived Student/i });
       await expect(archivedEvent).toContainText(archiveReason);
       await expect(archivedEvent).toContainText(`By ${ACTIVE_ADVISOR_NAME}`);
-      const restoredEvent = history.locator("li", { hasText: /Restored student/ });
+      const restoredEvent = history.locator("li", { hasText: /Restored Student/i });
       await expect(restoredEvent).toContainText(restoreReason);
       await expect(restoredEvent).toContainText(`By ${ACTIVE_ADVISOR_NAME}`);
 
-      // Newest-first chronology across the whole merged timeline.
+      // Newest-first chronology across the whole merged timeline. Comparisons
+      // are case-insensitive so the shared friendly labels ("Advising meeting",
+      // "Scholarship record", capitalized entities) are matched reliably.
       const timelineItems = await history.locator("li").allTextContents();
-      const at = (needle: string) => timelineItems.findIndex((text) => text.includes(needle));
+      const at = (needle: string) => timelineItems.findIndex((text) => text.toLowerCase().includes(needle.toLowerCase()));
       expect(at("Restored student")).toBeGreaterThan(-1);
       expect(at("Restored student")).toBeLessThan(at("Archived student"));
       expect(at("Archived student")).toBeLessThan(at("Correction Added"));
@@ -922,14 +1106,14 @@ test.describe("audit history and activity surfaces", () => {
       const list = activityList(page);
       await expect(list.locator("li").first()).toBeVisible();
       const ordered = await list.locator("li").allTextContents();
-      const oAt = (needle: string) => ordered.findIndex((text) => text.includes(needle));
+      const oAt = (needle: string) => ordered.findIndex((text) => text.toLowerCase().includes(needle.toLowerCase()));
       expect(oAt("Restored student")).toBeGreaterThan(-1);
       expect(oAt("Restored student")).toBeLessThan(oAt("Archived student"));
       expect(oAt("Archived student")).toBeLessThan(oAt("Updated student"));
       expect(oAt("Correction Added")).toBeLessThan(oAt("Created advising meeting"));
       expect(oAt("Created student")).toBeGreaterThan(oAt("Updated student"));
-      await expect(list.locator("li", { hasText: /Archived student/ })).toContainText(archiveReason);
-      await expect(list.locator("li", { hasText: /Restored student/ })).toContainText(restoreReason);
+      await expect(list.locator("li", { hasText: /Archived Student/i })).toContainText(archiveReason);
+      await expect(list.locator("li", { hasText: /Restored Student/i })).toContainText(restoreReason);
 
       // Actor filter: every remaining row is Advisor B's own audited write.
       await page.getByRole("link", { name: "Clear" }).click();
@@ -1055,6 +1239,253 @@ test.describe("audit history and activity surfaces", () => {
       expect(survived?.audit_id).toBe(target.audit_id);
     } finally {
       await advisor.auth.signOut().catch(() => undefined);
+    }
+  });
+
+  test("an approved Student email change renders in the unified timeline (R2)", async ({ page }) => {
+    const advisor = await activeAdvisorClient();
+    const suffix = workflowSuffix();
+    const studentName = `E2E Email Student ${suffix}`;
+    const studentEmail = `e2e-email-${suffix}@example.com`;
+    const newEmail = `e2e-email-updated-${suffix}@example.com`;
+    const studentId = await seedWorkflowStudent(studentName, studentEmail);
+
+    try {
+      // One real profile write: the versioned writer audits the email change and
+      // names the active advisor as the actor.
+      await writeStudentEmail(advisor, studentId, newEmail);
+
+      await signInAsActive(page);
+      await page.goto(`/students/${studentId}`);
+      await expect(page.getByRole("heading", { name: studentName })).toBeVisible({
+        timeout: 15_000,
+      });
+      const history = page.locator("main section[aria-label='Activity & Change History']");
+      await expect(
+        history.getByRole("heading", { name: "Activity & Change History" }),
+      ).toBeVisible();
+
+      // Student email is an approved business field: the change renders as a
+      // friendly before/after pair attributed to the acting advisor.
+      const updated = history.locator("li", { hasText: /Updated Student/i });
+      await expect(updated).toHaveCount(1);
+      await expect(updated).toContainText("Email");
+      await expect(updated).toContainText(studentEmail);
+      await expect(updated).toContainText(newEmail);
+      await expect(updated).toContainText(`By ${ACTIVE_ADVISOR_NAME}`);
+
+      // Privacy: the normalized timeline never leaks Auth/technical material.
+      await assertNoRawAuditPayload(page.locator("main"));
+    } finally {
+      await deleteWorkflowStudent(studentId).catch((err: unknown) =>
+        console.warn(`activity.spec email student cleanup failed: ${String(err)}`),
+      );
+      await advisor.auth.signOut().catch(() => undefined);
+    }
+  });
+
+  test("an Advisor rename renders an attributed advisor-name change with no Advisor email or Auth material (R2)", async ({ page }) => {
+    const suffix = workflowSuffix();
+    const advisorName = `E2E Rename Advisor ${suffix}`;
+    const renamed = `E2E Renamed Advisor ${suffix}`;
+    const advisorEmail = `e2e-rename-${suffix}@example.com`;
+    const seeded = await seedWorkflowAdvisor(advisorName, advisorEmail);
+
+    try {
+      await signInAsActive(page);
+      await page.goto("/advisors");
+      const card = advisorCard(page, advisorName);
+      await expect(card).toBeVisible();
+      await card.getByRole("button", { name: "Edit name" }).click();
+
+      const dialog = page.getByRole("dialog", { name: "Edit advisor name" });
+      await dialog.locator("#advisor-display-name").fill(renamed);
+      await dialog.getByRole("button", { name: "Save name" }).click();
+      await expect(dialog).toBeHidden();
+
+      // The advisor detail history records exactly one attributed rename with a
+      // friendly before/after Advisor name change.
+      await page.goto(`/advisors/${seeded.advisorId}`);
+      const history = page.locator("main section[aria-label='Advisor change history']");
+      await expect(
+        history.getByRole("heading", { name: "Advisor change history" }),
+      ).toBeVisible();
+      const renamedRow = history.locator("li", { hasText: /Updated Advisor/i });
+      await expect(renamedRow).toHaveCount(1);
+      await expect(renamedRow).toContainText("Advisor name");
+      await expect(renamedRow).toContainText(advisorName);
+      await expect(renamedRow).toContainText(renamed);
+      await expect(renamedRow).toContainText(`By ${ACTIVE_ADVISOR_NAME}`);
+
+      // R2: Advisor email and every Auth/technical binding stay out of the
+      // normalized history (Student email is the only admitted email).
+      const historyText = await history.innerText();
+      expect(historyText, "Advisor email must never be projected").not.toContain(advisorEmail);
+      expect(historyText, "Auth binding must never be projected").not.toContain("auth_user_id");
+      await assertNoRawAuditPayload(page.locator("main"));
+    } finally {
+      await cleanupWorkflowAdvisor(seeded.advisorId, seeded.authUserId).catch((err: unknown) =>
+        console.warn(`activity.spec rename advisor cleanup failed: ${String(err)}`),
+      );
+    }
+  });
+
+  test("an application re-link renders Student/Fellowship before→after names, never ids, and returns through either endpoint exactly once (R3/R10)", async ({ page }) => {
+    const suffix = workflowSuffix();
+    const studentAName = `E2E Relink Student A ${suffix}`;
+    const studentBName = `E2E Relink Student B ${suffix}`;
+    const fellowshipAName = `E2E Relink Fellowship A ${suffix}`;
+    const fellowshipBName = `E2E Relink Fellowship B ${suffix}`;
+    const studentAId = await seedWorkflowStudent(studentAName, `e2e-relink-a-${suffix}@example.com`);
+    const studentBId = await seedWorkflowStudent(studentBName, `e2e-relink-b-${suffix}@example.com`);
+    const fellowshipAId = await seedFellowship(fellowshipAName);
+    const fellowshipBId = await seedFellowship(fellowshipBName);
+    const applicationId = await seedApplication(studentAId, fellowshipAId);
+
+    try {
+      await signInAsActive(page);
+      await page.goto("/applications");
+
+      // Re-link the application to a DIFFERENT student and fellowship through
+      // the real edit flow (the versioned `update_application` writer).
+      const row = page
+        .locator("table tbody tr", { hasText: studentAName })
+        .filter({ hasText: fellowshipAName })
+        .first();
+      await expect(row).toBeVisible();
+      await row.getByTitle("Edit application").click();
+
+      const dialog = page.getByRole("dialog");
+      await dialog.locator("#app-student").click();
+      await page.getByRole("option", { name: studentBName, exact: true }).click();
+      await dialog.locator("#app-fellowship").click();
+      await page.getByRole("option", { name: fellowshipBName, exact: true }).click();
+      await dialog.getByRole("button", { name: "Save Changes" }).click();
+      await expect(dialog).toBeHidden();
+
+      const relinkedRow = page
+        .locator("table tbody tr", { hasText: studentBName })
+        .filter({ hasText: fellowshipBName })
+        .first();
+      await expect(relinkedRow).toBeVisible();
+
+      // The application-scoped history renders frozen endpoint NAMES (never the
+      // paired `#id` fallback, since the immutable labels resolved).
+      await relinkedRow.getByRole("button", { name: "View application history" }).click();
+      const historyDialog = page.getByRole("dialog");
+      await expect(
+        historyDialog.getByRole("heading", { name: "Application history" }),
+      ).toBeVisible();
+      const updatedRow = historyDialog.locator("li", { hasText: /Updated Application/i });
+      await expect(updatedRow).toHaveCount(1);
+      await expect(updatedRow).toContainText("Student");
+      await expect(updatedRow).toContainText(studentAName);
+      await expect(updatedRow).toContainText(studentBName);
+      await expect(updatedRow).toContainText("Fellowship");
+      await expect(updatedRow).toContainText(fellowshipAName);
+      await expect(updatedRow).toContainText(fellowshipBName);
+      for (const idFallback of [
+        `Student #${studentAId}`,
+        `Student #${studentBId}`,
+        `Fellowship #${fellowshipAId}`,
+        `Fellowship #${fellowshipBId}`,
+      ]) {
+        await expect(updatedRow, `must not fall back to ${idFallback}`).not.toContainText(idFallback);
+      }
+      await assertNoRawAuditPayload(historyDialog);
+      await historyDialog.getByRole("button", { name: "Close" }).click();
+
+      // R10: the complete immutable subject association returns the re-link
+      // through EITHER endpoint exactly once (no duplicate, no omission).
+      for (const [name, id] of [
+        [studentAName, studentAId],
+        [studentBName, studentBId],
+      ] as const) {
+        await page.goto(`/students/${id}`);
+        await expect(page.getByRole("heading", { name })).toBeVisible({ timeout: 15_000 });
+        const timeline = page.locator("main section[aria-label='Activity & Change History']");
+        await expect(
+          timeline.locator("li", { hasText: /Updated Application/i }),
+          `re-link must appear exactly once for ${name}`,
+        ).toHaveCount(1);
+      }
+    } finally {
+      await deleteApplicationById(applicationId).catch((err: unknown) =>
+        console.warn(`activity.spec relink application cleanup failed: ${String(err)}`),
+      );
+      await deleteWorkflowStudent(studentAId).catch((err: unknown) =>
+        console.warn(`activity.spec relink student A cleanup failed: ${String(err)}`),
+      );
+      await deleteWorkflowStudent(studentBId).catch((err: unknown) =>
+        console.warn(`activity.spec relink student B cleanup failed: ${String(err)}`),
+      );
+      await deleteFellowshipById(fellowshipAId).catch((err: unknown) =>
+        console.warn(`activity.spec relink fellowship A cleanup failed: ${String(err)}`),
+      );
+      await deleteFellowshipById(fellowshipBId).catch((err: unknown) =>
+        console.warn(`activity.spec relink fellowship B cleanup failed: ${String(err)}`),
+      );
+    }
+  });
+
+  test("Activity date filters use OCF-office (America/New_York) boundaries and canonicalize invalid/reversed ranges (R11)", async ({ page }) => {
+    const studentId = await findStudentId();
+    const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    const fallActor = `E2E NY boundary fall ${suffix}`;
+    const springActor = `E2E NY boundary spring ${suffix}`;
+    // Two late-evening NY instants on the two DST-transition days. Each one's
+    // UTC calendar date is the NEXT day, so a (wrong) UTC-day filter would
+    // classify them differently from the correct OCF-office day.
+    //   fall:   NY 2026-11-01 22:30 EST (25h day; UTC 2026-11-02 03:30Z)
+    //   spring: NY 2026-03-08 22:30 EDT (23h day; UTC 2026-03-09 03:30Z)
+    const fallAuditId = await insertSyntheticAuditEvent({
+      occurredAt: "2026-11-02T03:30:00.000Z",
+      actor: fallActor,
+      subjectStudentId: studentId,
+    });
+    const springAuditId = await insertSyntheticAuditEvent({
+      occurredAt: "2026-03-09T03:30:00.000Z",
+      actor: springActor,
+      subjectStudentId: studentId,
+    });
+
+    try {
+      await signInAsActive(page);
+      const list = activityList(page);
+
+      // Fall-back day: included by its NY day, excluded by its UTC day.
+      await page.goto("/activity?from=2026-11-01&to=2026-11-01");
+      await expect(list.locator("li", { hasText: fallActor })).toHaveCount(1);
+      await expect(list.locator("li", { hasText: springActor })).toHaveCount(0);
+      await page.goto("/activity?from=2026-11-02&to=2026-11-02");
+      await expect(
+        list.locator("li", { hasText: fallActor }),
+        "the 25-hour fall-back event belongs to its NY day, not its UTC day",
+      ).toHaveCount(0);
+
+      // Spring-forward day: same NY-vs-UTC discrimination.
+      await page.goto("/activity?from=2026-03-08&to=2026-03-08");
+      await expect(list.locator("li", { hasText: springActor })).toHaveCount(1);
+      await page.goto("/activity?from=2026-03-09&to=2026-03-09");
+      await expect(
+        list.locator("li", { hasText: springActor }),
+        "the 23-hour spring-forward event belongs to its NY day, not its UTC day",
+      ).toHaveCount(0);
+
+      // A reversed range drops the invalid upper bound and canonicalizes the URL.
+      await page.goto("/activity?from=2026-11-02&to=2026-11-01");
+      await expect(page).toHaveURL(/from=2026-11-02/);
+      await expect(page).not.toHaveURL(/to=/);
+
+      // A malformed date is dropped and canonicalized away.
+      await page.goto("/activity?from=2026-13-40");
+      await expect(page).not.toHaveURL(/from=/);
+    } finally {
+      for (const auditId of [fallAuditId, springAuditId]) {
+        await deleteSyntheticAuditEvent(auditId).catch((err: unknown) =>
+          console.warn(`activity.spec NY boundary audit cleanup failed: ${String(err)}`),
+        );
+      }
     }
   });
 });

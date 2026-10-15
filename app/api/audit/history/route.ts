@@ -5,13 +5,17 @@
  *
  *   GET /api/audit/history?kind=...&<descriptor>&limit=&cursor=&watermark=
  *
- * The browser never reads `audit_activity` directly. This handler reads the
- * explicit safe projection, normalizes each row through `normalizeAuditRow`,
- * and returns only safe `AuditActivity` fields — raw snapshot payload columns
- * (`old_values`/`new_values`), unknown diff fields, and Auth-binding ids never
- * reach the response. Pagination is keyset/high-watermark based (see
- * `@/lib/audit/read`), so a "load more" that races a new insert can neither
- * duplicate nor skip an event. Every page is a single bounded query (no N+1).
+ * The browser never reads `audit_activity` directly, and the projection itself
+ * no longer carries raw audit JSON. This handler reads the explicit safe
+ * projection, normalizes each row through `normalizeAuditRow` (attaching the
+ * server-only raw diff read in ONE bounded batch from the `audit_event` base
+ * table through the server-only service-role client), and returns only safe
+ * `AuditActivity` fields — raw snapshot payload columns (`old_values`/
+ * `new_values`) and the raw diff (`changes`) are unreadable by every client role
+ * (migration `20261023000001`), so they can never reach the response. Pagination
+ * is keyset/high-watermark based (see `@/lib/audit/read`), so a "load more" that
+ * races a new insert can neither duplicate nor skip an event. Every page is a
+ * bounded safe-view query plus one bounded raw-diff batch (no N+1).
  *
  * Authorization: any authenticated session. The underlying `audit_activity`
  * view remains governed by its own SECURITY INVOKER RLS, so this handler adds

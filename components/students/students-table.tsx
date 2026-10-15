@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AppCard, AppCardContent } from "@/components/ui/app-card";
@@ -204,6 +204,7 @@ export function StudentsTable({
    * is rejected by the writer with `PT409`.
    */
   const [editVersion, setEditVersion] = useState<number | null>(null);
+  const editStarted = useRef(false);
   const [isLoading, setIsLoading] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
@@ -342,8 +343,11 @@ export function StudentsTable({
   };
 
   const openEdit = async (student: Student) => {
+    editStarted.current = false;
     setEditFormErrors({});
     setEditVersion(null);
+    setEditingStudent(student);
+    setEditForm({ ...EMPTY_STUDENT_FORM, full_name: student.full_name, email: student.email, major: student.major ?? "", minor: student.minor ?? "", class_standing: student.class_standing ?? "", gpa: student.gpa != null ? String(student.gpa) : "", age: student.age != null ? String(student.age) : "", gender: student.gender ?? "", pronouns: student.pronouns ?? "", languages: student.languages ?? "", race_ethnicity: student.race_ethnicity ?? "", is_ch_student: student.is_ch_student, first_gen: student.first_gen, honors_college: student.honors_college, us_citizen: student.us_citizen });
     setEditStudentOpen(true);
 
     // The form and version come from this one query. Never pair a rendered list
@@ -356,7 +360,7 @@ export function StudentsTable({
     if (!error && data) {
       const snapshot = data as Database["public"]["Tables"]["student"]["Row"];
       setEditingStudent(snapshot as unknown as Student);
-      setEditForm({ ...EMPTY_STUDENT_FORM, full_name: snapshot.full_name, email: snapshot.email, major: snapshot.major ?? "", class_standing: snapshot.class_standing ?? "", gpa: snapshot.gpa != null ? String(snapshot.gpa) : "", is_ch_student: snapshot.is_ch_student, first_gen: snapshot.first_gen, honors_college: snapshot.honors_college, us_citizen: snapshot.us_citizen });
+      if (!editStarted.current) setEditForm({ ...EMPTY_STUDENT_FORM, full_name: snapshot.full_name, email: snapshot.email, major: snapshot.major ?? "", minor: snapshot.minor ?? "", class_standing: snapshot.class_standing ?? "", gpa: snapshot.gpa != null ? String(snapshot.gpa) : "", age: snapshot.age != null ? String(snapshot.age) : "", gender: snapshot.gender ?? "", pronouns: snapshot.pronouns ?? "", languages: snapshot.languages ?? "", race_ethnicity: snapshot.race_ethnicity ?? "", is_ch_student: snapshot.is_ch_student, first_gen: snapshot.first_gen, honors_college: snapshot.honors_college, us_citizen: snapshot.us_citizen });
       setEditVersion(snapshot.row_version);
     }
   };
@@ -506,13 +510,13 @@ export function StudentsTable({
           }
           trailing={
             <>
-              <Button
+              {!archiveView && <Button
                 size="sm"
                 onClick={() => setAddStudentOpen(true)}
               >
                 <UserPlus className="mr-2 h-4 w-4" />
                 Add Student
-              </Button>
+              </Button>}
             </>
           }
         />
@@ -534,7 +538,7 @@ export function StudentsTable({
                     <Button variant="outline" onClick={handleClearFilters}>
                       Clear filters
                     </Button>
-                  ) : (
+                  ) : archiveView ? undefined : (
                     <Button onClick={() => setAddStudentOpen(true)}>
                       <UserPlus className="mr-2 h-4 w-4" />
                       Add Student
@@ -587,10 +591,10 @@ export function StudentsTable({
                               <Eye className="mr-2 h-4 w-4" />
                               View
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => openEdit(student)}>
+                            {!archiveView && <DropdownMenuItem onClick={() => openEdit(student)}>
                               <Pencil className="mr-2 h-4 w-4" />
                               Edit
-                            </DropdownMenuItem>
+                            </DropdownMenuItem>}
                           </DropdownMenuContent>
                         </DropdownMenu>
                         <LifecycleAction
@@ -727,7 +731,7 @@ export function StudentsTable({
                                 </TooltipContent>
                               </Tooltip>
 
-                              <Tooltip>
+                              {!archiveView && <Tooltip>
                                 <TooltipTrigger asChild>
                                   <Button
                                     variant="ghost"
@@ -744,7 +748,7 @@ export function StudentsTable({
                                 <TooltipContent>
                                   <p>Edit student</p>
                                 </TooltipContent>
-                              </Tooltip>
+                              </Tooltip>}
 
                               <Tooltip>
                                 <TooltipTrigger asChild>
@@ -1073,7 +1077,7 @@ export function StudentsTable({
 
       {/* Edit Student Dialog */}
       <Dialog open={editStudentOpen} onOpenChange={setEditStudentOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-lg" onChangeCapture={() => { editStarted.current = true; }}>
           <DialogHeader>
             <DialogTitle>Edit Student</DialogTitle>
             <DialogDescription>

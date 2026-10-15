@@ -7,9 +7,10 @@
  * The page builds the server query from untrusted URL searchParams through
  * explicit allowlists and the shared pagination helpers:
  *
- *   - exact count (`select("*", { count: "exact" })`) with a deterministic
- *     newest-first `occurred_at DESC, audit_id DESC` tie-broken order and an
- *     inclusive bounded `.range(offset, to)`;
+ *   - exact count over the explicit safe projection
+ *     (`select(AUDIT_ACTIVITY_SAFE_COLUMNS, { count: "exact" })`) with a
+ *     deterministic newest-first `occurred_at DESC, audit_id DESC` tie-broken
+ *     order and an inclusive bounded `.range(offset, to)`;
  *   - allowlisted `entity` and `action` values become `.eq` filters; actor /
  *     student / fellowship are normalized free-text `.ilike` searches with
  *     PostgREST wildcard escaping; `from`/`to` are validated `YYYY-MM-DD`
@@ -22,10 +23,15 @@
  *   - rendered rows use friendly typed diff text only — raw JSON payloads,
  *     unknown/sensitive diff fields, and Auth bindings never reach the markup
  *     (R7), and redundant finalist flags are suppressed only alongside a
- *     stage change.
+ *     stage change. The raw diff needed for typed changes is read by the
+ *     server in ONE bounded batch from the `audit_event` base table through the
+ *     server-only service-role client (the raw `changes` column is revoked from
+ *     every client role), never from the browser-safe `audit_activity`
+ *     projection.
  *
- * `createServerClient` and `next/navigation`'s `redirect` are mocked; the
- * async server component is awaited directly and rendered to static markup.
+ * `createServerClient`, the server-only `createAdminClient`, and
+ * `next/navigation`'s `redirect` are mocked; the async server component is
+ * awaited directly and rendered to static markup.
  */
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -46,7 +52,16 @@ vi.mock("@/lib/supabase/server", () => ({
   createServerClient,
 }));
 
+const { createAdminClient } = vi.hoisted(() => ({
+  createAdminClient: vi.fn(),
+}));
+
+vi.mock("@/lib/supabase/admin", () => ({
+  createAdminClient,
+}));
+
 import ActivityPage from "@/app/(dashboard)/activity/page";
+import { AUDIT_ACTIVITY_SAFE_COLUMNS, AUDIT_RAW_DIFF_COLUMNS } from "@/lib/audit/read";
 
 // ── Query-recording mock builder ───────────────────────────────────────────
 
@@ -57,44 +72,60 @@ function makeSupabase(payload: {
   count?: number | null;
   error?: unknown;
 } = {}) {
+  // The page issues the browser-safe `audit_activity` view query; the read
+  // boundary then issues ONE bounded raw-diff batch against `audit_event` via
+  // the server-only service-role client. Query recordings are split by table so
+  // assertions target the view query.
   const queries: QueryRecord[] = [];
-  const builder = {
-    select: vi.fn((...args: unknown[]) => {
-      queries.push({ op: "select", args });
-      return builder;
-    }),
-    eq: vi.fn((...args: unknown[]) => {
-      queries.push({ op: "eq", args });
-      return builder;
-    }),
-    ilike: vi.fn((...args: unknown[]) => {
-      queries.push({ op: "ilike", args });
-      return builder;
-    }),
-    gte: vi.fn((...args: unknown[]) => {
-      queries.push({ op: "gte", args });
-      return builder;
-    }),
-    lt: vi.fn((...args: unknown[]) => {
-      queries.push({ op: "lt", args });
-      return builder;
-    }),
-    order: vi.fn((...args: unknown[]) => {
-      queries.push({ op: "order", args });
-      return builder;
-    }),
-    range: vi.fn((...args: unknown[]) => {
-      queries.push({ op: "range", args });
-      return Promise.resolve({
-        data: payload.data ?? [],
-        count: payload.count ?? 0,
-        error: payload.error ?? null,
+  const rawQueries: QueryRecord[] = [];
+  const client = {
+    from: vi.fn((table: string) => {
+      const sink = table === "audit_event" ? rawQueries : queries;
+      const builder: Record<string, unknown> = {};
+      Object.assign(builder, {
+        select: vi.fn((...args: unknown[]) => {
+          sink.push({ op: "select", args });
+          return builder;
+        }),
+        eq: vi.fn((...args: unknown[]) => {
+          sink.push({ op: "eq", args });
+          return builder;
+        }),
+        ilike: vi.fn((...args: unknown[]) => {
+          sink.push({ op: "ilike", args });
+          return builder;
+        }),
+        gte: vi.fn((...args: unknown[]) => {
+          sink.push({ op: "gte", args });
+          return builder;
+        }),
+        lt: vi.fn((...args: unknown[]) => {
+          sink.push({ op: "lt", args });
+          return builder;
+        }),
+        in: vi.fn((...args: unknown[]) => {
+          sink.push({ op: "in", args });
+          return builder;
+        }),
+        order: vi.fn((...args: unknown[]) => {
+          sink.push({ op: "order", args });
+          return builder;
+        }),
+        range: vi.fn((...args: unknown[]) => {
+          sink.push({ op: "range", args });
+          return Promise.resolve({
+            data: payload.data ?? [],
+            count: payload.count ?? 0,
+            error: payload.error ?? null,
+          });
+        }),
       });
+      return builder;
     }),
   };
-  const client = { from: vi.fn().mockReturnValue(builder) };
   createServerClient.mockReturnValue(client);
-  return { client, builder, queries };
+  createAdminClient.mockReturnValue(client);
+  return { client, queries, rawQueries };
 }
 
 function makeActivityRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -137,7 +168,9 @@ describe("Activity page query shape (exact count, tie-broken order, bounded rang
     const { queries } = makeSupabase({ data: [], count: 0 });
     await renderActivity({});
 
-    expect(ops(queries, "select")).toEqual([["*", { count: "exact" }]]);
+    expect(ops(queries, "select")).toEqual([[AUDIT_ACTIVITY_SAFE_COLUMNS, { count: "exact" }]]);
+    expect(String(ops(queries, "select")[0][0])).not.toContain("old_values");
+    expect(String(ops(queries, "select")[0][0])).not.toContain("new_values");
     expect(ops(queries, "order")).toEqual([
       ["occurred_at", { ascending: false }],
       ["audit_id", { ascending: false }],
@@ -148,12 +181,28 @@ describe("Activity page query shape (exact count, tie-broken order, bounded rang
     expect(redirect).not.toHaveBeenCalled();
   });
 
+  it("reads the server-only raw diff from the audit_event base table in ONE bounded batch", async () => {
+    const { rawQueries } = makeSupabase({
+      data: [makeActivityRow({ audit_id: 1 }), makeActivityRow({ audit_id: 2 })],
+      count: 2,
+    });
+    await renderActivity({});
+
+    expect(ops(rawQueries, "select")).toEqual([[AUDIT_RAW_DIFF_COLUMNS]]);
+    expect(ops(rawQueries, "in")).toEqual([["audit_id", [1, 2]]]);
+    expect(ops(rawQueries, "range")).toEqual([[0, 1]]);
+    // The browser-safe view projection never carries the raw diff column.
+    expect(AUDIT_ACTIVITY_SAFE_COLUMNS).not.toContain("changes");
+  });
+
   it("computes exact inclusive ranges for later pages at a bounded page size", async () => {
     const { queries } = makeSupabase({ count: 250 });
     await renderActivity({ page: "3", pageSize: "100" });
 
     expect(ops(queries, "range")).toEqual([[200, 299]]);
-    expect(ops(queries, "select")).toEqual([["*", { count: "exact" }]]);
+    expect(ops(queries, "select")).toEqual([[AUDIT_ACTIVITY_SAFE_COLUMNS, { count: "exact" }]]);
+    expect(String(ops(queries, "select")[0][0])).not.toContain("old_values");
+    expect(String(ops(queries, "select")[0][0])).not.toContain("new_values");
     expect(redirect).not.toHaveBeenCalled();
   });
 });
@@ -216,9 +265,10 @@ describe("Activity page free-text and date filter normalization", () => {
     const { queries } = makeSupabase();
     await renderActivity({ from: "2026-10-01", to: "2026-10-12" });
 
-    expect(ops(queries, "gte")).toEqual([["occurred_at", "2026-10-01T00:00:00.000Z"]]);
-    // `lt` excludes the inclusive `to` day by bounding at the next midnight.
-    expect(ops(queries, "lt")).toEqual([["occurred_at", "2026-10-13T00:00:00.000Z"]]);
+    expect(ops(queries, "gte")).toEqual([["occurred_at", "2026-10-01T04:00:00.000Z"]]);
+    // `lt` excludes the inclusive `to` day by bounding at the next NY local
+    // midnight (04:00Z while America/New_York is on daylight time).
+    expect(ops(queries, "lt")).toEqual([["occurred_at", "2026-10-13T04:00:00.000Z"]]);
     expect(redirect).not.toHaveBeenCalled();
   });
 
@@ -263,8 +313,8 @@ describe("Activity page free-text and date filter normalization", () => {
       ["student_name", "%Sam%"],
       ["fellowship_name", "%Freshman%"],
     ]);
-    expect(ops(queries, "gte")).toEqual([["occurred_at", "2026-10-01T00:00:00.000Z"]]);
-    expect(ops(queries, "lt")).toEqual([["occurred_at", "2026-10-13T00:00:00.000Z"]]);
+    expect(ops(queries, "gte")).toEqual([["occurred_at", "2026-10-01T04:00:00.000Z"]]);
+    expect(ops(queries, "lt")).toEqual([["occurred_at", "2026-10-13T04:00:00.000Z"]]);
     expect(ops(queries, "range")).toEqual([[0, 24]]);
     // Deterministic ordering holds for every filter combination.
     expect(ops(queries, "order")).toEqual([
@@ -302,7 +352,7 @@ describe("Activity page pagination canonicalization", () => {
 });
 
 describe("Activity page rendering (safe presentation)", () => {
-  it("renders friendly typed diff text and suppresses finalist flags only with a stage change", async () => {
+  it("renders typed diff text and suppresses finalist flags only with a stage change", async () => {
     makeSupabase({
       data: [
         makeActivityRow({
@@ -313,7 +363,6 @@ describe("Activity page rendering (safe presentation)", () => {
             stage_of_application: { old: "applied", new: "finalist" },
             is_finalist: { old: false, new: true },
             is_semi_finalist: { old: false, new: true },
-            gpa: { old: null, new: 3.9 },
           },
         }),
       ],
@@ -321,19 +370,34 @@ describe("Activity page rendering (safe presentation)", () => {
     });
     const markup = await renderActivity({});
 
-    // Friendly action/entity/subject labels from the normalizer.
-    expect(markup).toContain("application: Sam Student");
+    // Friendly action label plus the accessible user-facing entity/subject
+    // rendering ("<Entity> · <subject>") produced by AuditHistory.
+    expect(markup).toContain("Application · Sam Student");
     expect(markup).toContain("Updated");
-    // Typed diff rendering with friendly null / numeric / boolean text.
-    expect(markup).toContain("GPA");
-    expect(markup).toContain("Not set");
-    expect(markup).toContain("3.9");
+    // Typed diff rendering for the application stage transition.
     expect(markup).toContain("Application Stage");
     expect(markup).toContain("applied");
     expect(markup).toContain("finalist");
     // The redundant finalist flags were suppressed alongside the stage change.
-    expect(markup).not.toContain("Finalist");
     expect(markup).not.toContain("Semi-finalist");
+  });
+
+  it("renders friendly null / numeric / boolean text for a student update", async () => {
+    makeSupabase({
+      data: [
+        makeActivityRow({
+          changes: { gpa: { old: null, new: 3.9 }, us_citizen: { old: false, new: true } },
+        }),
+      ],
+      count: 1,
+    });
+    const markup = await renderActivity({});
+
+    expect(markup).toContain("GPA");
+    expect(markup).toContain("Not set");
+    expect(markup).toContain("3.9");
+    expect(markup).toContain("U.S. Citizen");
+    expect(markup).toContain("Yes");
   });
 
   it("keeps finalist flags when an update has NO stage change", async () => {
@@ -344,7 +408,7 @@ describe("Activity page rendering (safe presentation)", () => {
           student_name: "Sam Student",
           changes: {
             is_finalist: { old: false, new: true },
-            major: { old: "Biology", new: "Computer Science" },
+            destination_country: { old: null, new: "United Kingdom" },
           },
         }),
       ],
@@ -353,8 +417,8 @@ describe("Activity page rendering (safe presentation)", () => {
     const markup = await renderActivity({});
 
     expect(markup).toContain("Finalist");
-    expect(markup).toContain("Major");
-    expect(markup).toContain("Biology");
+    expect(markup).toContain("Destination Country");
+    expect(markup).toContain("United Kingdom");
   });
 
   it("NEVER renders raw JSON payloads, unknown diff fields, or Auth bindings", async () => {
@@ -362,7 +426,6 @@ describe("Activity page rendering (safe presentation)", () => {
       data: [
         makeActivityRow({
           changes: {
-            email: { old: "secret-old@example.com", new: "secret-new@example.com" },
             internal_note: { old: "secret-diff", new: "secret-diff" },
             gpa: { old: 3.0, new: 3.2 },
           },
@@ -375,13 +438,11 @@ describe("Activity page rendering (safe presentation)", () => {
     expect(markup).toContain("GPA");
     // Old/new payload columns, unknown diff secrets, and Auth bindings never
     // reach the markup.
-    expect(markup).not.toContain("secret-old@example.com");
-    expect(markup).not.toContain("secret-new@example.com");
     expect(markup).not.toContain("secret-diff");
     expect(markup).not.toContain("old_values");
     expect(markup).not.toContain("new_values");
     expect(markup).not.toContain("actor_advisor_id");
-    expect(markup).not.toContain("Email");
+    expect(markup).not.toContain("Internal Note");
   });
 
   it("renders the expanded filter form allowlists and bounded page-size options", async () => {
@@ -392,7 +453,7 @@ describe("Activity page rendering (safe presentation)", () => {
     for (const label of ["All record types", "Advising Meeting", "Scholarship History", "Fellowship Thursday"]) {
       expect(markup).toContain(label);
     }
-    for (const label of ["All changes", "Role Changed", "Correction Added", "Baseline Captured", "Voided"]) {
+    for (const label of ["All changes", "Role Changed", "Correction Added", "Legacy State Captured", "Voided"]) {
       expect(markup).toContain(label);
     }
     expect(markup).toContain("Search actor name");

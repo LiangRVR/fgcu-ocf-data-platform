@@ -64,12 +64,12 @@ type Application = Database["public"]["Views"]["application_list"]["Row"] & {
 
 type StudentRow = Pick<
   Database["public"]["Tables"]["student"]["Row"],
-  "student_id" | "full_name"
+  "student_id" | "full_name" | "archived_at"
 >;
 
 type FellowshipRow = Pick<
   Database["public"]["Tables"]["fellowship"]["Row"],
-  "fellowship_id" | "fellowship_name"
+  "fellowship_id" | "fellowship_name" | "archived_at"
 >;
 
 // Map stage → badge styling
@@ -161,19 +161,24 @@ export function ApplicationsTable({
     let cancelled = false;
     const load = async () => {
       const term = selectorSearch.trim();
-      const studentQuery = supabaseBrowserClient.from("student").select("student_id, full_name").is("archived_at", null).order("full_name").limit(50);
-      const fellowshipQuery = supabaseBrowserClient.from("fellowship").select("fellowship_id, fellowship_name").is("archived_at", null).order("fellowship_name").limit(50);
+      const studentQuery = supabaseBrowserClient.from("student").select("student_id, full_name, archived_at").is("archived_at", null).order("full_name").limit(50);
+      const fellowshipQuery = supabaseBrowserClient.from("fellowship").select("fellowship_id, fellowship_name, archived_at").is("archived_at", null).order("fellowship_name").limit(50);
       const [studentResult, fellowshipResult] = await Promise.all([
         term ? studentQuery.ilike("full_name", `%${term.replace(/[\\%_]/g, "\\$&")}%`) : studentQuery,
         term ? fellowshipQuery.ilike("fellowship_name", `%${term.replace(/[\\%_]/g, "\\$&")}%`) : fellowshipQuery,
       ]);
       if (cancelled) return;
-      if (!studentResult.error) setStudents(studentResult.data ?? []);
-      if (!fellowshipResult.error) setFellowships(fellowshipResult.data ?? []);
+      const [historicalStudent, historicalFellowship] = await Promise.all([
+        editingApp ? supabaseBrowserClient.from("student").select("student_id, full_name, archived_at").eq("student_id", editingApp.student_id).not("archived_at", "is", null).maybeSingle() : Promise.resolve({ data: null, error: null }),
+        editingApp ? supabaseBrowserClient.from("fellowship").select("fellowship_id, fellowship_name, archived_at").eq("fellowship_id", editingApp.fellowship_id).not("archived_at", "is", null).maybeSingle() : Promise.resolve({ data: null, error: null }),
+      ]);
+      if (cancelled) return;
+      if (!studentResult.error) setStudents([...(studentResult.data ?? []), ...(historicalStudent.data ? [historicalStudent.data] : [])]);
+      if (!fellowshipResult.error) setFellowships([...(fellowshipResult.data ?? []), ...(historicalFellowship.data ? [historicalFellowship.data] : [])]);
     };
     void load();
     return () => { cancelled = true; };
-  }, [addOpen, editOpen, selectorSearch]);
+  }, [addOpen, editOpen, selectorSearch, editingApp]);
 
   // Pre-fill and auto-open add dialog when arriving from a contextual link
   useEffect(() => {
@@ -732,8 +737,8 @@ function ApplicationForm({
           </SelectTrigger>
           <SelectContent>
             {students.map((s) => (
-              <SelectItem key={s.student_id} value={String(s.student_id)}>
-                {s.full_name}
+              <SelectItem key={s.student_id} value={String(s.student_id)} disabled={s.archived_at != null}>
+                {s.full_name}{s.archived_at != null ? " (Archived — historical)" : ""}
               </SelectItem>
             ))}
           </SelectContent>
@@ -755,8 +760,8 @@ function ApplicationForm({
           </SelectTrigger>
           <SelectContent>
             {fellowships.map((f) => (
-              <SelectItem key={f.fellowship_id} value={String(f.fellowship_id)}>
-                {f.fellowship_name}
+              <SelectItem key={f.fellowship_id} value={String(f.fellowship_id)} disabled={f.archived_at != null}>
+                {f.fellowship_name}{f.archived_at != null ? " (Archived — historical)" : ""}
               </SelectItem>
             ))}
           </SelectContent>

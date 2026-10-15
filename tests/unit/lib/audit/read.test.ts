@@ -12,15 +12,24 @@
  *     `audit_id DESC` tie-breaker so same-timestamp events keep a stable
  *     chronological order (R11/R12);
  *   - bound: history reads are server paginated (R10/NFR1). Each request is a
- *     single query capped by `ENTITY_HISTORY_PAGE_SIZE` (or a clamped explicit
- *     `limit`) and fetched with a `limit + 1` probe (`.range(0, limit)`), so
- *     detail pages and load-more clicks never pull unbounded history;
+ *     view query capped by `ENTITY_HISTORY_PAGE_SIZE` (or a clamped explicit
+ *     `limit`) and fetched with a `limit + 1` probe (`.range(0, limit)`), plus
+ *     ONE bounded raw-diff batch over the `audit_event` base table for exactly
+ *     that page's audit ids — so detail pages and load-more clicks never pull
+ *     unbounded history;
+ *   - DB-ENFORCED RAW BOUNDARY: the raw-diff batch runs through the server-only
+ *     service-role client (`@/lib/supabase/admin`), never the cookie/RLS client,
+ *     and only for ids the cookie/RLS safe-view query already authorized and
+ *     bounded (client roles are denied the raw `changes` column at the database
+ *     level); a missing/invalid service-role configuration degrades to the safe
+ *     fields only;
  *   - STABLE pagination: continuation is KEYSET (strictly older than the last
  *     returned `(occurred_at, audit_id)`) plus an optional high-watermark, so
  *     events inserted between pages can never be duplicated or skipped — the
  *     failure mode of offset-based "load more";
- *   - no N+1: a history read issues exactly one `from("audit_activity")` query
- *     and performs no per-row/related-entity lookups;
+ *   - no N+1: a history read issues one browser-safe `from("audit_activity")`
+ *     page query plus one bounded `from("audit_event")` raw-diff batch, and
+ *     performs no per-row/related-entity lookups;
  *   - historical context (actor, timestamp, reason, entity label, allowlisted
  *     old→new changes) survives normalization;
  *   - `getStudentActivity` exposes the STUDENT UNIFIED SUBJECT TIMELINE:
@@ -31,16 +40,19 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuditHistoryCursor } from "@/lib/audit/history-api";
-import type { AuditRow } from "@/lib/audit/presentation";
+import type { AuditNormalizationInput, AuditRow } from "@/lib/audit/presentation";
 
-const { createServerClient } = vi.hoisted(() => ({
+const { createServerClient, createAdminClient } = vi.hoisted(() => ({
   createServerClient: vi.fn(),
+  createAdminClient: vi.fn(),
 }));
 
 vi.mock("@/lib/supabase/server", () => ({ createServerClient }));
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient }));
 
 import {
   AUDIT_ACTIVITY_SAFE_COLUMNS,
+  AUDIT_RAW_DIFF_COLUMNS,
   ENTITY_HISTORY_PAGE_SIZE,
   MAX_ENTITY_HISTORY_PAGE_SIZE,
   getApplicationHistory,
@@ -71,8 +83,8 @@ interface FakeBuilder {
   range(from: number, to: number): Promise<{ data: AuditRow[] | null; error: unknown }>;
 }
 
-function makeAuditRow(overrides: Partial<AuditRow> = {}): AuditRow {
-  const row: AuditRow = {
+function makeAuditRow(overrides: Partial<AuditNormalizationInput> = {}): AuditNormalizationInput {
+  const row: AuditNormalizationInput = {
     action: "updated",
     actor_advisor_id: 5,
     actor_name_snapshot: "Jordan Lee",
@@ -81,9 +93,7 @@ function makeAuditRow(overrides: Partial<AuditRow> = {}): AuditRow {
     entity_id: 3,
     entity_type: "student",
     fellowship_name: null,
-    new_values: null,
     occurred_at: "2026-10-12T14:30:00.000Z",
-    old_values: null,
     origin: "api",
     reason: "Reviewed",
     student_name: "Sam Student",
@@ -97,6 +107,20 @@ function makeAuditRow(overrides: Partial<AuditRow> = {}): AuditRow {
     previous_fellowship_name: null,
     current_fellowship_name: null,
     subject_application_name: null,
+    previous_student_id: null,
+    current_student_id: null,
+    previous_fellowship_id: null,
+    current_fellowship_id: null,
+    fellowship_thursday_attended_before: null,
+    fellowship_thursday_attended_after: null,
+    fellowship_thursday_attended_amended: null,
+    fellowship_thursday_source_before: null,
+    fellowship_thursday_source_after: null,
+    fellowship_thursday_source_amended: null,
+    void_reason: null,
+    advising_meeting_date: null,
+    advising_application_id: null,
+    advising_advisor_id: null,
     ...overrides,
   };
   row.student_subject_ids = overrides.student_subject_ids ??
@@ -242,6 +266,7 @@ function makeDatasetClient(rows: AuditRow[], opts: { error?: unknown } = {}) {
     }),
   };
   createServerClient.mockReturnValue(client);
+  createAdminClient.mockReturnValue(client);
   return { client, calls };
 }
 
@@ -266,21 +291,31 @@ beforeEach(() => {
 });
 
 describe("safe projection (no raw payload columns leave the database)", () => {
-  it("selects ONLY the explicit safe columns for every loader", async () => {
+  it("selects ONLY the explicit safe view columns plus the explicit server-only raw-diff columns", async () => {
     const { calls } = makeDatasetClient([makeAuditRow()]);
 
     await getEntityHistoryPage("advisor", 7);
     await getStudentActivityPage(3);
     await getApplicationHistoryPage([4]);
 
-    expect(calls).toHaveLength(3);
+    // Each loader issues one browser-safe view query; a page that returns rows
+    // additionally issues ONE bounded raw-diff batch over the RLS-governed base
+    // table (an empty page short-circuits without the extra read).
+    expect(calls.filter((call) => call.select === AUDIT_ACTIVITY_SAFE_COLUMNS)).toHaveLength(3);
+    expect(calls.filter((call) => call.select === AUDIT_RAW_DIFF_COLUMNS).length).toBeGreaterThanOrEqual(1);
+    expect(calls.every(
+      (call) => call.select === AUDIT_ACTIVITY_SAFE_COLUMNS || call.select === AUDIT_RAW_DIFF_COLUMNS
+    )).toBe(true);
     for (const call of calls) {
-      expect(call.select).toBe(AUDIT_ACTIVITY_SAFE_COLUMNS);
       expect(call.select).not.toContain("old_values");
       expect(call.select).not.toContain("new_values");
       expect(call.select).not.toContain("actor_advisor_id");
       expect(call.select).not.toContain("origin");
     }
+    // The browser-safe projection never carries the raw diff column.
+    expect(AUDIT_ACTIVITY_SAFE_COLUMNS).not.toContain("changes");
+    // The server-only raw read is exactly the diff column.
+    expect(AUDIT_RAW_DIFF_COLUMNS).toBe("audit_id, changes");
   });
 
   it("projects the relationship-aware safe scalars", async () => {
@@ -290,9 +325,85 @@ describe("safe projection (no raw payload columns leave the database)", () => {
       "previous_fellowship_name",
       "current_fellowship_name",
       "subject_application_name",
+      "previous_student_id",
+      "current_student_id",
+      "previous_fellowship_id",
+      "current_fellowship_id",
+      "fellowship_thursday_attended_before",
+      "fellowship_thursday_source_after",
+      "void_reason",
+      "advising_meeting_date",
+      "advising_application_id",
+      "advising_advisor_id",
     ]) {
       expect(AUDIT_ACTIVITY_SAFE_COLUMNS, `safe projection includes ${column}`).toContain(column);
     }
+  });
+});
+
+describe("DB-enforced raw-payload boundary (server-only service-role raw read)", () => {
+  it("reads the raw diff through the server-only admin client, never the cookie/RLS client", async () => {
+    const safeRow = makeAuditRow({ audit_id: 10, action: "updated", changes: null });
+
+    // Cookie/RLS client: serves ONLY the browser-safe view. It must never be
+    // asked to read the raw `audit_event` base table.
+    const cookieFrom = vi.fn(() => {
+      const builder = {
+        select: vi.fn(() => builder),
+        eq: vi.fn(() => builder),
+        contains: vi.fn(() => builder),
+        or: vi.fn(() => builder),
+        order: vi.fn(() => builder),
+        range: vi.fn(() => Promise.resolve({ data: [safeRow], error: null })),
+      };
+      return builder;
+    });
+    createServerClient.mockReturnValue({ from: cookieFrom });
+
+    // Server-only service-role client: the ONLY path to the raw `changes` diff.
+    const adminRange = vi.fn(() =>
+      Promise.resolve({
+        data: [{ audit_id: 10, changes: { major: { old: "Biology", new: "Chemistry" } } }],
+        error: null,
+      })
+    );
+    const adminBuilder = {
+      select: vi.fn(() => adminBuilder),
+      in: vi.fn(() => adminBuilder),
+      range: adminRange,
+    };
+    const adminFrom = vi.fn(() => adminBuilder);
+    createAdminClient.mockReturnValue({ from: adminFrom });
+
+    const { items } = await getEntityHistoryPage("student", 3);
+
+    // The raw read goes through the admin client, bounded to the page's ids.
+    expect(createAdminClient).toHaveBeenCalledTimes(1);
+    expect(adminFrom).toHaveBeenCalledWith("audit_event");
+    expect(adminBuilder.select).toHaveBeenCalledWith(AUDIT_RAW_DIFF_COLUMNS);
+    expect(adminBuilder.in).toHaveBeenCalledWith("audit_id", [10]);
+    expect(adminRange).toHaveBeenCalledWith(0, 0);
+    // The cookie/RLS client never touches the raw base table.
+    expect(cookieFrom).toHaveBeenCalledWith("audit_activity");
+    expect(cookieFrom).not.toHaveBeenCalledWith("audit_event");
+    // The raw diff is parsed by the server normalizer into the typed surface.
+    expect(items[0].changes).toEqual([
+      { field: "major", label: "Major", oldValue: "Biology", newValue: "Chemistry" },
+    ]);
+  });
+
+  it("degrades to safe fields only when the service-role client is unconfigured", async () => {
+    makeDatasetClient([makeAuditRow({ action: "updated", changes: null })]);
+    createAdminClient.mockImplementation(() => {
+      throw new Error("SUPABASE_SERVICE_ROLE_KEY is not configured");
+    });
+
+    const { items } = await getEntityHistoryPage("student", 3);
+
+    // The page still renders every safe field; only the typed diff is omitted.
+    expect(items).toHaveLength(1);
+    expect(items[0].id).toBe("10");
+    expect(items[0].changes).toEqual([]);
   });
 });
 
@@ -328,7 +439,7 @@ describe("getEntityHistory", () => {
 });
 
 describe("getEntityHistoryPage (bounded keyset server pagination)", () => {
-  it("fetches a limit+1 inclusive probe so `hasMore` is detected without a second query", async () => {
+  it("fetches a limit+1 inclusive probe so `hasMore` is detected in the page query", async () => {
     const rows = makeTimeline(ENTITY_HISTORY_PAGE_SIZE + 1, { entity_type: "advisor", entity_id: 7 });
     const { client, calls } = makeDatasetClient(rows);
 
@@ -341,9 +452,12 @@ describe("getEntityHistoryPage (bounded keyset server pagination)", () => {
     // Cursor points at the last SURFACED row; the watermark at the first row.
     expect(page.nextCursor).toEqual(cursorOf(rows[ENTITY_HISTORY_PAGE_SIZE - 1]));
     expect(page.highWatermark).toEqual(cursorOf(rows[0]));
-    // No N+1: exactly one table query, one select, for the whole page.
-    expect(client.from).toHaveBeenCalledTimes(1);
-    expect(calls).toHaveLength(1);
+    // No N+1: one bounded view query plus ONE bounded raw-diff batch.
+    expect(client.from).toHaveBeenCalledTimes(2);
+    expect(calls[0].select).toBe(AUDIT_ACTIVITY_SAFE_COLUMNS);
+    expect(calls[0].range).toEqual([0, ENTITY_HISTORY_PAGE_SIZE]);
+    expect(calls[1].select).toBe(AUDIT_RAW_DIFF_COLUMNS);
+    expect(calls[1].range).toEqual([0, ENTITY_HISTORY_PAGE_SIZE - 1]);
   });
 
   it("reports the last page with `nextCursor: null` when no probe row is returned", async () => {
@@ -431,6 +545,7 @@ describe("getEntityHistoryPage (bounded keyset server pagination)", () => {
         actor_name_snapshot: "Jordan Lee",
         occurred_at: "2026-10-12T14:30:00.000Z",
         reason: "Corrected major",
+        action: "archived",
         changes: { major: { old: "Biology", new: "Chemistry" } },
       }),
     ]);
@@ -474,7 +589,8 @@ describe("stable pagination across a mid-scroll insert", () => {
     });
     expect(second.items.map((item) => item.id)).toEqual(rows.slice(26).map((row) => String(row.audit_id)));
     expect(second.hasMore).toBe(false);
-    expect(calls).toHaveLength(2);
+    // Two pages, each one bounded view query plus one bounded raw-diff batch.
+    expect(calls).toHaveLength(4);
 
     // No duplicate of the page-1 boundary row, no skipped older row, and the
     // newly inserted event never appears mid-scroll.
@@ -595,7 +711,7 @@ describe("getStudentActivity (student unified subject timeline)", () => {
     await expect(getStudentActivity(42)).resolves.toEqual([]);
   });
 
-  it("bounds the unified timeline to one server page with a single query", async () => {
+  it("bounds the unified timeline to one server page plus one bounded raw-diff batch", async () => {
     const { client, calls } = makeDatasetClient(
       makeTimeline(ENTITY_HISTORY_PAGE_SIZE + 5, { subject_student_id: 42 })
     );
@@ -604,6 +720,7 @@ describe("getStudentActivity (student unified subject timeline)", () => {
     expect(calls[0].range).toEqual([0, ENTITY_HISTORY_PAGE_SIZE]);
     expect(page.items).toHaveLength(ENTITY_HISTORY_PAGE_SIZE);
     expect(page.hasMore).toBe(true);
-    expect(client.from).toHaveBeenCalledTimes(1);
+    expect(client.from).toHaveBeenCalledTimes(2);
+    expect(calls[1].select).toBe(AUDIT_RAW_DIFF_COLUMNS);
   });
 });

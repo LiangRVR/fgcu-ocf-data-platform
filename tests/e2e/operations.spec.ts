@@ -41,7 +41,7 @@
  * The seeded student already has one OCF-sourced attendance record, so the
  * attendance write uses the "Honors College" source to stay distinguishable.
  */
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 
 function requireEnv(name: string): string {
@@ -328,6 +328,36 @@ async function assertReportsTotals(page: Page, expectedStudents: number): Promis
   const stageNumbers = await stageLinks.allTextContents();
   const stageSum = stageNumbers.reduce((sum, text) => sum + Number(text.trim()), 0);
   expect(stageSum).toBe(REPORT_TOTALS.applications);
+}
+
+/**
+ * Privacy boundary for the normalized history surfaces: only display props may
+ * reach the browser. Asserts the rendered scope never leaks the raw audit JSON
+ * columns (`old_values`/`new_values`/`changes`), the immutable bookkeeping ids,
+ * or Auth material.
+ */
+async function assertNoRawAuditPayload(scope: Locator): Promise<void> {
+  const body = await scope.innerText();
+  const leaked = [
+    "new_values",
+    "old_values",
+    'changes":',
+    "actor_advisor_id",
+    "subject_student_id",
+    "subject_application_id",
+    "subject_fellowship_id",
+    "auth_user_id",
+    "access_token",
+    "refresh_token",
+    "service_role",
+    "row_version",
+  ].filter((token) => body.includes(token));
+  expect(leaked, `raw audit/Auth material leaked: ${leaked.join(", ")}`).toEqual([]);
+}
+
+/** The unified student Activity & Change History section on a detail page. */
+function studentActivityHistory(page: Page) {
+  return page.locator("main section[aria-label='Activity & Change History']");
 }
 
 test.describe("operational surfaces", () => {
@@ -1112,6 +1142,276 @@ test.describe("operational surfaces", () => {
           throw new Error(`SH fellowship cleanup (${id}): ${fellowshipCleanup.error.message}`);
         }
       }
+    }
+  });
+
+  test("Fellowship Thursday per-field corrections render predecessor→corrected values, including a source chain and a correction to NULL (R5)", async ({ page }) => {
+    const service = serviceClient();
+    const suffix = `${Date.now()}`;
+    const studentName = `E2E FT Chain Student ${suffix}`;
+    const sourceReason1 = `E2E FT source to HC ${suffix}`;
+    const sourceReason2 = `E2E FT source cleared ${suffix}`;
+    const attendReason = `E2E FT attendance corrected ${suffix}`;
+
+    const { data: student, error: studentError } = await service
+      .from("student")
+      .insert({
+        full_name: studentName,
+        email: `e2e-ft-chain-${suffix}@example.com`,
+        us_citizen: true,
+      })
+      .select("student_id")
+      .single();
+    if (studentError) throw new Error(`seed FT chain student: ${studentError.message}`);
+    const studentId = student.student_id as number;
+
+    const { data: attendance, error: attendanceError } = await service
+      .from("fellowship_thursday")
+      .insert({ student_id: studentId, attended: true, source_info: "OCF" })
+      .select("attendance_id")
+      .single();
+    if (attendanceError) throw new Error(`seed FT chain attendance: ${attendanceError.message}`);
+
+    try {
+      await signInAsActive(page);
+      await page.goto("/fellowship-thursday");
+      const row = page
+        .locator("table tbody tr", { hasText: studentName })
+        .filter({ hasText: "OCF" })
+        .first();
+      await expect(row).toBeVisible();
+
+      const addCorrection = async (opts: {
+        reason: string;
+        correctAttendance?: boolean;
+        correctSource?: boolean;
+        correctedSourceLabel?: string;
+      }): Promise<void> => {
+        await row.getByRole("button", { name: "Add correction" }).click();
+        const dialog = page.getByRole("dialog");
+        await expect(
+          dialog.getByRole("heading", { name: "Add attendance correction" }),
+        ).toBeVisible();
+        await dialog.locator("#ft-correction-reason").fill(opts.reason);
+        if (opts.correctAttendance) {
+          await dialog.getByRole("checkbox", { name: "Correct attendance value" }).check();
+        }
+        if (opts.correctSource) {
+          await dialog.getByRole("checkbox", { name: "Correct source value" }).check();
+          if (opts.correctedSourceLabel) {
+            await dialog.getByLabel("Corrected source").click();
+            await page
+              .getByRole("option", { name: opts.correctedSourceLabel, exact: true })
+              .click();
+          }
+        }
+        await dialog.getByRole("button", { name: "Add correction" }).click();
+        await expect(dialog).toBeHidden();
+      };
+
+      // Correction #1: source OCF → Honors College (value "HC").
+      await addCorrection({
+        reason: sourceReason1,
+        correctSource: true,
+        correctedSourceLabel: "Honors College",
+      });
+      // Correction #2: source HC → NULL (the dialog defaults to "Clear source (NULL)").
+      await addCorrection({ reason: sourceReason2, correctSource: true });
+      // Correction #3: attendance Yes → No.
+      await addCorrection({ reason: attendReason, correctAttendance: true });
+
+      // The FT surface keeps the original and shows the effective (NULL) source.
+      await page.reload();
+      const rowAfter = page.locator("table tbody tr", { hasText: studentName }).first();
+      await expect(rowAfter).toContainText("Original: Attended · OCF");
+      await expect(rowAfter).toContainText("Current: Not attended · No source");
+
+      // The unified student timeline renders each field's IMMEDIATELY-PRIOR and
+      // corrected effective value (never the current row rewriting history).
+      await page.goto(`/students/${studentId}`);
+      await expect(page.getByRole("heading", { name: studentName })).toBeVisible({
+        timeout: 15_000,
+      });
+      const history = studentActivityHistory(page);
+      await expect(
+        history.getByRole("heading", { name: "Activity & Change History" }),
+      ).toBeVisible();
+
+      const corrections = history.locator("li", { hasText: /Correction Added/ });
+      await expect(corrections).toHaveCount(3);
+
+      // Source chain: OCF → HC, then HC → Not set (the predecessor is #1's value).
+      const sourceRows = history.locator("li", { hasText: "Source" });
+      await expect(sourceRows).toHaveCount(2);
+      const toHc = sourceRows.filter({ hasText: "OCF" });
+      await expect(toHc).toHaveCount(1);
+      await expect(toHc).toContainText("HC");
+      const clearedSource = sourceRows.filter({ hasText: "Not set" });
+      await expect(clearedSource).toHaveCount(1);
+      await expect(clearedSource, "the second correction's predecessor is the first's value").toContainText("HC");
+
+      // Attendance field resolves independently of the source chain.
+      const attendedRow = history.locator("li", { hasText: "Attended" });
+      await expect(attendedRow).toHaveCount(1);
+      await expect(attendedRow).toContainText("Yes");
+      await expect(attendedRow).toContainText("No");
+
+      // Amendment reason/details are never projected into the history.
+      await expect(history).not.toContainText(sourceReason1);
+      await expect(history).not.toContainText(sourceReason2);
+      await expect(history).not.toContainText(attendReason);
+      await assertNoRawAuditPayload(page.locator("main"));
+    } finally {
+      const amendmentCleanup = await service
+        .from("fellowship_thursday_amendment")
+        .delete()
+        .eq("attendance_id", attendance.attendance_id);
+      if (amendmentCleanup.error) {
+        throw new Error(`FT chain amendment cleanup: ${amendmentCleanup.error.message}`);
+      }
+      const ftCleanup = await service
+        .from("fellowship_thursday")
+        .delete()
+        .eq("attendance_id", attendance.attendance_id);
+      if (ftCleanup.error) throw new Error(`FT chain base cleanup: ${ftCleanup.error.message}`);
+      const studentCleanup = await service
+        .from("student")
+        .delete()
+        .eq("student_id", studentId);
+      if (studentCleanup.error) throw new Error(`FT chain student cleanup: ${studentCleanup.error.message}`);
+    }
+  });
+
+  test("Scholarship History correction and Void render the fellowship transition and the exact void reason in the immutable timeline, leaving a single award (R6)", async ({ page }) => {
+    const service = serviceClient();
+    const suffix = `${Date.now()}`;
+    const studentName = `E2E SH Timeline Student ${suffix}`;
+    const priorFellowshipName = `E2E SH Prior Fellowship ${suffix}`;
+    const correctedFellowshipName = `E2E SH Corrected Fellowship ${suffix}`;
+    const correctionReason = `E2E SH timeline correction ${suffix}`;
+    const voidReason = `E2E SH timeline void ${suffix}`;
+
+    const insertFellowship = async (name: string): Promise<number> => {
+      const { data, error } = await service
+        .from("fellowship")
+        .insert({ fellowship_name: name })
+        .select("fellowship_id")
+        .single();
+      if (error) throw new Error(`seed SH timeline fellowship (${name}): ${error.message}`);
+      return data.fellowship_id as number;
+    };
+
+    const { data: student, error: studentError } = await service
+      .from("student")
+      .insert({
+        full_name: studentName,
+        email: `e2e-sh-timeline-${suffix}@example.com`,
+        us_citizen: true,
+      })
+      .select("student_id")
+      .single();
+    if (studentError) throw new Error(`seed SH timeline student: ${studentError.message}`);
+    const studentId = student.student_id as number;
+
+    const priorFellowshipId = await insertFellowship(priorFellowshipName);
+    const correctedFellowshipId = await insertFellowship(correctedFellowshipName);
+    const { data: award, error: awardError } = await service
+      .from("scholarship_history")
+      .insert({ student_id: studentId, fellowship_id: priorFellowshipId })
+      .select("history_id")
+      .single();
+    if (awardError) throw new Error(`seed SH timeline award: ${awardError.message}`);
+
+    const article = page.locator("article", {
+      hasText: `Original award record · #${award.history_id}`,
+    });
+
+    try {
+      await signInAsActive(page);
+      await page.goto("/scholarship-history");
+      await expect(article).toBeVisible();
+      await expect(page.locator("article", { hasText: studentName })).toHaveCount(1);
+
+      // ── Correction: prior fellowship → corrected fellowship ────────────────
+      await article.getByRole("button", { name: "Add Correction" }).click();
+      let dialog = page.getByRole("dialog");
+      await dialog.locator("#amendment_reason").fill(correctionReason);
+      await dialog.locator("#corrected_fellowship").fill(correctedFellowshipName);
+      await page
+        .getByRole("option", { name: correctedFellowshipName, exact: true })
+        .click();
+      await dialog.getByRole("button", { name: "Add Correction" }).click();
+      await expect(dialog).toBeHidden();
+
+      // ── Void with its required reason ──────────────────────────────────────
+      await article.getByRole("button", { name: "Void Award Record" }).click();
+      dialog = page.getByRole("dialog");
+      await dialog.locator("#amendment_reason").fill(voidReason);
+      await dialog.getByRole("button", { name: "Void Award Record" }).click();
+      await expect(dialog).toBeHidden();
+
+      // A Void is one historical award event, not a second award: the award
+      // surface keeps a SINGLE article carrying the prior effective fellowship
+      // and the authorized void reason + voided state.
+      await expect(page.locator("article", { hasText: studentName })).toHaveCount(1);
+      await expect(article.getByText("Voided award")).toBeVisible();
+      await expect(article).toContainText(correctedFellowshipName);
+      await expect(article).toContainText(voidReason);
+
+      // ── Immutable timeline: correction pair + exactly the void reason ──────
+      await page.goto(`/students/${studentId}`);
+      await expect(page.getByRole("heading", { name: studentName })).toBeVisible({
+        timeout: 15_000,
+      });
+      const history = studentActivityHistory(page);
+
+      const correctionRow = history.locator("li", { hasText: /Correction Added/ });
+      await expect(correctionRow).toHaveCount(1);
+      await expect(correctionRow).toContainText("Fellowship");
+      await expect(correctionRow).toContainText(priorFellowshipName);
+      await expect(correctionRow).toContainText(correctedFellowshipName);
+      // Only the exact Void reason is an approved free-text projection; the
+      // correction's own reason must never leak.
+      await expect(correctionRow).not.toContainText(correctionReason);
+
+      // The Void is a single event whose ONLY approved free text is the exact
+      // authorized reason (the historical fellowship context for a void is
+      // rendered on the award surface above, not duplicated here).
+      const voidRow = history.locator("li", { hasText: /Voided/ });
+      await expect(voidRow).toHaveCount(1);
+      await expect(voidRow, "the exact authorized void reason renders").toContainText(voidReason);
+      await expect(voidRow, "the correction's own reason must never leak").not.toContainText(
+        correctionReason,
+      );
+
+      await assertNoRawAuditPayload(page.locator("main"));
+    } finally {
+      const amendmentCleanup = await service
+        .from("scholarship_history_amendment")
+        .delete()
+        .eq("history_id", award.history_id);
+      if (amendmentCleanup.error) {
+        throw new Error(`SH timeline amendment cleanup: ${amendmentCleanup.error.message}`);
+      }
+      const awardCleanup = await service
+        .from("scholarship_history")
+        .delete()
+        .eq("history_id", award.history_id);
+      if (awardCleanup.error) throw new Error(`SH timeline award cleanup: ${awardCleanup.error.message}`);
+      for (const id of [priorFellowshipId, correctedFellowshipId]) {
+        const fellowshipCleanup = await service
+          .from("fellowship")
+          .delete()
+          .eq("fellowship_id", id);
+        if (fellowshipCleanup.error) {
+          throw new Error(`SH timeline fellowship cleanup (${id}): ${fellowshipCleanup.error.message}`);
+        }
+      }
+      const studentCleanup = await service
+        .from("student")
+        .delete()
+        .eq("student_id", studentId);
+      if (studentCleanup.error) throw new Error(`SH timeline student cleanup: ${studentCleanup.error.message}`);
     }
   });
 });

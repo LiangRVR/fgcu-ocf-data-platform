@@ -1,11 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Clock3, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   auditActionLabel,
-  formatAuditDate,
   visibleAuditItems,
   type AuditActivity,
 } from "@/lib/audit/presentation";
@@ -25,6 +24,32 @@ export type { EntityHistoryQuery };
  * the server-only module into the browser bundle.
  */
 const DEFAULT_HISTORY_PAGE_SIZE = 25;
+function AuditTimestamp({ value }: { value?: string | null }) {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setMounted(true), 0);
+    return () => window.clearTimeout(timeout);
+  }, []);
+
+  if (!value || Number.isNaN(Date.parse(value))) {
+    return <span>Date unavailable</span>;
+  }
+
+  // Keep server rendering and the first client render deterministic, then
+  // switch to the browser's locale and time zone after hydration.
+  const formatter = new Intl.DateTimeFormat("en-US", mounted ? {
+    dateStyle: "medium",
+    timeStyle: "short",
+  } : {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "UTC",
+  });
+  const formatted = formatter.format(new Date(value));
+
+  return <span>{formatted}</span>;
+}
 
 interface AuditHistoryProps {
   items: AuditActivity[];
@@ -48,15 +73,29 @@ interface AuditHistoryProps {
 
 function HistoryList({ items }: { items: AuditActivity[] }) {
   const visible = visibleAuditItems(items);
+  const readableEntity = (label: string) => {
+    const [kind, ...subject] = label.split(":");
+    const names: Record<string, string> = {
+      student: "Student", advisor: "Advisor", fellowship: "Fellowship",
+      application: "Application", advising_meeting: "Advising meeting",
+      advising_meeting_amendment: "Advising meeting", fellowship_thursday: "Fellowship Thursday",
+      fellowship_thursday_amendment: "Fellowship Thursday", scholarship_history: "Scholarship record",
+      scholarship_history_amendment: "Scholarship record",
+    };
+    const friendly = names[kind.trim().toLowerCase().replace(/ /g, "_")];
+    if (!friendly) return label === "Unknown record" ? label : "Record";
+    return subject.length ? `${friendly} · ${subject.join(":").trim()}` : friendly;
+  };
   return visible.length ? (
-    <ol className="space-y-3">
+    <ol className="relative space-y-3 before:absolute before:bottom-5 before:left-[1.125rem] before:top-5 before:w-px before:bg-emerald-100">
       {visible.map((item) => (
-        <li key={item.id} className="grid gap-3 rounded-xl border border-slate-100 bg-slate-50/70 p-4 sm:grid-cols-[1fr_auto]">
-          <div className="min-w-0"><p className="text-sm font-semibold text-slate-900">{auditActionLabel(item.action)} <span className="font-normal">{item.entityLabel}</span></p>
-            {item.summary ? <p className="mt-1 text-sm leading-5 text-slate-600">{item.summary}</p> : null}
-            {item.changes?.length ? <dl className="mt-3 grid gap-2 sm:grid-cols-2">{item.changes.map((change) => <div key={change.field} className="min-w-0 rounded-lg border border-white bg-white/80 px-3 py-2"><dt className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{change.label}</dt><dd className="mt-1 break-words text-sm text-slate-800"><span className="text-slate-500">{change.oldValue}</span><span aria-hidden="true" className="mx-2 text-emerald-700">→</span><span className="font-medium">{change.newValue}</span><span className="sr-only"> changed to </span></dd></div>)}</dl> : null}
-            <p className="mt-2 text-xs text-slate-500">{item.actor ? `By ${item.actor}` : "Recorded change"}</p></div>
-          <time className="flex items-start gap-1.5 text-right text-xs text-slate-500"><Clock3 aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />{formatAuditDate(item.occurredAt)}</time>
+        <li key={item.id} className="relative grid gap-2 rounded-xl border border-slate-200/80 bg-white p-4 pl-12 shadow-[0_1px_2px_rgba(15,23,42,.04)] transition-colors hover:border-emerald-200 sm:grid-cols-[minmax(0,1fr)_auto] sm:gap-4 sm:p-5 sm:pl-12">
+          <span aria-hidden="true" className="absolute left-[0.82rem] top-5 h-2.5 w-2.5 rounded-full border-2 border-white bg-emerald-600 ring-1 ring-emerald-200" />
+          <div className="min-w-0"><p className="break-words text-[15px] font-semibold leading-6 text-slate-900">{auditActionLabel(item.action)} <span className="font-normal text-slate-600">{readableEntity(item.entityLabel)}</span></p>
+            {item.summary ? <p className="mt-2 rounded-lg border-l-2 border-amber-400 bg-amber-50/70 px-3 py-2 text-sm leading-5 text-slate-700">{item.summary}</p> : null}
+            {item.changes?.length ? <dl className="mt-3 grid gap-2 sm:grid-cols-2">{item.changes.map((change) => <div key={change.field} className="min-w-0 rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-2.5"><dt className="text-[11px] font-semibold uppercase tracking-[.12em] text-slate-500">{change.label}</dt><dd className="mt-1 flex flex-wrap items-baseline gap-x-2 break-words text-sm text-slate-800"><span className="text-slate-500">{change.oldValue}</span><span aria-hidden="true" className="text-emerald-700">→</span><span className="font-medium">{change.newValue}</span><span className="sr-only"> changed to </span></dd></div>)}</dl> : null}
+            <p className="mt-3 text-xs text-slate-500">{item.actor ? `By ${item.actor}` : "Recorded change"}</p></div>
+          <time dateTime={item.occurredAt ?? undefined} className="flex items-center gap-1.5 text-xs text-slate-500 sm:items-start sm:justify-end sm:pt-1"><Clock3 aria-hidden="true" className="h-3.5 w-3.5 shrink-0" /><AuditTimestamp value={item.occurredAt} /></time>
         </li>
       ))}
     </ol>

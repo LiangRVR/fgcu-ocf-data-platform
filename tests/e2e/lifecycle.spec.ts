@@ -438,4 +438,106 @@ test.describe("entity lifecycle", () => {
     // Editing remains the only mutation path.
     await expect(page.getByTitle("Edit application").first()).toBeVisible();
   });
+
+  test("archived Student/Fellowship parents stay read-only and remain a disabled historical edit value on their application, while new choices exclude them (R9)", async ({ page }) => {
+    const suffix = `${Date.now()}`;
+    const studentName = `E2E Archived Parent Student ${suffix}`;
+    const activeFellowshipName = `E2E Active Parent Fellowship ${suffix}`;
+    const archivedFellowshipName = `E2E Archived Parent Fellowship ${suffix}`;
+    const studentId = await seedStudent(studentName);
+    const activeFellowshipId = await seedFellowship(activeFellowshipName);
+    const archivedFellowshipId = await seedFellowship(archivedFellowshipName);
+    const applicationId = await seedApplication(studentId, archivedFellowshipId);
+
+    try {
+      // Fixture staging: BOTH parents of the existing application are archived.
+      await setStudentArchived(studentId, true);
+      await setFellowshipArchived(archivedFellowshipId, true);
+
+      await signInAsActive(page);
+
+      // ── Archived list is read-only ─────────────────────────────────────────
+      // The archived fellowship view drops the create affordance and the
+      // row-level Edit control (restore is the only mutation path).
+      await page.goto("/fellowships?view=archived");
+      await expect(page.getByRole("heading", { name: "Fellowships" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Add Fellowship" })).toHaveCount(0);
+      const archivedRow = page.locator("table tbody tr", { hasText: archivedFellowshipName });
+      await expect(archivedRow).toBeVisible();
+      await expect(archivedRow.getByRole("button", { name: "Restore Fellowship" })).toBeVisible();
+      await expect(archivedRow.getByTitle("Edit fellowship")).toHaveCount(0);
+
+      // ── New/re-link selectors reject the archived parent ───────────────────
+      await page.goto("/applications");
+      await page.getByRole("button", { name: "New Application" }).click();
+      await page.getByLabel("Search students and fellowships").fill("E2E");
+      await page.locator("#app-fellowship").click();
+      await expect(
+        page.getByRole("option", { name: archivedFellowshipName, exact: true }),
+      ).toHaveCount(0);
+      await page.keyboard.press("Escape");
+      await page.keyboard.press("Escape");
+
+      // ── Existing application keeps its archived parents as DISABLED
+      //    historical edit values (never silently dropped) ───────────────────
+      const appRow = page
+        .locator("table tbody tr", { hasText: studentName })
+        .filter({ hasText: archivedFellowshipName })
+        .first();
+      await expect(appRow).toBeVisible();
+      await appRow.getByTitle("Edit application").click();
+
+      const dialog = page.getByRole("dialog");
+      await expect(dialog.locator("#app-student")).toContainText(
+        `${studentName} (Archived — historical)`,
+      );
+      await expect(dialog.locator("#app-fellowship")).toContainText(
+        `${archivedFellowshipName} (Archived — historical)`,
+      );
+
+      // The archived parent option is present but disabled; an active choice
+      // remains enabled.
+      await dialog.locator("#app-fellowship").click();
+      const archivedOption = page.getByRole("option", {
+        name: `${archivedFellowshipName} (Archived — historical)`,
+        exact: true,
+      });
+      await expect(archivedOption).toBeVisible();
+      // Radix marks the disabled historical option with aria-disabled; assert
+      // the state directly so the check never depends on native disabled
+      // semantics for a role="option" element.
+      await expect(archivedOption).toHaveAttribute("aria-disabled", "true");
+      const activeOption = page.getByRole("option", { name: activeFellowshipName, exact: true });
+      await expect(activeOption).toBeVisible();
+      await expect(activeOption).not.toHaveAttribute("aria-disabled", "true");
+      await page.keyboard.press("Escape");
+
+      // A no-relink re-save keeps the archived parents (historical preservation).
+      await dialog.getByRole("button", { name: "Save Changes" }).click();
+      await expect(dialog).toBeHidden();
+      await page.reload();
+      await expect(
+        page
+          .locator("table tbody tr", { hasText: studentName })
+          .filter({ hasText: archivedFellowshipName })
+          .first(),
+      ).toBeVisible();
+    } finally {
+      await deleteApplication(applicationId).catch((err: unknown) =>
+        console.warn(`archived-parent application cleanup failed: ${String(err)}`),
+      );
+      await setStudentArchived(studentId, false).catch((err: unknown) =>
+        console.warn(`archived-parent student restore failed: ${String(err)}`),
+      );
+      await deleteStudent(studentId).catch((err: unknown) =>
+        console.warn(`archived-parent student cleanup failed: ${String(err)}`),
+      );
+      await deleteFellowship(activeFellowshipId).catch((err: unknown) =>
+        console.warn(`archived-parent active fellowship cleanup failed: ${String(err)}`),
+      );
+      await deleteFellowship(archivedFellowshipId).catch((err: unknown) =>
+        console.warn(`archived-parent archived fellowship cleanup failed: ${String(err)}`),
+      );
+    }
+  });
 });

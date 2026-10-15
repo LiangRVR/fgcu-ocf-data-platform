@@ -1577,28 +1577,46 @@ describe("audit schema, ACL, RLS, and helper hardening (migration 20261012000001
     expect(String(policies.rows[0].qual)).toContain("is_active_advisor");
   });
 
-  it("grants authenticated SELECT only and denies INSERT/UPDATE/DELETE/TRUNCATE, sequence usage, and all anon access", async () => {
+  it("grants authenticated COLUMN-level SELECT on the non-raw event columns only (no table SELECT, no raw payloads, no anon)", async () => {
     const { rows } = await pool.query(
       `SELECT
          has_table_privilege('authenticated', 'public.audit_event', 'SELECT')  AS auth_select,
+         has_column_privilege('authenticated', 'public.audit_event', 'audit_id', 'SELECT') AS auth_col_audit_id,
+         has_column_privilege('authenticated', 'public.audit_event', 'reason', 'SELECT') AS auth_col_reason,
+         has_column_privilege('authenticated', 'public.audit_event', 'old_values', 'SELECT') AS auth_col_old_values,
+         has_column_privilege('authenticated', 'public.audit_event', 'new_values', 'SELECT') AS auth_col_new_values,
+         has_column_privilege('authenticated', 'public.audit_event', 'changes', 'SELECT') AS auth_col_changes,
          has_table_privilege('authenticated', 'public.audit_event', 'INSERT')  AS auth_insert,
          has_table_privilege('authenticated', 'public.audit_event', 'UPDATE')  AS auth_update,
          has_table_privilege('authenticated', 'public.audit_event', 'DELETE')  AS auth_delete,
          has_table_privilege('authenticated', 'public.audit_event', 'TRUNCATE') AS auth_truncate,
          has_sequence_privilege('authenticated', 'public.audit_event_audit_id_seq', 'USAGE') AS auth_seq_usage,
          has_sequence_privilege('authenticated', 'public.audit_event_audit_id_seq', 'SELECT') AS auth_seq_select,
+         has_column_privilege('anon', 'public.audit_event', 'audit_id', 'SELECT') AS anon_col_audit_id,
          has_table_privilege('anon', 'public.audit_event', 'SELECT') AS anon_select,
-         has_table_privilege('anon', 'public.audit_event', 'INSERT') AS anon_insert
+         has_table_privilege('anon', 'public.audit_event', 'INSERT') AS anon_insert,
+         has_column_privilege('service_role', 'public.audit_event', 'changes', 'SELECT') AS sr_col_changes
       `
     );
-    expect(rows[0].auth_select, "authenticated SELECT on audit_event").toBe(true);
+    // Migration 20261023000001 revokes table-level SELECT (so `select('*')` and
+    // the raw payload columns are unreachable) and grants SELECT only on the
+    // non-raw columns the security_invoker audit_activity view reads.
+    expect(rows[0].auth_select, "authenticated table-level SELECT on audit_event must be revoked").toBe(false);
+    expect(rows[0].auth_col_audit_id, "authenticated column SELECT on audit_id").toBe(true);
+    expect(rows[0].auth_col_reason, "authenticated column SELECT on reason").toBe(true);
+    for (const denied of ["auth_col_old_values", "auth_col_new_values", "auth_col_changes"] as const) {
+      expect(rows[0][denied], `authenticated must NOT hold SELECT on raw payload ${denied}`).toBe(false);
+    }
     for (const denied of ["auth_insert", "auth_update", "auth_delete", "auth_truncate"] as const) {
       expect(rows[0][denied], `authenticated ${denied} must be false`).toBe(false);
     }
     expect(rows[0].auth_seq_usage, "authenticated sequence USAGE must be false").toBe(false);
     expect(rows[0].auth_seq_select, "authenticated sequence SELECT must be false").toBe(false);
+    expect(rows[0].anon_col_audit_id, "anon column SELECT must be false").toBe(false);
     expect(rows[0].anon_select, "anon SELECT must be false").toBe(false);
     expect(rows[0].anon_insert, "anon INSERT must be false").toBe(false);
+    // The server-only service-role client keeps the raw-diff read path.
+    expect(rows[0].sr_col_changes, "service_role column SELECT on changes").toBe(true);
   });
 
   it("hardens the private helper: SECURITY DEFINER, empty search_path, no client USAGE/EXECUTE", async () => {

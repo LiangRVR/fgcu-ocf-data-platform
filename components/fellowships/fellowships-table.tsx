@@ -30,7 +30,7 @@ export function FellowshipsTable({ fellowships, view, search, page, pageSize, to
   };
   const actions = (row: Row) => <div className="flex items-center justify-end gap-1">
     <Link href={`/fellowships/${row.fellowship_id}`} prefetch={false}><Button variant="ghost" size="icon" title="View fellowship" aria-label="View fellowship"><Eye className="h-4 w-4" /></Button></Link>
-    <FellowshipEditButton fellowshipId={row.fellowship_id} fellowshipName={row.fellowship_name} disabled={row.archived_at != null} />
+    {!archived && <FellowshipEditButton fellowshipId={row.fellowship_id} fellowshipName={row.fellowship_name} />}
     <LifecycleAction entity="fellowship" entityId={row.fellowship_id} entityLabel={row.fellowship_name} action={archived ? "restore" : "archive"} variant="ghost" iconOnly className="text-amber-700" />
   </div>;
   return <>

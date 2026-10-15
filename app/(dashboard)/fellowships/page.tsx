@@ -51,7 +51,7 @@ export default async function FellowshipsPage({ searchParams }: { searchParams: 
   // bounded replacement query is issued from this render.
   if (pagination.page > Math.max(1, pages)) redirect(canonical(raw, { ...pagination, page: Math.max(1, pages) }, safeView, search, safeSort));
   return <>
-    <PageHeader eyebrow="Program Portfolio" title="Fellowships" description="Manage fellowship opportunities and review application activity."><AddFellowshipButton /></PageHeader>
+    <PageHeader eyebrow="Program Portfolio" title="Fellowships" description="Manage fellowship opportunities and review application activity.">{safeView === "all" && <AddFellowshipButton />}</PageHeader>
     <nav className="mb-6 flex flex-wrap gap-2" aria-label="Fellowship views">
       {([ ["all","Active Fellowships"], ["archived","Archived Fellowships"], ["no-applicants","No Applicants Yet"] ] as const).map(([key,label]) => <a key={key} href={key === "all" ? "/fellowships" : `/fellowships?view=${key}`} className={`rounded-full border px-3 py-1.5 text-xs font-medium ${safeView === key ? "border-slate-900 bg-slate-900 text-white" : "border-border bg-white text-slate-600"}`}>{label}</a>)}
     </nav>

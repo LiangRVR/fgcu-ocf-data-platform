@@ -26,8 +26,6 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
-      // TEMPORARY focused-run filter (will be restored after validation).
-      testMatch: /(activity|mobile)\.spec\.ts/,
     },
     {
       name: "mobile-chromium",

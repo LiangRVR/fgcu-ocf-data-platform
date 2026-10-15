@@ -697,6 +697,11 @@ describe("audit_activity relationship-aware safe read model (R7)", () => {
     ]) {
       expect(names, `audit_activity exposes ${expected}`).toContain(expected);
     }
+    // Browser-safe boundary: the raw audit JSON payloads are NOT exposed through
+    // the authenticated projection.
+    for (const absent of ["old_values", "new_values", "changes"] as const) {
+      expect(names, `audit_activity must not expose raw payload column ${absent}`).not.toContain(absent);
+    }
   });
 
   it("resolves previous/current student and fellowship labels from frozen snapshots", async () => {
@@ -1631,6 +1636,11 @@ CREATE TABLE IF NOT EXISTS auth.users (
       `SELECT audit_id::text, subject_type, subject_id, relationship, subject_name_snapshot
          FROM public.audit_event_subject ORDER BY audit_id, subject_type, subject_id, relationship`
     );
+    // A forward migration that replaces a derived view supersedes its
+    // predecessor's definition, so the derived `audit_activity` read model must
+    // be reset before the forward chain can be replayed (the immutable
+    // `audit_event_subject` data idempotency is what this test asserts).
+    await scratchPool!.query("DROP VIEW IF EXISTS public.audit_activity");
     for (const file of s.newMigrations) {
       await applySql(scratchPool!, await readFile(path.join(MIGRATIONS_DIR, file), "utf8"), `re-apply ${file}`);
     }

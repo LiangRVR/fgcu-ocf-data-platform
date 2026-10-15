@@ -25,8 +25,10 @@
  *        the documented structural allowlist.
  *   - R11 ACTIVITY VIEW SCHEMA/GRANTS: `public.audit_activity` is a SECURITY
  *        INVOKER view exposing exactly the documented explicit columns (no
- *        Auth binding or private fields), grants authenticated SELECT only,
- *        and revokes anon.
+ *        Auth binding, private fields, or raw audit JSON payloads —
+ *        `old_values`/`new_values`/`changes` are NOT selectable through the
+ *        authenticated projection), grants authenticated SELECT only, and
+ *        revokes anon.
  *   - R12 ACTIVITY VIEW RLS/DATASET: the underlying active-advisor audit RLS
  *        applies THROUGH the view (an authenticated active advisor sees the
  *        seeded timeline; an authenticated user with no advisor row and an
@@ -732,9 +734,6 @@ describe("audit_activity view: schema and grants (R11)", () => {
       "actor_name_snapshot",
       "reason",
       "origin",
-      "old_values",
-      "new_values",
-      "changes",
       "subject_student_id",
       "subject_application_id",
       "subject_fellowship_id",
@@ -747,7 +746,43 @@ describe("audit_activity view: schema and grants (R11)", () => {
       "previous_fellowship_name",
       "current_fellowship_name",
       "subject_application_name",
+      "previous_student_id",
+      "current_student_id",
+      "previous_fellowship_id",
+      "current_fellowship_id",
+      "fellowship_thursday_attended_before",
+      "fellowship_thursday_attended_after",
+      "fellowship_thursday_attended_amended",
+      "fellowship_thursday_source_before",
+      "fellowship_thursday_source_after",
+      "fellowship_thursday_source_amended",
+      "void_reason",
+      "advising_meeting_date",
+      "advising_application_id",
+      "advising_advisor_id",
     ]);
+  });
+
+  it("does NOT expose the raw audit JSON payload columns (browser-safe boundary)", async () => {
+    const { rows } = await pool.query(
+      `SELECT column_name
+         FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'audit_activity'
+          AND column_name IN ('old_values', 'new_values', 'changes')`
+    );
+    expect(
+      rows,
+      "raw audit JSON must not be selectable through the app's authenticated projection"
+    ).toHaveLength(0);
+
+    // A real authenticated PostgREST attempt to select a raw payload column is
+    // rejected (the column is not part of the browser-safe projection).
+    const { data, error } = await activityClient(staff.client)
+      .from("audit_activity")
+      .select("changes")
+      .limit(1);
+    expect(data, "raw `changes` is not reachable through the projection").toBeNull();
+    expect(error, "selecting raw `changes` through the projection must fail").not.toBeNull();
   });
 
   it("never exposes Auth-binding or private columns", async () => {
@@ -776,27 +811,37 @@ describe("audit_activity view: schema and grants (R11)", () => {
     expect(rows[0].anon_select, "anon SELECT must be revoked").toBe(false);
   });
 
-  it("resolves display labels in a single-statement read model with no LATERAL/per-row follow-up (R10)", async () => {
+  it("resolves labels and correction context in a single set-based statement (R10/NFR2)", async () => {
     const { rows } = await pool.query<{ def: string }>(
       `SELECT pg_get_viewdef('public.audit_activity'::regclass, true) AS def`
     );
     const def = String(rows[0].def).replace(/\s+/g, " ");
 
-    // One outer SELECT plus label and association scalar subqueries (four base
-    // labels/arrays + five relationship-aware scalars): a SINGLE SQL statement
-    // returns event rows AND their labels, so a history read is one round trip
-    // (no per-row N+1 follow-up query).
-    expect((def.match(/\bSELECT\b/gi) ?? []).length, "one statement + nine association subqueries").toBe(10);
-    expect(def, "no LATERAL / per-row set-returning join").not.toMatch(/\bLATERAL\b/i);
+    // A single SQL statement returns event rows AND their labels/context, so a
+    // history read is one round trip (no per-row N+1 follow-up query).
+    expect(def, "reads the immutable audit event source").toMatch(/from\s+(?:public\.)?audit_event/i);
     expect(def, "student label comes from frozen subject snapshots").toMatch(/aes\.subject_type\s*=\s*'student'/i);
     expect(def, "fellowship label comes from frozen subject snapshots").toMatch(/aes\.subject_type\s*=\s*'fellowship'/i);
     expect(def, "relationship scalars read frozen subject snapshots").toMatch(/aes\.relationship\s*=\s*'previous'/i);
     expect(def, "application subject label reads the application association").toMatch(/aes\.subject_type\s*=\s*'application'/i);
-    // The frozen actor snapshot is used; the view never joins the live advisor
-    // or Auth identity for display labels.
-    expect(def, "no live advisor join").not.toMatch(/from\s+(?:public\.)?advisor/i);
-    expect(def, "no live student join").not.toMatch(/from\s+(?:public\.)?student/i);
-    expect(def, "no live fellowship join").not.toMatch(/from\s+(?:public\.)?fellowship/i);
+
+    // Fellowship Thursday predecessor is set-based over the immutable base and
+    // strictly-earlier amendments ordered by (created_at, amendment_id).
+    expect(def, "FT predecessor ordered by (created_at, amendment_id)").toMatch(
+      /a2\.created_at[^;]*a2\.amendment_id/i
+    );
+    // The exact Scholarship Void reason is bound to the event's own amendment id.
+    expect(def, "void reason joined to the scholarship amendment").toMatch(
+      /scholarship_history_amendment/i
+    );
+    // The immutable parent-meeting scalars are projected from the append-only
+    // parent row, never from a mutable advisor/application join.
+    expect(def, "advising parent scalars joined from the amendment").toMatch(
+      /advising_meeting_amendment/i
+    );
+    expect(def, "no live advisor join").not.toMatch(/from\s+(?:public\.)?advisor\b/i);
+    expect(def, "no live student join").not.toMatch(/from\s+(?:public\.)?student\b/i);
+    expect(def, "no live free-text fellowship join").not.toMatch(/from\s+(?:public\.)?fellowship\s/i);
     expect(def, "no live Auth join").not.toMatch(/auth\.users/i);
   });
 });

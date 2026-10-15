@@ -783,13 +783,10 @@ export type Database = {
           actor_advisor_id: number | null
           actor_name_snapshot: string
           audit_id: number
-          changes: Json | null
           entity_id: number
           entity_type: string
           fellowship_name: string | null
-          new_values: Json | null
           occurred_at: string
-          old_values: Json | null
           origin: string
           reason: string | null
           student_name: string | null
@@ -803,6 +800,20 @@ export type Database = {
           previous_fellowship_name: string | null
           current_fellowship_name: string | null
           subject_application_name: string | null
+          previous_student_id: number | null
+          current_student_id: number | null
+          previous_fellowship_id: number | null
+          current_fellowship_id: number | null
+          fellowship_thursday_attended_before: boolean | null
+          fellowship_thursday_attended_after: boolean | null
+          fellowship_thursday_attended_amended: boolean | null
+          fellowship_thursday_source_before: string | null
+          fellowship_thursday_source_after: string | null
+          fellowship_thursday_source_amended: boolean | null
+          void_reason: string | null
+          advising_meeting_date: string | null
+          advising_application_id: number | null
+          advising_advisor_id: number | null
         }
         Relationships: []
       }

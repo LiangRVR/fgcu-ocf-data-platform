@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -37,9 +37,12 @@ export function FellowshipEditButton({
   // Loaded optimistic-concurrency version; read from the base table when the
   // dialog opens (the list view does not carry it). Never re-read at save time.
   const [expectedVersion, setExpectedVersion] = useState<number | null>(null);
+  const editStarted = useRef(false);
   const router = useRouter();
 
   async function handleOpen() {
+    editStarted.current = false;
+    setName(fellowshipName);
     setIsDirty(false);
     setExpectedVersion(null);
     setOpen(true);
@@ -50,7 +53,7 @@ export function FellowshipEditButton({
       .single();
     if (!error && data) {
       // The displayed value and expected version must be one database snapshot.
-      setName(data.fellowship_name);
+      if (!editStarted.current) setName(data.fellowship_name);
       setExpectedVersion(data.row_version);
     }
   }
@@ -120,7 +123,7 @@ export function FellowshipEditButton({
               <Input
                 id="fellowship-name"
                 value={name}
-                onChange={(e) => { setName(e.target.value); setIsDirty(true); }}
+                onChange={(e) => { editStarted.current = true; setName(e.target.value); setIsDirty(true); }}
                 onBlur={() => setIsDirty(true)}
                 onKeyDown={(e) => e.key === "Enter" && handleSave()}
                 autoFocus
