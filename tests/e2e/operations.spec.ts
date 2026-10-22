@@ -7,7 +7,19 @@
  * a seeded value) AND one real synthetic UI write — logging a meeting, adding
  * an attendance record, and recording a scholarship award — each asserted again
  * after a reload to prove the write went through the server, not just the
- * client state.
+ * client state. Advising writes are deliberately retained: meeting history is
+ * append-only and the local E2E lane starts from a fresh seed.
+ *
+ * Amendment coverage: the advising lane asserts that an active advisor can open
+ * the Add Correction dialog on a historical meeting, fill only Reason and
+ * Details (no meeting ID / creator / timestamp fields are exposed), submit a
+ * direct typed insert, and observe the correction re-render under the
+ * unchanged original meeting across a reload.
+ *
+ * Advising-continuity coverage (R6/R7): the application-scoped meeting test
+ * also asserts the rendered Mode and No Show state, and a dedicated test proves
+ * the Log Meeting dialog orders its fields Student, Application/Fellowship,
+ * Advisor, Meeting Date, Meeting Mode, No Show, Notes by DOM position.
  *
  * Exactness: the reports test is FULLY SELF-CONTAINED. Every expectation is
  * EXACT absolute equality derived from the seed-exported totals
@@ -29,7 +41,8 @@
  * The seeded student already has one OCF-sourced attendance record, so the
  * attendance write uses the "Honors College" source to stay distinguishable.
  */
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
+import { createClient } from "@supabase/supabase-js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -46,7 +59,12 @@ function requireEnv(name: string): string {
 const ACTIVE_EMAIL = requireEnv("E2E_ACTIVE_EMAIL");
 const ACTIVE_PASSWORD = requireEnv("E2E_ACTIVE_PASSWORD");
 const STUDENT_NAME = requireEnv("E2E_STUDENT_NAME");
+const STUDENT_TWO_NAME = requireEnv("E2E_STUDENT_TWO_NAME");
 const FELLOWSHIP_NAME = requireEnv("E2E_FELLOWSHIP_NAME");
+const FELLOWSHIP_TWO_NAME = requireEnv("E2E_FELLOWSHIP_TWO_NAME");
+const APPLICATION_YEAR = requireEnv("E2E_APPLICATION_YEAR");
+const CYCLE_YEAR_OLD = requireEnv("E2E_CYCLE_YEAR_OLD");
+const CYCLE_YEAR_NEW = requireEnv("E2E_CYCLE_YEAR_NEW");
 
 /**
  * Report totals computed by the seed from the fixtures it created (re-read
@@ -62,6 +80,85 @@ const REPORT_TOTALS = JSON.parse(requireEnv("E2E_REPORT_TOTALS")) as {
   awarded: number;
   applicationsByStage: Record<string, number>;
 };
+
+/**
+ * Service-role helpers for direct database mutations from the E2E process.
+ * These are used only to simulate race conditions that are impossible to
+ * trigger reliably through the UI (e.g., deleting an application while the
+ * advising dialog already has it selected).
+ */
+function serviceClient() {
+  const apiUrl = requireEnv("SUPABASE_URL");
+  const serviceRoleKey = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(apiUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
+
+async function findStudentIdByName(name: string): Promise<number> {
+  const service = serviceClient();
+  const { data, error } = await service
+    .from("student")
+    .select("student_id")
+    .eq("full_name", name)
+    .single();
+  if (error) {
+    throw new Error(`findStudentIdByName(${name}): ${error.message}`);
+  }
+  return data.student_id as number;
+}
+
+async function findFellowshipIdByName(name: string): Promise<number> {
+  const service = serviceClient();
+  const { data, error } = await service
+    .from("fellowship")
+    .select("fellowship_id")
+    .eq("fellowship_name", name)
+    .single();
+  if (error) {
+    throw new Error(`findFellowshipIdByName(${name}): ${error.message}`);
+  }
+  return data.fellowship_id as number;
+}
+
+async function createApplicationForStudent(props: {
+  studentName: string;
+  fellowshipName: string;
+  year: string;
+  stage: string;
+}): Promise<number> {
+  const service = serviceClient();
+  const [studentId, fellowshipId] = await Promise.all([
+    findStudentIdByName(props.studentName),
+    findFellowshipIdByName(props.fellowshipName),
+  ]);
+  const { data, error } = await service
+    .from("application")
+    .insert({
+      student_id: studentId,
+      fellowship_id: fellowshipId,
+      destination_country: "E2E Testland",
+      application_year: props.year,
+      stage_of_application: props.stage,
+      // Early stages carry neither flag under the local stage/flag invariant.
+      is_semi_finalist: false,
+      is_finalist: false,
+    })
+    .select("application_id")
+    .single();
+  if (error) {
+    throw new Error(`createApplicationForStudent: ${error.message}`);
+  }
+  return data.application_id as number;
+}
+
+async function deleteApplication(applicationId: number): Promise<void> {
+  const service = serviceClient();
+  const { error } = await service.from("application").delete().eq("application_id", applicationId);
+  if (error) {
+    throw new Error(`deleteApplication(${applicationId}): ${error.message}`);
+  }
+}
 
 /**
  * The exact names of the two students the seed creates (see
@@ -85,6 +182,18 @@ async function signInAsActive(page: Page): Promise<void> {
   await page.locator("#password").fill(ACTIVE_PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/dashboard/);
+}
+
+/**
+ * The advising Log Meeting dialog resolves students with a lazy bounded
+ * typeahead: options are only queried once at least two characters are typed,
+ * and each bounded option is a plain button whose accessible name is the full
+ * student name. Typing the full name keeps the search deterministic.
+ */
+async function selectAdvisingStudent(page: Page, name: string): Promise<void> {
+  const dialog = page.getByRole("dialog");
+  await dialog.locator("#student-search").fill(name);
+  await dialog.getByRole("button", { name, exact: true }).click();
 }
 
 /**
@@ -112,38 +221,48 @@ function statCardValue(page: Page, title: string) {
 }
 
 /**
- * Delete one student row (by its unique name) through the desktop table's
- * trash action and the confirmation dialog. Used to remove student rows that
- * other E2E specs created and to clean up the reports test's own student.
+ * Delete one student row via the service role (test-support fixture cleanup).
+ * The lifecycle change removed the destructive Delete control from the student
+ * UI by design (students are archived/restored through the lifecycle RPC, never
+ * deleted), so cleanup that previously went through the table trash action now
+ * goes through the service role — exactly like the other fixture-cleanup paths
+ * in this suite.
  */
-async function deleteStudentByName(page: Page, name: string): Promise<void> {
-  const row = page.locator("table tbody tr", { hasText: name }).first();
-  await expect(row).toBeVisible();
-  await row.locator("button:has(svg.lucide-trash-2)").click();
-  await page.getByRole("alertdialog").getByRole("button", { name: "Delete" }).click();
-  await expect(page.locator("table tbody tr", { hasText: name })).toHaveCount(0);
+async function deleteStudentRowByName(name: string): Promise<void> {
+  const service = serviceClient();
+  const { data, error } = await service
+    .from("student")
+    .delete()
+    .eq("full_name", name)
+    .select("student_id");
+  if (error) throw new Error(`deleteStudentRowByName(${name}): ${error.message}`);
+  expect(data ?? [], `deleted student rows for ${name}`).toHaveLength(1);
 }
 
 /**
  * Remove every student row that is not one of the two seeded students. The only
  * spec that creates students through the UI is application-workflow.spec.ts;
- * deleting those rows (when present) makes Total Students derive exactly from
- * the seed export whether or not that spec ran.
+ * deleting those rows (when present, active OR archived) makes Total Students
+ * derive exactly from the seed export whether or not that spec ran. Service-role
+ * cleanup bypasses RLS and is not subject to the archive filter that governs the
+ * active roster, so foreign rows never skew the exact reports totals.
  */
-async function deleteForeignStudents(page: Page): Promise<void> {
-  await page.goto("/students");
-  // Wait for the roster table to render before enumerating its rows.
-  await expect(page.locator("table tbody tr").first()).toBeVisible();
-
-  const rows = page.locator("table tbody tr");
-  const count = await rows.count();
-  const foreignNames: string[] = [];
-  for (let i = 0; i < count; i += 1) {
-    const name = (await rows.nth(i).locator("td").first().innerText())?.trim() ?? "";
-    if (!SEEDED_STUDENT_NAMES.has(name)) foreignNames.push(name);
-  }
-  for (const name of foreignNames) {
-    await deleteStudentByName(page, name);
+async function deleteForeignStudents(): Promise<void> {
+  const service = serviceClient();
+  const { data, error } = await service.from("student").select("student_id, full_name");
+  if (error) throw new Error(`list students for cleanup: ${error.message}`);
+  const foreign = (data ?? []).filter(
+    (row) => !SEEDED_STUDENT_NAMES.has((row as { full_name: string }).full_name),
+  );
+  for (const row of foreign) {
+    const studentId = (row as { student_id: number }).student_id;
+    const { error: deleteError } = await service
+      .from("student")
+      .delete()
+      .eq("student_id", studentId);
+    if (deleteError) {
+      throw new Error(`cleanup foreign student ${studentId}: ${deleteError.message}`);
+    }
   }
 }
 
@@ -180,6 +299,11 @@ async function restoreSeededApplicationStage(page: Page): Promise<void> {
 async function assertReportsTotals(page: Page, expectedStudents: number): Promise<void> {
   await expect(page.getByRole("heading", { name: "Reports" })).toBeVisible();
 
+  // Reports are a full-dataset surface, not a paginated operational list: the
+  // shared pagination control (aria-label="Pagination") must never render, so
+  // report totals can never be mistaken for a single page of rows.
+  await expect(page.getByRole("navigation", { name: "Pagination" })).toHaveCount(0);
+
   await expect(statCardValue(page, "Total Students")).toHaveText(String(expectedStudents));
   await expect(statCardValue(page, "Applications")).toHaveText(
     String(REPORT_TOTALS.applications),
@@ -206,6 +330,36 @@ async function assertReportsTotals(page: Page, expectedStudents: number): Promis
   expect(stageSum).toBe(REPORT_TOTALS.applications);
 }
 
+/**
+ * Privacy boundary for the normalized history surfaces: only display props may
+ * reach the browser. Asserts the rendered scope never leaks the raw audit JSON
+ * columns (`old_values`/`new_values`/`changes`), the immutable bookkeeping ids,
+ * or Auth material.
+ */
+async function assertNoRawAuditPayload(scope: Locator): Promise<void> {
+  const body = await scope.innerText();
+  const leaked = [
+    "new_values",
+    "old_values",
+    'changes":',
+    "actor_advisor_id",
+    "subject_student_id",
+    "subject_application_id",
+    "subject_fellowship_id",
+    "auth_user_id",
+    "access_token",
+    "refresh_token",
+    "service_role",
+    "row_version",
+  ].filter((token) => body.includes(token));
+  expect(leaked, `raw audit/Auth material leaked: ${leaked.join(", ")}`).toEqual([]);
+}
+
+/** The unified student Activity & Change History section on a detail page. */
+function studentActivityHistory(page: Page) {
+  return page.locator("main section[aria-label='Activity & Change History']");
+}
+
 test.describe("operational surfaces", () => {
   test.setTimeout(60_000);
 
@@ -218,8 +372,10 @@ test.describe("operational surfaces", () => {
     // ── Self-containment: neutralize mutations other tests/specs can leave ──
     // Remove student rows created by other E2E specs (application-workflow
     // creates one through the UI) so Total Students derives exactly from the
-    // seed export; only the two seeded students remain.
-    await deleteForeignStudents(page);
+    // seed export; only the two seeded students remain. Fixture cleanup runs
+    // through the service role because the lifecycle change removed the
+    // destructive student-delete UI by design.
+    await deleteForeignStudents();
 
     // Restore the seeded application to its seed stage ("Submitted") so the
     // application-stage funnel converges to the export's counts whether or not
@@ -249,8 +405,9 @@ test.describe("operational surfaces", () => {
     await assertReportsTotals(page, REPORT_TOTALS.students + 1);
 
     // ── Clean up this test's own write so the database is left seeded ──
-    await page.goto("/students");
-    await deleteStudentByName(page, studentName);
+    // The student UI exposes Archive, not Delete, so the test's own row is
+    // removed through the service role (test-support fixture cleanup).
+    await deleteStudentRowByName(studentName);
   });
 
   test("advising page renders the seeded meeting", async ({ page }) => {
@@ -259,6 +416,19 @@ test.describe("operational surfaces", () => {
     await page.goto("/advising");
     await expect(page.getByRole("heading", { name: "Advising", exact: true })).toBeVisible();
     await expect(visibleStudentName(page)).toBeVisible();
+    await expect(page.getByTitle("Edit meeting")).toHaveCount(0);
+    await expect(page.getByTitle("Delete meeting")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Edit" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Delete" })).toHaveCount(0);
+
+    // The advising history exposes immutable provenance for the seeded record
+    // without assuming how the runtime attributes a service-seeded write.
+    const seededMeetingRow = page.locator("table tbody tr", { hasText: "E2E seeded advising session" }).first();
+    await expect(seededMeetingRow.getByText(/^Recorded by /)).toBeVisible();
+    await expect(seededMeetingRow.getByText(/^Recorded (?!by)/)).toBeVisible();
+    // Each meeting row carries its own Add Correction affordance (no dropdown
+    // menu, no per-row Edit / Delete actions).
+    await expect(seededMeetingRow.getByRole("button", { name: "Add Correction" })).toBeVisible();
   });
 
   test("an advisor can log an advising meeting that persists across a reload", async ({ page }) => {
@@ -267,8 +437,7 @@ test.describe("operational surfaces", () => {
     await page.goto("/advising");
     await page.getByRole("button", { name: "Log Meeting" }).click();
 
-    await page.locator("#student_id").click();
-    await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
+    await selectAdvisingStudent(page, STUDENT_NAME);
     await page.locator("#meeting_date").fill("2026-09-15");
     await page.locator("#meeting_mode").click();
     await page.getByRole("option", { name: "In-Person", exact: true }).click();
@@ -280,10 +449,440 @@ test.describe("operational surfaces", () => {
     const row = page.locator("table tbody tr", { hasText: MEETING_NOTE });
     await expect(row).toBeVisible();
     await expect(row).toContainText(STUDENT_NAME);
+    await expect(row).toContainText("Recorded by");
+    await expect(row).toContainText("Recorded");
 
     // Reload → the meeting is persisted server-side.
     await page.reload();
-    await expect(page.locator("table tbody tr", { hasText: MEETING_NOTE })).toBeVisible();
+    const persistedRow = page.locator("table tbody tr", { hasText: MEETING_NOTE });
+    await expect(persistedRow).toBeVisible();
+    await expect(persistedRow).toContainText("Recorded by");
+  });
+
+  test("an advisor can add a correction with Reason and Details only and the original meeting remains unchanged across a reload", async ({ page }) => {
+    await signInAsActive(page);
+
+    const correctionReason = `E2E correction reason ${Date.now()}`;
+    const correctionDetails = `E2E correction details ${Date.now()}`;
+
+    await page.goto("/advising");
+
+    // The seeded meeting row carries its Add Correction affordance.
+    const seededRow = page
+      .locator("table tbody tr", { hasText: "E2E seeded advising session" })
+      .first();
+    await expect(seededRow).toBeVisible();
+    await seededRow.getByRole("button", { name: "Add Correction" }).click();
+
+    // The Add Correction dialog exposes ONLY Reason and Details — the meeting
+    // context is bound by the row, and the creator/timestamp come from the
+    // database, so no editable meeting ID / creator / timestamp input exists.
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    const reasonInput = dialog.locator('input[id^="correction-reason-"]');
+    const detailsInput = dialog.locator('textarea[id^="correction-details-"]');
+    await expect(reasonInput).toBeVisible();
+    await expect(detailsInput).toBeVisible();
+    await expect(dialog.locator("input[name='meeting_id']")).toHaveCount(0);
+    await expect(dialog.locator("input[name='created_by_advisor_id']")).toHaveCount(0);
+    await expect(dialog.locator("input[name='created_at']")).toHaveCount(0);
+
+    // Submitting empty form shows the required-field errors (no insert yet).
+    await dialog.getByRole("button", { name: "Add Correction" }).click();
+    await expect(dialog.getByText("Reason is required.")).toBeVisible();
+    await expect(dialog.getByText("Details are required.")).toBeVisible();
+
+    // Fill in and submit a real correction.
+    await reasonInput.fill(correctionReason);
+    await detailsInput.fill(correctionDetails);
+    await dialog.getByRole("button", { name: "Add Correction" }).click();
+
+    // The dialog dismisses once the typed direct insert succeeds.
+    await expect(dialog).toBeHidden();
+
+    // The correction is appended to that meeting's chronological display as an
+    // attached record; the original meeting notes are still visible and the
+    // row keeps its own Add Correction affordance for further corrections.
+    const correctionRow = page
+      .locator("table tbody tr.bg-amber-50\\/40", { hasText: correctionReason })
+      .first();
+    await expect(correctionRow).toBeVisible();
+    await expect(correctionRow).toContainText(correctionDetails);
+    await expect(correctionRow).toContainText("Added by");
+    // Original meeting content is unchanged beneath the correction.
+    await expect(
+      page.locator("table tbody tr", { hasText: "E2E seeded advising session" }).first(),
+    ).toContainText("E2E seeded advising session");
+
+    // Reload → the correction survives via the server loader and the original
+    // meeting row still carries its original notes verbatim.
+    await page.reload();
+    const persistedCorrection = page
+      .locator("table tbody tr.bg-amber-50\\/40", { hasText: correctionReason })
+      .first();
+    await expect(persistedCorrection).toBeVisible();
+    await expect(persistedCorrection).toContainText(correctionDetails);
+    const persistedMeeting = page
+      .locator("table tbody tr", { hasText: "E2E seeded advising session" })
+      .first();
+    await expect(persistedMeeting).toContainText("E2E seeded advising session");
+  });
+
+  test("multiple corrections attached to the same meeting render in chronological created_at order across a reload", async ({ page }) => {
+    await signInAsActive(page);
+
+    // Two corrections on the same seeded meeting, with a small delay between
+    // inserts so the database-authored `created_at` strictly increases and
+    // the loader's chronological order is observable in the DOM.
+    const earlierReason = `E2E earlier correction ${Date.now()}`;
+    const earlierDetails = `E2E earlier details ${Date.now()}`;
+    const laterReason = `E2E later correction ${Date.now() + 1}`;
+    const laterDetails = `E2E later details ${Date.now() + 1}`;
+
+    const submitCorrection = async (reason: string, details: string): Promise<void> => {
+      const seededRow = page
+        .locator("table tbody tr", { hasText: "E2E seeded advising session" })
+        .first();
+      await seededRow.getByRole("button", { name: "Add Correction" }).click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog).toBeVisible();
+      await dialog.locator('input[id^="correction-reason-"]').fill(reason);
+      await dialog.locator('textarea[id^="correction-details-"]').fill(details);
+      await dialog.getByRole("button", { name: "Add Correction" }).click();
+      await expect(dialog).toBeHidden();
+    };
+
+    await page.goto("/advising");
+    await submitCorrection(earlierReason, earlierDetails);
+    // Wait long enough that `now()` strictly advances; PostgreSQL timestamptz
+    // resolution is microseconds, so even 1100 ms guarantees a different value.
+    await page.waitForTimeout(1100);
+    await submitCorrection(laterReason, laterDetails);
+
+    // Both corrections render below the unchanged original meeting with their
+    // provenance (creator + database-authored timestamp) attached.
+    const earlierRow = page
+      .locator("table tbody tr.bg-amber-50\\/40", { hasText: earlierReason })
+      .first();
+    const laterRow = page
+      .locator("table tbody tr.bg-amber-50\\/40", { hasText: laterReason })
+      .first();
+    await expect(earlierRow).toBeVisible();
+    await expect(earlierRow).toContainText(earlierDetails);
+    await expect(earlierRow).toContainText("Added by");
+    await expect(laterRow).toBeVisible();
+    await expect(laterRow).toContainText(laterDetails);
+    await expect(laterRow).toContainText("Added by");
+
+    // Original meeting's notes remain visible and unchanged at the top of the
+    // meeting's attached history.
+    const meetingRow = page
+      .locator("table tbody tr", { hasText: "E2E seeded advising session" })
+      .first();
+    await expect(meetingRow).toContainText("E2E seeded advising session");
+
+    // Chronological order: the earlier correction appears in the DOM before
+    // the later correction. Compare text positions in the rendered HTML so
+    // layout / viewport concerns don't matter.
+    const meetingSectionHtml = await page
+      .locator("table", { hasText: "E2E seeded advising session" })
+      .first()
+      .innerHTML();
+    const earlierIndex = meetingSectionHtml.indexOf(earlierReason);
+    const laterIndex = meetingSectionHtml.indexOf(laterReason);
+    expect(earlierIndex).toBeGreaterThan(-1);
+    expect(laterIndex).toBeGreaterThan(earlierIndex);
+
+    // Reload → chronological order survives via the server loader and the
+    // corrections are still attached under the unchanged original meeting.
+    await page.reload();
+    const persistedMeeting = page
+      .locator("table tbody tr", { hasText: "E2E seeded advising session" })
+      .first();
+    await expect(persistedMeeting).toContainText("E2E seeded advising session");
+    await expect(
+      page.locator("table tbody tr.bg-amber-50\\/40", { hasText: earlierReason }).first(),
+    ).toBeVisible();
+    await expect(
+      page.locator("table tbody tr.bg-amber-50\\/40", { hasText: laterReason }).first(),
+    ).toBeVisible();
+    const persistedSectionHtml = await page
+      .locator("table", { hasText: "E2E seeded advising session" })
+      .first()
+      .innerHTML();
+    expect(persistedSectionHtml.indexOf(earlierReason)).toBeGreaterThan(-1);
+    expect(persistedSectionHtml.indexOf(laterReason)).toBeGreaterThan(
+      persistedSectionHtml.indexOf(earlierReason),
+    );
+  });
+
+  test("an advisor can log a General Advising meeting (null application) that persists across a reload", async ({ page }) => {
+    await signInAsActive(page);
+
+    const generalNote = `E2E General Advising ${Date.now()}`;
+
+    await page.goto("/advising");
+    await page.getByRole("button", { name: "Log Meeting" }).click();
+
+    await selectAdvisingStudent(page, STUDENT_NAME);
+
+    // With no application selected the form defaults to General Advising (null
+    // application_id) — the trigger must show it, not a stale application.
+    await expect(page.locator("#application_id")).toContainText("General Advising");
+
+    await page.locator("#meeting_date").fill("2026-09-20");
+    await page.locator("#meeting_mode").click();
+    await page.getByRole("option", { name: "In-Person", exact: true }).click();
+    await page.locator("#notes").fill(generalNote);
+
+    await page.getByRole("dialog").getByRole("button", { name: "Log Meeting" }).click();
+
+    // The new row renders General Advising in its Context cell.
+    const row = page.locator("table tbody tr", { hasText: generalNote });
+    await expect(row).toBeVisible();
+    await expect(row).toContainText(STUDENT_NAME);
+    await expect(row).toContainText("General Advising");
+    await expect(row).not.toContainText("year unknown");
+
+    // Reload → the General Advising context is persisted server-side.
+    await page.reload();
+    const rowAfterReload = page.locator("table tbody tr", { hasText: generalNote });
+    await expect(rowAfterReload).toBeVisible();
+    await expect(rowAfterReload).toContainText("General Advising");
+
+  });
+
+  test("an advisor can log an application-scoped meeting whose cycle label persists across a reload", async ({ page }) => {
+    await signInAsActive(page);
+
+    const appMeetingNote = `E2E App-Scoped Meeting ${Date.now()}`;
+    // The second student's CURRENT_CYCLE application on the second fellowship:
+    // a cycle-aware label, never a bare fellowship name.
+    const cycleLabel = `${FELLOWSHIP_TWO_NAME} — ${CYCLE_YEAR_NEW}`;
+
+    await page.goto("/advising");
+    await page.getByRole("button", { name: "Log Meeting" }).click();
+
+    await selectAdvisingStudent(page, STUDENT_TWO_NAME);
+
+    // The same-fellowship pair is offered cycle-aware and distinguishable.
+    await page.locator("#application_id").click();
+    await expect(
+      page.getByRole("option", { name: `${FELLOWSHIP_TWO_NAME} — ${CYCLE_YEAR_OLD}`, exact: true }),
+    ).toBeVisible();
+    await page.getByRole("option", { name: cycleLabel, exact: true }).click();
+
+    await page.locator("#meeting_date").fill("2026-09-21");
+    await page.locator("#meeting_mode").click();
+    await page.getByRole("option", { name: "Virtual", exact: true }).click();
+    await page.locator("#notes").fill(appMeetingNote);
+
+    await page.getByRole("dialog").getByRole("button", { name: "Log Meeting" }).click();
+
+    // The row's Context cell shows the application's cycle label, and the
+    // table also identifies the meeting mode and no-show state (R6).
+    const row = page.locator("table tbody tr", { hasText: appMeetingNote });
+    await expect(row).toBeVisible();
+    await expect(row).toContainText(STUDENT_TWO_NAME);
+    await expect(row).toContainText(cycleLabel);
+    await expect(row).toContainText("Virtual");
+    await expect(row).toContainText("Attended");
+
+    // Reload → the application scoping persists server-side.
+    await page.reload();
+    const rowAfterReload = page.locator("table tbody tr", { hasText: appMeetingNote });
+    await expect(rowAfterReload).toBeVisible();
+    await expect(rowAfterReload).toContainText(cycleLabel);
+    await expect(rowAfterReload).toContainText("Virtual");
+    await expect(rowAfterReload).toContainText("Attended");
+
+  });
+
+  test("the Log Meeting dialog orders fields Student, Application, Advisor, Date, Mode, No Show, Notes (R7)", async ({ page }) => {
+    await signInAsActive(page);
+
+    await page.goto("/advising");
+    await page.getByRole("button", { name: "Log Meeting" }).click();
+
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+
+    // The shared meeting form declares the approved field order. Compare DOM
+    // positions of each field's id inside the dialog HTML so the assertion is
+    // layout-independent and immune to viewport-specific reordering. Student
+    // and Advisor are lazy bounded typeahead inputs (`*-search`), so their
+    // input ids stand in for the former Select triggers.
+    const html = await dialog.innerHTML();
+    const fieldIds = [
+      'id="student-search"',
+      'id="application_id"',
+      'id="advisor-search"',
+      'id="meeting_date"',
+      'id="meeting_mode"',
+      'id="no_show"',
+      'id="notes"',
+    ];
+    let previousIndex = -1;
+    for (const field of fieldIds) {
+      const index = html.indexOf(field);
+      expect(index, `field ${field} must be rendered`).toBeGreaterThan(-1);
+      expect(index, `field ${field} must follow the previous field`).toBeGreaterThan(previousIndex);
+      previousIndex = index;
+    }
+  });
+
+  test("changing the student in the Log Meeting dialog refreshes the application options, clears a stale selection, and persists General Advising after submit/reload", async ({ page }) => {
+    await signInAsActive(page);
+
+    await page.goto("/advising");
+    await page.getByRole("button", { name: "Log Meeting" }).click();
+
+    const dialog = page.getByRole("dialog");
+    const firstStudentLabel = `${FELLOWSHIP_NAME} — ${APPLICATION_YEAR}`;
+    const staleNote = `E2E stale-student switch ${Date.now()}`;
+
+    // Select the seeded student and pick one of their applications.
+    await selectAdvisingStudent(page, STUDENT_NAME);
+    await dialog.locator("#application_id").click();
+    await page.getByRole("option", { name: firstStudentLabel, exact: true }).click();
+    await expect(dialog.locator("#application_id")).toContainText(firstStudentLabel);
+
+    // Switch to the second student → the stale application selection must clear
+    // back to General Advising (never carry another student's application over).
+    await selectAdvisingStudent(page, STUDENT_TWO_NAME);
+    await expect(dialog.locator("#application_id")).toContainText("General Advising");
+    await expect(dialog.locator("#application_id")).not.toContainText(firstStudentLabel);
+
+    // The option list is refreshed to the second student's applications: the
+    // same-fellowship different-cycle pair renders as two distinct options.
+    await dialog.locator("#application_id").click();
+    await expect(
+      page.getByRole("option", { name: `${FELLOWSHIP_TWO_NAME} — ${CYCLE_YEAR_OLD}`, exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("option", { name: `${FELLOWSHIP_TWO_NAME} — ${CYCLE_YEAR_NEW}`, exact: true }),
+    ).toBeVisible();
+    // The first student's application is no longer selectable for this student.
+    await expect(page.getByRole("option", { name: firstStudentLabel, exact: true })).toHaveCount(0);
+
+    // Complete and submit the meeting with the reset General Advising context.
+    await page.keyboard.press("Escape");
+    await page.locator("#meeting_date").fill("2026-09-22");
+    await page.locator("#meeting_mode").click();
+    await page.getByRole("option", { name: "Virtual", exact: true }).click();
+    await page.locator("#notes").fill(staleNote);
+    await page.getByRole("dialog").getByRole("button", { name: "Log Meeting" }).click();
+
+    // The created row renders General Advising in its Context cell.
+    const row = page.locator("table tbody tr", { hasText: staleNote });
+    await expect(row).toContainText("General Advising");
+
+    // Reload → the General Advising context is persisted server-side.
+    await page.reload();
+    const rowAfterReload = page.locator("table tbody tr", { hasText: staleNote });
+    await expect(rowAfterReload).toContainText("General Advising");
+
+  });
+
+  test("submitting a stale application selection resets to General Advising, refreshes options, and removes the stale option after reload", async ({ page }) => {
+    await signInAsActive(page);
+
+    // ── Setup: create an application that will become stale mid-dialog ──────
+    const staleApplicationLabel = `${FELLOWSHIP_TWO_NAME} — ${APPLICATION_YEAR}`;
+    const staleApplicationId = await createApplicationForStudent({
+      studentName: STUDENT_NAME,
+      fellowshipName: FELLOWSHIP_TWO_NAME,
+      year: APPLICATION_YEAR,
+      stage: "Submitted",
+    });
+
+    const recoveryNote = `E2E stale-application recovery ${Date.now()}`;
+
+    await page.goto("/advising");
+    await page.getByRole("button", { name: "Log Meeting" }).click();
+
+    const dialog = page.getByRole("dialog");
+
+    // Select the seeded student and the freshly-created application.
+    await selectAdvisingStudent(page, STUDENT_NAME);
+    await dialog.locator("#application_id").click();
+    await page.getByRole("option", { name: staleApplicationLabel, exact: true }).click();
+    await expect(dialog.locator("#application_id")).toContainText(staleApplicationLabel);
+
+    // ── Race: delete the application from under the dialog ──────────────────
+    await deleteApplication(staleApplicationId);
+
+    await page.locator("#meeting_date").fill("2026-09-23");
+    await page.locator("#meeting_mode").click();
+    await page.getByRole("option", { name: "In-Person", exact: true }).click();
+    await page.locator("#notes").fill(recoveryNote);
+
+    // Submitting with the now-invalid application must trigger server-side recovery.
+    await page.getByRole("dialog").getByRole("button", { name: "Log Meeting" }).click();
+
+    await expect(
+      page.getByText("Selected application is no longer valid for this student. Reset to General Advising."),
+    ).toBeVisible();
+    await expect(dialog.locator("#application_id")).toContainText("General Advising");
+
+    // The refresh should remove the stale option from the dropdown.
+    await dialog.locator("#application_id").click();
+    await expect(
+      page.getByRole("option", { name: staleApplicationLabel, exact: true }),
+    ).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    // Complete the meeting with the recovered General Advising context.
+    await page.getByRole("dialog").getByRole("button", { name: "Log Meeting" }).click();
+
+    const row = page.locator("table tbody tr", { hasText: recoveryNote });
+    await expect(row).toBeVisible();
+    await expect(row).toContainText(STUDENT_NAME);
+    await expect(row).toContainText("General Advising");
+
+    // Reload → the recovered General Advising context is persisted, and the
+    // stale application option is still absent from the refreshed option list.
+    await page.reload();
+    const rowAfterReload = page.locator("table tbody tr", { hasText: recoveryNote });
+    await expect(rowAfterReload).toContainText("General Advising");
+
+    await page.getByRole("button", { name: "Log Meeting" }).click();
+    await selectAdvisingStudent(page, STUDENT_NAME);
+    await dialog.locator("#application_id").click();
+    await expect(
+      page.getByRole("option", { name: staleApplicationLabel, exact: true }),
+    ).toHaveCount(0);
+    // Close the dropdown, then close the dialog so table actions are reachable.
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+
+  });
+
+  test("an application belonging to another student cannot be selected in the advising dialog", async ({ page }) => {
+    await signInAsActive(page);
+
+    await page.goto("/advising");
+    await page.getByRole("button", { name: "Log Meeting" }).click();
+
+    const dialog = page.getByRole("dialog");
+    const firstStudentLabel = `${FELLOWSHIP_NAME} — ${APPLICATION_YEAR}`;
+    const secondStudentLabel = `${FELLOWSHIP_TWO_NAME} — ${CYCLE_YEAR_NEW}`;
+
+    // For the second student, only their own applications (+ General Advising)
+    // are offered — the first student's application must not appear at all.
+    await selectAdvisingStudent(page, STUDENT_TWO_NAME);
+    await dialog.locator("#application_id").click();
+    await expect(page.getByRole("option", { name: "General Advising", exact: true })).toBeVisible();
+    await expect(page.getByRole("option", { name: secondStudentLabel, exact: true })).toBeVisible();
+    await expect(page.getByRole("option", { name: firstStudentLabel, exact: true })).toHaveCount(0);
+
+    // Close the application dropdown, then check the reverse direction: the
+    // first student's options never include the second student's applications.
+    await page.keyboard.press("Escape");
+    await selectAdvisingStudent(page, STUDENT_NAME);
+    await dialog.locator("#application_id").click();
+    await expect(page.getByRole("option", { name: firstStudentLabel, exact: true })).toBeVisible();
+    await expect(page.getByRole("option", { name: secondStudentLabel, exact: true })).toHaveCount(0);
   });
 
   test("fellowship-thursday page renders the seeded attendance", async ({ page }) => {
@@ -300,7 +899,11 @@ test.describe("operational surfaces", () => {
     await page.goto("/fellowship-thursday");
     await page.getByRole("button", { name: "Add Record" }).click();
 
-    await page.locator("#ft_student_id").click();
+    await page.locator("#ft_event_date").fill("2026-10-15");
+
+    // Fellowship Thursday resolves students with the same lazy bounded
+    // typeahead: type at least two characters, then choose the bounded option.
+    await page.locator("#ft_student_id").fill(STUDENT_NAME);
     await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
 
     // Explicitly set the attendance state to "not attended" so the created
@@ -331,6 +934,74 @@ test.describe("operational surfaces", () => {
     await expect(hcRowAfterReload).toContainText("No");
   });
 
+  test("fellowship-thursday offers no Edit/Delete and an advisor can append a reasoned attendance correction that becomes effective and persists", async ({ page }) => {
+    await signInAsActive(page);
+
+    const correctionReason = `E2E FT correction ${Date.now()}`;
+    const correctionDetails = `E2E FT correction details ${Date.now()}`;
+
+    try {
+      await page.goto("/fellowship-thursday");
+      await expect(page.getByRole("heading", { name: "Fellowship Thursday" })).toBeVisible();
+
+      // The base attendance record has no direct mutation path.
+      await expect(page.getByTitle("Edit attendance")).toHaveCount(0);
+      await expect(page.getByTitle("Delete attendance")).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Delete" })).toHaveCount(0);
+
+      // The seeded student's OCF-sourced record is corrected, never replaced.
+      const ocfRow = page
+        .locator("table tbody tr", { hasText: STUDENT_NAME })
+        .filter({ hasText: "OCF" });
+      await expect(ocfRow).toBeVisible();
+      await expect(ocfRow).toContainText("Original: Attended");
+      await ocfRow.getByRole("button", { name: "Add correction" }).click();
+
+      const dialog = page.getByRole("dialog");
+      await expect(dialog).toBeVisible();
+      await expect(
+        dialog.getByRole("heading", { name: "Add attendance correction" }),
+      ).toBeVisible();
+
+      // A reason AND at least one corrected value are required.
+      await expect(dialog.getByRole("button", { name: "Add correction" })).toBeDisabled();
+      await dialog.locator("#ft-correction-reason").fill(correctionReason);
+      // Still disabled: no corrected value selected yet.
+      await expect(dialog.getByRole("button", { name: "Add correction" })).toBeDisabled();
+      // The first checkbox is "Correct attendance value"; the corrected
+      // attendance defaults to "Not attended", so the effective value flips.
+      await dialog.locator('input[type="checkbox"]').first().check();
+      await dialog.locator("#ft-correction-details").fill(correctionDetails);
+      await expect(dialog.getByRole("button", { name: "Add correction" })).toBeEnabled();
+      await dialog.getByRole("button", { name: "Add correction" }).click();
+      await expect(dialog).toBeHidden();
+
+      // The effective value flips while the original stays visible.
+      await expect(ocfRow).toContainText("Original: Attended");
+      await expect(ocfRow).toContainText("Current: Not attended");
+      await expect(ocfRow).toContainText(correctionReason);
+      await expect(ocfRow).toContainText(correctionDetails);
+      await expect(ocfRow).toContainText("Attendance → Not attended");
+
+      // Reload → effective value + audit trail persist server-side.
+      await page.reload();
+      const ocfRowAfterReload = page
+        .locator("table tbody tr", { hasText: STUDENT_NAME })
+        .filter({ hasText: "OCF" });
+      await expect(ocfRowAfterReload).toContainText("Current: Not attended");
+      await expect(ocfRowAfterReload).toContainText(correctionReason);
+    } finally {
+      // Service-role cleanup: the amendment is append-only for authenticated
+      // clients, so remove exactly this test's correction by its unique reason.
+      const service = serviceClient();
+      const { error } = await service
+        .from("fellowship_thursday_amendment")
+        .delete()
+        .eq("reason", correctionReason);
+      if (error) throw new Error(`FT amendment cleanup: ${error.message}`);
+    }
+  });
+
   test("scholarship-history page renders the seeded award record", async ({ page }) => {
     await signInAsActive(page);
 
@@ -345,20 +1016,405 @@ test.describe("operational surfaces", () => {
     await page.goto("/scholarship-history");
     await page.getByRole("button", { name: "Add Record" }).click();
 
-    await page.locator("#sh_student_id").click();
+    // Scholarship History uses lazy bounded typeaheads for both lookups: type
+    // at least two characters, then choose the bounded option.
+    await page.locator("#sh_student_id").fill(STUDENT_NAME);
     await page.getByRole("option", { name: STUDENT_NAME, exact: true }).click();
-    await page.locator("#sh_fellowship_id").click();
+    await page.locator("#sh_fellowship_id").fill(FELLOWSHIP_NAME);
     await page.getByRole("option", { name: FELLOWSHIP_NAME, exact: true }).click();
+    await page.locator("#sh_award_year").fill("2026");
 
     await page.getByRole("dialog").getByRole("button", { name: "Add Record" }).click();
 
-    // The seeded student now has 2 scholarship rows (the seeded award plus the
-    // one just added through the UI).
-    const studentRows = page.locator("table tbody tr", { hasText: STUDENT_NAME });
-    await expect(studentRows).toHaveCount(2);
+    // The seeded student now has 2 scholarship award articles (the seeded
+    // award plus the one just added through the UI). The surface renders
+    // articles, not table rows.
+    const studentAwards = page.locator("article", { hasText: STUDENT_NAME });
+    await expect(studentAwards).toHaveCount(2);
 
     // Reload → the new award record is persisted server-side.
     await page.reload();
-    await expect(page.locator("table tbody tr", { hasText: STUDENT_NAME })).toHaveCount(2);
+    await expect(page.locator("article", { hasText: STUDENT_NAME })).toHaveCount(2);
+  });
+
+  test("scholarship history uses append-only Correction and Void with a visible audit trail and no Edit/Delete control", async ({ page }) => {
+    const service = serviceClient();
+    const studentId = await findStudentIdByName(STUDENT_NAME);
+    const fellowshipName = `E2E SH Fellowship ${Date.now()}`;
+    const correctedFellowshipName = `E2E SH Corrected Fellowship ${Date.now()}`;
+    const insertFellowship = async (name: string): Promise<number> => {
+      const { data, error } = await service
+        .from("fellowship")
+        .insert({ fellowship_name: name })
+        .select("fellowship_id")
+        .single();
+      if (error) throw new Error(`seed SH fellowship (${name}): ${error.message}`);
+      return data.fellowship_id as number;
+    };
+    const fellowshipId = await insertFellowship(fellowshipName);
+    const correctedFellowshipId = await insertFellowship(correctedFellowshipName);
+    const { data: award, error: awardError } = await service
+      .from("scholarship_history")
+      .insert({ student_id: studentId, fellowship_id: fellowshipId, award_year: 2026 })
+      .select("history_id")
+      .single();
+    if (awardError) throw new Error(`seed SH award: ${awardError.message}`);
+
+    const correctionReason = `E2E SH correction ${Date.now()}`;
+    const voidReason = `E2E SH void ${Date.now() + 1}`;
+    // Scope by the immutable award identifier: a correction changes the
+    // displayed program name, so the original name is not a durable locator.
+    const article = page.locator("article", {
+      hasText: `Original award record · #${award.history_id}`,
+    });
+
+    try {
+      await signInAsActive(page);
+      await page.goto("/scholarship-history");
+      await expect(page.getByRole("heading", { name: "Scholarship History" })).toBeVisible();
+
+      await expect(article).toBeVisible();
+      await expect(article).toContainText(fellowshipName);
+      // The original base record has no direct Edit/Delete path.
+      await expect(article.getByRole("button", { name: "Edit" })).toHaveCount(0);
+      await expect(article.getByRole("button", { name: "Delete" })).toHaveCount(0);
+      await expect(article).toContainText("No corrections or voids recorded.");
+
+      // ── Correction: requires a reason, corrects the effective fellowship ──
+      await article.getByRole("button", { name: "Add Correction" }).click();
+      let dialog = page.getByRole("dialog");
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByRole("heading", { name: "Add Correction" })).toBeVisible();
+      await dialog.getByRole("button", { name: "Add Correction" }).click();
+      await expect(dialog.getByText("A reason is required.")).toBeVisible();
+      await dialog.locator("#amendment_reason").fill(correctionReason);
+      await dialog.locator("#corrected_fellowship").fill(correctedFellowshipName);
+      await page.getByRole("option", { name: correctedFellowshipName, exact: true }).click();
+      await dialog.getByRole("button", { name: "Add Correction" }).click();
+      await expect(dialog).toBeHidden();
+
+      // The effective award now carries the corrected fellowship and is marked
+      // as corrected, while the audit trail retains the amendment.
+      await expect(article.getByText("Corrected", { exact: true })).toBeVisible();
+      await expect(article.getByText("Correction", { exact: true })).toBeVisible();
+      await expect(article).toContainText(`Corrected fellowship: ${correctedFellowshipName}`);
+      await expect(article).toContainText(correctionReason);
+
+      // ── Void: terminal, original stays auditable, further actions hidden ──
+      await article.getByRole("button", { name: "Void Award Record" }).click();
+      dialog = page.getByRole("dialog");
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByRole("heading", { name: "Void Award Record" })).toBeVisible();
+      await dialog.locator("#amendment_reason").fill(voidReason);
+      await dialog.getByRole("button", { name: "Void Award Record" }).click();
+      await expect(dialog).toBeHidden();
+
+      await expect(article.getByText("Voided award")).toBeVisible();
+      await expect(article).toContainText(correctionReason);
+      await expect(article).toContainText(voidReason);
+      await expect(article).toContainText(correctedFellowshipName);
+      // Void is terminal: no further amendment actions are offered.
+      await expect(article.getByRole("button", { name: "Add Correction" })).toHaveCount(0);
+      await expect(article.getByRole("button", { name: "Void Award Record" })).toHaveCount(0);
+
+      // Reload → audit trail + voided state persist server-side.
+      await page.reload();
+      await expect(article.getByText("Voided award")).toBeVisible();
+      await expect(article).toContainText(correctionReason);
+      await expect(article).toContainText(voidReason);
+      await expect(article).toContainText(correctedFellowshipName);
+    } finally {
+      // Service-role cleanup: this test's amendments first (FK), then the
+      // synthetic award and both synthetic fellowships.
+      const cleanup = await service
+        .from("scholarship_history_amendment")
+        .delete()
+        .eq("history_id", award.history_id);
+      if (cleanup.error) throw new Error(`SH amendment cleanup: ${cleanup.error.message}`);
+      const awardCleanup = await service
+        .from("scholarship_history")
+        .delete()
+        .eq("history_id", award.history_id);
+      if (awardCleanup.error) throw new Error(`SH award cleanup: ${awardCleanup.error.message}`);
+      for (const id of [fellowshipId, correctedFellowshipId]) {
+        const fellowshipCleanup = await service
+          .from("fellowship")
+          .delete()
+          .eq("fellowship_id", id);
+        if (fellowshipCleanup.error) {
+          throw new Error(`SH fellowship cleanup (${id}): ${fellowshipCleanup.error.message}`);
+        }
+      }
+    }
+  });
+
+  test("Fellowship Thursday per-field corrections render predecessor→corrected values, including a source chain and a correction to NULL (R5)", async ({ page }) => {
+    const service = serviceClient();
+    const suffix = `${Date.now()}`;
+    const studentName = `E2E FT Chain Student ${suffix}`;
+    const sourceReason1 = `E2E FT source to HC ${suffix}`;
+    const sourceReason2 = `E2E FT source cleared ${suffix}`;
+    const attendReason = `E2E FT attendance corrected ${suffix}`;
+
+    const { data: student, error: studentError } = await service
+      .from("student")
+      .insert({
+        full_name: studentName,
+        email: `e2e-ft-chain-${suffix}@example.com`,
+        us_citizen: true,
+      })
+      .select("student_id")
+      .single();
+    if (studentError) throw new Error(`seed FT chain student: ${studentError.message}`);
+    const studentId = student.student_id as number;
+
+    const { data: attendance, error: attendanceError } = await service
+      .from("fellowship_thursday")
+      .insert({ student_id: studentId, attended: true, source_info: "OCF", event_date: "2026-10-15" })
+      .select("attendance_id")
+      .single();
+    if (attendanceError) throw new Error(`seed FT chain attendance: ${attendanceError.message}`);
+
+    try {
+      await signInAsActive(page);
+      await page.goto("/fellowship-thursday");
+      const row = page
+        .locator("table tbody tr", { hasText: studentName })
+        .filter({ hasText: "OCF" })
+        .first();
+      await expect(row).toBeVisible();
+
+      const addCorrection = async (opts: {
+        reason: string;
+        correctAttendance?: boolean;
+        correctSource?: boolean;
+        correctedSourceLabel?: string;
+      }): Promise<void> => {
+        await row.getByRole("button", { name: "Add correction" }).click();
+        const dialog = page.getByRole("dialog");
+        await expect(
+          dialog.getByRole("heading", { name: "Add attendance correction" }),
+        ).toBeVisible();
+        await dialog.locator("#ft-correction-reason").fill(opts.reason);
+        if (opts.correctAttendance) {
+          await dialog.getByRole("checkbox", { name: "Correct attendance value" }).check();
+        }
+        if (opts.correctSource) {
+          await dialog.getByRole("checkbox", { name: "Correct source value" }).check();
+          if (opts.correctedSourceLabel) {
+            await dialog.getByLabel("Corrected source").click();
+            await page
+              .getByRole("option", { name: opts.correctedSourceLabel, exact: true })
+              .click();
+          }
+        }
+        await dialog.getByRole("button", { name: "Add correction" }).click();
+        await expect(dialog).toBeHidden();
+      };
+
+      // Correction #1: source OCF → Honors College (value "HC").
+      await addCorrection({
+        reason: sourceReason1,
+        correctSource: true,
+        correctedSourceLabel: "Honors College",
+      });
+      // Correction #2: source HC → NULL (the dialog defaults to "Clear source (NULL)").
+      await addCorrection({ reason: sourceReason2, correctSource: true });
+      // Correction #3: attendance Yes → No.
+      await addCorrection({ reason: attendReason, correctAttendance: true });
+
+      // The FT surface keeps the original and shows the effective (NULL) source.
+      await page.reload();
+      const rowAfter = page.locator("table tbody tr", { hasText: studentName }).first();
+      await expect(rowAfter).toContainText("Original: Attended · OCF");
+      await expect(rowAfter).toContainText("Current: Not attended · No source");
+
+      // The unified student timeline renders each field's IMMEDIATELY-PRIOR and
+      // corrected effective value (never the current row rewriting history).
+      await page.goto(`/students/${studentId}`);
+      await expect(page.getByRole("heading", { name: studentName })).toBeVisible({
+        timeout: 15_000,
+      });
+      const history = studentActivityHistory(page);
+      await expect(
+        history.getByRole("heading", { name: "Activity & Change History" }),
+      ).toBeVisible();
+
+      const corrections = history.locator("li", { hasText: /Correction Added/ });
+      await expect(corrections).toHaveCount(3);
+
+      // Source chain: OCF → HC, then HC → Not set (the predecessor is #1's value).
+      const sourceRows = history.locator("li", { hasText: "Source" });
+      await expect(sourceRows).toHaveCount(2);
+      const toHc = sourceRows.filter({ hasText: "OCF" });
+      await expect(toHc).toHaveCount(1);
+      await expect(toHc).toContainText("HC");
+      const clearedSource = sourceRows.filter({ hasText: "Not set" });
+      await expect(clearedSource).toHaveCount(1);
+      await expect(clearedSource, "the second correction's predecessor is the first's value").toContainText("HC");
+
+      // Attendance field resolves independently of the source chain.
+      const attendedRow = history.locator("li", { hasText: "Attended" });
+      await expect(attendedRow).toHaveCount(1);
+      await expect(attendedRow).toContainText("Yes");
+      await expect(attendedRow).toContainText("No");
+
+      // Amendment reason/details are never projected into the history.
+      await expect(history).not.toContainText(sourceReason1);
+      await expect(history).not.toContainText(sourceReason2);
+      await expect(history).not.toContainText(attendReason);
+      await assertNoRawAuditPayload(page.locator("main"));
+    } finally {
+      const amendmentCleanup = await service
+        .from("fellowship_thursday_amendment")
+        .delete()
+        .eq("attendance_id", attendance.attendance_id);
+      if (amendmentCleanup.error) {
+        throw new Error(`FT chain amendment cleanup: ${amendmentCleanup.error.message}`);
+      }
+      const ftCleanup = await service
+        .from("fellowship_thursday")
+        .delete()
+        .eq("attendance_id", attendance.attendance_id);
+      if (ftCleanup.error) throw new Error(`FT chain base cleanup: ${ftCleanup.error.message}`);
+      const studentCleanup = await service
+        .from("student")
+        .delete()
+        .eq("student_id", studentId);
+      if (studentCleanup.error) throw new Error(`FT chain student cleanup: ${studentCleanup.error.message}`);
+    }
+  });
+
+  test("Scholarship History correction and Void render the fellowship transition and the exact void reason in the immutable timeline, leaving a single award (R6)", async ({ page }) => {
+    const service = serviceClient();
+    const suffix = `${Date.now()}`;
+    const studentName = `E2E SH Timeline Student ${suffix}`;
+    const priorFellowshipName = `E2E SH Prior Fellowship ${suffix}`;
+    const correctedFellowshipName = `E2E SH Corrected Fellowship ${suffix}`;
+    const correctionReason = `E2E SH timeline correction ${suffix}`;
+    const voidReason = `E2E SH timeline void ${suffix}`;
+
+    const insertFellowship = async (name: string): Promise<number> => {
+      const { data, error } = await service
+        .from("fellowship")
+        .insert({ fellowship_name: name })
+        .select("fellowship_id")
+        .single();
+      if (error) throw new Error(`seed SH timeline fellowship (${name}): ${error.message}`);
+      return data.fellowship_id as number;
+    };
+
+    const { data: student, error: studentError } = await service
+      .from("student")
+      .insert({
+        full_name: studentName,
+        email: `e2e-sh-timeline-${suffix}@example.com`,
+        us_citizen: true,
+      })
+      .select("student_id")
+      .single();
+    if (studentError) throw new Error(`seed SH timeline student: ${studentError.message}`);
+    const studentId = student.student_id as number;
+
+    const priorFellowshipId = await insertFellowship(priorFellowshipName);
+    const correctedFellowshipId = await insertFellowship(correctedFellowshipName);
+    const { data: award, error: awardError } = await service
+      .from("scholarship_history")
+      .insert({ student_id: studentId, fellowship_id: priorFellowshipId, award_year: 2026 })
+      .select("history_id")
+      .single();
+    if (awardError) throw new Error(`seed SH timeline award: ${awardError.message}`);
+
+    const article = page.locator("article", {
+      hasText: `Original award record · #${award.history_id}`,
+    });
+
+    try {
+      await signInAsActive(page);
+      await page.goto("/scholarship-history");
+      await expect(article).toBeVisible();
+      await expect(page.locator("article", { hasText: studentName })).toHaveCount(1);
+
+      // ── Correction: prior fellowship → corrected fellowship ────────────────
+      await article.getByRole("button", { name: "Add Correction" }).click();
+      let dialog = page.getByRole("dialog");
+      await dialog.locator("#amendment_reason").fill(correctionReason);
+      await dialog.locator("#corrected_fellowship").fill(correctedFellowshipName);
+      await page
+        .getByRole("option", { name: correctedFellowshipName, exact: true })
+        .click();
+      await dialog.getByRole("button", { name: "Add Correction" }).click();
+      await expect(dialog).toBeHidden();
+
+      // ── Void with its required reason ──────────────────────────────────────
+      await article.getByRole("button", { name: "Void Award Record" }).click();
+      dialog = page.getByRole("dialog");
+      await dialog.locator("#amendment_reason").fill(voidReason);
+      await dialog.getByRole("button", { name: "Void Award Record" }).click();
+      await expect(dialog).toBeHidden();
+
+      // A Void is one historical award event, not a second award: the award
+      // surface keeps a SINGLE article carrying the prior effective fellowship
+      // and the authorized void reason + voided state.
+      await expect(page.locator("article", { hasText: studentName })).toHaveCount(1);
+      await expect(article.getByText("Voided award")).toBeVisible();
+      await expect(article).toContainText(correctedFellowshipName);
+      await expect(article).toContainText(voidReason);
+
+      // ── Immutable timeline: correction pair + exactly the void reason ──────
+      await page.goto(`/students/${studentId}`);
+      await expect(page.getByRole("heading", { name: studentName })).toBeVisible({
+        timeout: 15_000,
+      });
+      const history = studentActivityHistory(page);
+
+      const correctionRow = history.locator("li", { hasText: /Correction Added/ });
+      await expect(correctionRow).toHaveCount(1);
+      await expect(correctionRow).toContainText("Fellowship");
+      await expect(correctionRow).toContainText(priorFellowshipName);
+      await expect(correctionRow).toContainText(correctedFellowshipName);
+      // Only the exact Void reason is an approved free-text projection; the
+      // correction's own reason must never leak.
+      await expect(correctionRow).not.toContainText(correctionReason);
+
+      // The Void is a single event whose ONLY approved free text is the exact
+      // authorized reason (the historical fellowship context for a void is
+      // rendered on the award surface above, not duplicated here).
+      const voidRow = history.locator("li", { hasText: /Voided/ });
+      await expect(voidRow).toHaveCount(1);
+      await expect(voidRow, "the exact authorized void reason renders").toContainText(voidReason);
+      await expect(voidRow, "the correction's own reason must never leak").not.toContainText(
+        correctionReason,
+      );
+
+      await assertNoRawAuditPayload(page.locator("main"));
+    } finally {
+      const amendmentCleanup = await service
+        .from("scholarship_history_amendment")
+        .delete()
+        .eq("history_id", award.history_id);
+      if (amendmentCleanup.error) {
+        throw new Error(`SH timeline amendment cleanup: ${amendmentCleanup.error.message}`);
+      }
+      const awardCleanup = await service
+        .from("scholarship_history")
+        .delete()
+        .eq("history_id", award.history_id);
+      if (awardCleanup.error) throw new Error(`SH timeline award cleanup: ${awardCleanup.error.message}`);
+      for (const id of [priorFellowshipId, correctedFellowshipId]) {
+        const fellowshipCleanup = await service
+          .from("fellowship")
+          .delete()
+          .eq("fellowship_id", id);
+        if (fellowshipCleanup.error) {
+          throw new Error(`SH timeline fellowship cleanup (${id}): ${fellowshipCleanup.error.message}`);
+        }
+      }
+      const studentCleanup = await service
+        .from("student")
+        .delete()
+        .eq("student_id", studentId);
+      if (studentCleanup.error) throw new Error(`SH timeline student cleanup: ${studentCleanup.error.message}`);
+    }
   });
 });

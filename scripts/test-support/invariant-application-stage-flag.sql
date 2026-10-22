@@ -20,13 +20,18 @@
 -- and must stay exactly consistent with it. The authoritative mapping lives
 -- in lib/applications/pipeline.ts (`deriveFlags` / `validateConsistency`):
 --
---   Started / Submitted / Under Review / Rejected  ->  sf=false, f=false
+--   Started / Submitted / Under Review / Did Not Submit / Rejected / Withdrawn
+--                                                  ->  sf=false, f=false
 --   Semi-Finalist                                  ->  sf=true,  f=false
 --   Finalist / Awarded                             ->  sf=true,  f=true
 --
--- This file adds a CHECK constraint that mirrors that mapping exactly,
--- so invalid stage/flag combinations fail at the database layer even when
--- written directly through the API (bypassing UI/application validation).
+-- This file adds a CHECK constraint that mirrors that mapping exactly across
+-- the nine supported stages (the same vocabulary the production migration
+-- 20261008000001 installs as `application_stage_check` /
+-- `application_stage_flag_consistency_check`), so invalid stage/flag
+-- combinations fail at the database layer even when written directly through
+-- the API (bypassing UI/application validation). It is a redundant local
+-- mirror, never a narrower test-only vocabulary.
 --
 -- It only ADDs one CHECK constraint (DROP CONSTRAINT IF EXISTS first keeps it
 -- idempotent on re-apply); no tables, columns, or data are touched. It is
@@ -41,15 +46,18 @@ ALTER TABLE public.application
 
 ALTER TABLE public.application
     ADD CONSTRAINT application_stage_flag_invariant_check CHECK (
-        -- stage must be one of the seven supported pipeline stages
+        -- stage must be one of the nine supported pipeline stages
         stage_of_application::text = ANY (ARRAY[
-            'Started', 'Submitted', 'Under Review',
-            'Semi-Finalist', 'Finalist', 'Awarded', 'Rejected'
+            'Started', 'Submitted', 'Under Review', 'Did Not Submit',
+            'Semi-Finalist', 'Finalist', 'Awarded', 'Rejected', 'Withdrawn'
         ])
         AND (
-            -- early stages (and Rejected) carry neither flag
+            -- early stages and the non-finalist terminal states carry neither flag
             (
-                stage_of_application::text IN ('Started', 'Submitted', 'Under Review', 'Rejected')
+                stage_of_application::text IN (
+                    'Started', 'Submitted', 'Under Review',
+                    'Did Not Submit', 'Rejected', 'Withdrawn'
+                )
                 AND is_semi_finalist = false
                 AND is_finalist = false
             )
@@ -69,4 +77,4 @@ ALTER TABLE public.application
     );
 
 COMMENT ON CONSTRAINT application_stage_flag_invariant_check ON public.application IS
-    'TEST-ONLY local invariant (applied by the isolated contract/E2E lanes after the production-equivalent migration chain): stage_of_application and the denormalized is_semi_finalist/is_finalist flags must match lib/applications/pipeline.ts (Started/Submitted/Under Review/Rejected => ff, Semi-Finalist => tf, Finalist/Awarded => tt). Not a production migration.';
+    'TEST-ONLY local mirror of the production invariant (applied by the isolated contract/E2E lanes after the production-equivalent migration chain): stage_of_application and the denormalized is_semi_finalist/is_finalist flags must match lib/applications/pipeline.ts across the nine supported stages (Started/Submitted/Under Review/Did Not Submit/Rejected/Withdrawn => ff, Semi-Finalist => tf, Finalist/Awarded => tt). Not a production migration.';

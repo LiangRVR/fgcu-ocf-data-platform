@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, useRef } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AppCard, AppCardContent } from "@/components/ui/app-card";
 import { Button } from "@/components/ui/button";
@@ -25,16 +25,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -51,28 +41,50 @@ import {
   Search,
   Eye,
   Pencil,
-  Trash2,
   ChevronUp,
   ChevronDown,
   ChevronsUpDown,
   UserPlus,
-  FileDown,
   MoreHorizontal,
   SlidersHorizontal,
 } from "lucide-react";
+import { LifecycleAction } from "@/components/lifecycle";
 import { toast } from "sonner";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
+import {
+  STALE_VERSION_GUIDANCE,
+  isVersionConflict,
+} from "@/lib/supabase/errors";
+import { Pagination } from "@/components/pagination/pagination";
+import {
+  DEFAULT_PAGE,
+  updateListSearchParams,
+  type ListQueryPatch,
+} from "@/lib/utils/pagination";
+import type { Student } from "@/components/students/students-list-row";
 import type { Database } from "@/types/database";
 
-type Student = Database["public"]["Tables"]["student"]["Row"];
+export type { Student } from "@/components/students/students-list-row";
 
-type SortField = "full_name" | "major" | "gpa" | "class_standing";
+/** Sort columns the server loader allowlists; mirrors the page loader. */
+const SORT_FIELDS = ["full_name", "major", "gpa", "class_standing"] as const;
+type SortField = (typeof SORT_FIELDS)[number];
 type SortDirection = "asc" | "desc" | null;
 
 interface StudentsTableProps {
   initialStudents: Student[];
-  initialStatusFilter?: string;
-  initialStandingFilter?: string;
+  initialSearchQuery?: string;
+  /**
+   * When true, the table is rendering the explicit Archived Students filter
+   * context: every row gets a Restore Student action (instead of the default
+   * Archive Student action), and the destructive Delete control is omitted in
+   * both modes. The default (false) renders Archive Student on active rows.
+   */
+  archiveView?: boolean;
+  totalCount: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
 }
 
 const EMPTY_STUDENT_FORM = {
@@ -111,26 +123,88 @@ const GENDER_OPTIONS = [
 
 export function StudentsTable({
   initialStudents,
-  initialStatusFilter,
-  initialStandingFilter,
+  initialSearchQuery,
+  archiveView = false,
+  totalCount,
+  page,
+  pageSize,
+  totalPages,
 }: StudentsTableProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // ── URL is the single source of truth for list state ─────────────────────
+  // The server loader filters/sorts/paginates; these controls only rewrite the
+  // query string (search/filter/sort changes reset to page 1 via the shared
+  // helper), preserving unrelated contextual parameters such as `view`.
+  const navigateTo = (patch: {
+    page?: number | string | null;
+    pageSize?: number | string | null;
+    search?: string | null;
+    flag?: string | null;
+    standing?: string | null;
+    sort?: string | null;
+    direction?: string | null;
+  }) => {
+    const shared: ListQueryPatch = {};
+    if ("page" in patch) shared.page = patch.page;
+    if ("pageSize" in patch) shared.pageSize = patch.pageSize;
+    if ("search" in patch) shared.search = patch.search;
+    if ("sort" in patch) shared.sort = patch.sort;
+    const next = updateListSearchParams(searchParams.toString(), shared);
+
+    let criterionChanged =
+      patch.search !== undefined || patch.sort !== undefined || patch.pageSize !== undefined;
+
+    if (patch.flag !== undefined) {
+      criterionChanged = true;
+      if (patch.flag === null || patch.flag === "all") next.delete("flag");
+      else next.set("flag", patch.flag);
+    }
+    if (patch.standing !== undefined) {
+      criterionChanged = true;
+      if (patch.standing === null || patch.standing === "all") next.delete("standing");
+      else next.set("standing", patch.standing);
+    }
+    if (patch.direction !== undefined) {
+      criterionChanged = true;
+      if (patch.direction === null) next.delete("direction");
+      else next.set("direction", patch.direction);
+    }
+
+    if (criterionChanged) next.set("page", String(DEFAULT_PAGE));
+
+    const query = next.toString();
+    router.push(query ? `/students?${query}` : "/students");
+  };
+
+  const statusFilter = searchParams.get("flag") ?? "all";
+  const standingFilter = searchParams.get("standing") ?? "all";
+  const sortField: SortField | null = (SORT_FIELDS as readonly string[]).includes(
+    searchParams.get("sort") ?? "",
+  )
+    ? (searchParams.get("sort") as SortField)
+    : null;
+  const sortDirection: SortDirection = sortField
+    ? searchParams.get("direction") === "desc"
+      ? "desc"
+      : "asc"
+    : null;
 
   // State
-  const [students, setStudents] = useState<Student[]>(initialStudents);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>(initialStatusFilter ?? "all");
-  const [standingFilter, setStandingFilter] = useState<string>(initialStandingFilter ?? "all");
-  const [majorFilter, setMajorFilter] = useState<string>("all");
-  const [sortField, setSortField] = useState<SortField | null>(null);
-  const [sortDirection, setSortDirection] = useState<SortDirection>(null);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [deleteStudentId, setDeleteStudentId] = useState<number | null>(null);
+  const [searchQuery, setSearchQuery] = useState(initialSearchQuery ?? "");
+  const [debouncedSearch, setDebouncedSearch] = useState(initialSearchQuery ?? "");
   const [addStudentOpen, setAddStudentOpen] = useState(false);
   const [editStudentOpen, setEditStudentOpen] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
+  /**
+   * The edited row's loaded `row_version` (read from the base `student` table
+   * when the edit dialog opens; the read-only `student_list` view does not
+   * expose it). Carried unchanged through the form until save so a stale form
+   * is rejected by the writer with `PT409`.
+   */
+  const [editVersion, setEditVersion] = useState<number | null>(null);
+  const editStarted = useRef(false);
   const [isLoading, setIsLoading] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
@@ -141,148 +215,59 @@ export function StudentsTable({
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [editFormErrors, setEditFormErrors] = useState<Record<string, string>>({});
 
-  // Debounce search
+  // Keep the local search input aligned with the committed URL state after a
+  // navigation/refresh.
   useEffect(() => {
+    setSearchQuery(initialSearchQuery ?? "");
+    setDebouncedSearch(initialSearchQuery ?? "");
+  }, [initialSearchQuery]);
+
+  // Debounce search and commit it to canonical URL state (resets to page 1).
+  // The guard makes the initial mount a no-op while the typed value already
+  // matches the committed prop, so loading a URL-backed `?page=2` (or a
+  // bookmarked `?search=…`) does not rewrite the query string and drop the
+  // current page. Mirrors the Advising/Scholarship tables.
+  useEffect(() => {
+    if (searchQuery === (initialSearchQuery ?? "")) return;
     const timer = setTimeout(() => {
       setDebouncedSearch(searchQuery);
-      setCurrentPage(1); // Reset to first page on search
+      navigateTo({ search: searchQuery || null });
     }, 300);
     return () => clearTimeout(timer);
-  }, [searchQuery]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery, initialSearchQuery]);
 
-  // Get unique majors for filter
-  const uniqueMajors = useMemo(() => {
-    const majors = new Set(
-      students.map((s) => s.major).filter((m): m is string => !!m)
-    );
-    return Array.from(majors).sort();
-  }, [students]);
-
-  // Filter and sort students
-  const filteredAndSortedStudents = useMemo(() => {
-    let filtered = students;
-
-    // Search filter
-    if (debouncedSearch) {
-      const query = debouncedSearch.toLowerCase();
-      filtered = filtered.filter(
-        (s) =>
-          s.full_name.toLowerCase().includes(query) ||
-          s.email.toLowerCase().includes(query) ||
-          String(s.student_id).includes(query)
-      );
-    }
-
-    // Status filter
-    if (statusFilter !== "all") {
-      filtered = filtered.filter((s) => {
-        if (statusFilter === "ch") return s.is_ch_student;
-        if (statusFilter === "honors") return s.honors_college;
-        if (statusFilter === "first_gen") return s.first_gen;
-        return !s.is_ch_student && !s.honors_college && !s.first_gen;
-      });
-    }
-
-    // Class standing filter
-    if (standingFilter !== "all") {
-      filtered = filtered.filter((s) => s.class_standing === standingFilter);
-    }
-
-    // Major filter
-    if (majorFilter !== "all") {
-      filtered = filtered.filter((s) => s.major === majorFilter);
-    }
-
-    // Sort
-    if (sortField && sortDirection) {
-      filtered = [...filtered].sort((a, b) => {
-        let aVal = a[sortField];
-        let bVal = b[sortField];
-
-        // Handle null values
-        if (aVal === null || aVal === undefined) return 1;
-        if (bVal === null || bVal === undefined) return -1;
-
-        // Convert to comparable values
-        if (typeof aVal === "string") aVal = aVal.toLowerCase();
-        if (typeof bVal === "string") bVal = bVal.toLowerCase();
-
-        if (aVal < bVal) return sortDirection === "asc" ? -1 : 1;
-        if (aVal > bVal) return sortDirection === "asc" ? 1 : -1;
-        return 0;
-      });
-    }
-
-    return filtered;
-  }, [
-    students,
-    debouncedSearch,
-    statusFilter,
-    standingFilter,
-    majorFilter,
-    sortField,
-    sortDirection,
-  ]);
-
-  // Pagination
-  const totalPages = Math.ceil(filteredAndSortedStudents.length / pageSize);
-  const paginatedStudents = useMemo(() => {
-    const start = (currentPage - 1) * pageSize;
-    return filteredAndSortedStudents.slice(start, start + pageSize);
-  }, [filteredAndSortedStudents, currentPage, pageSize]);
-
-  const startIndex = (currentPage - 1) * pageSize + 1;
-  const endIndex = Math.min(
-    currentPage * pageSize,
-    filteredAndSortedStudents.length
-  );
+  // `students` are already filtered/sorted/paginated server-side.
+  const students = initialStudents;
+  const hasActiveCriteria =
+    !!debouncedSearch || statusFilter !== "all" || standingFilter !== "all";
 
   // Handlers
   const handleSort = (field: SortField) => {
     if (sortField === field) {
-      // Cycle through: asc -> desc -> null
+      // Cycle through: asc -> desc -> cleared (server default student_id DESC)
       if (sortDirection === "asc") {
-        setSortDirection("desc");
-      } else if (sortDirection === "desc") {
-        setSortField(null);
-        setSortDirection(null);
+        navigateTo({ direction: "desc" });
+      } else {
+        navigateTo({ sort: null, direction: null });
       }
     } else {
-      setSortField(field);
-      setSortDirection("asc");
+      navigateTo({ sort: field, direction: "asc" });
     }
+  };
+
+  const handleClearFilters = () => {
+    setSearchQuery("");
+    setDebouncedSearch("");
+    navigateTo({ search: null, flag: null, standing: null, sort: null, direction: null });
   };
 
   const handleRowClick = (studentId: number) => {
     router.push(`/students/${studentId}`);
   };
 
-  const handleDeleteConfirm = async () => {
-    if (!deleteStudentId) return;
-
-    setIsLoading(true);
-    try {
-      const { error } = await supabaseBrowserClient
-        .from("student")
-        .delete()
-        .eq("student_id", deleteStudentId);
-
-      if (error) throw error;
-
-      setStudents((prev) => prev.filter((s) => s.student_id !== deleteStudentId));
-      toast.success("Student deleted successfully");
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to delete student");
-    } finally {
-      setIsLoading(false);
-      setDeleteStudentId(null);
-    }
-  };
-
   const validateStudentForm = (
     data: typeof EMPTY_STUDENT_FORM,
-    isEdit = false,
   ): Record<string, string> => {
     const errors: Record<string, string> = {};
 
@@ -318,7 +303,7 @@ export function StudentsTable({
 
     setIsLoading(true);
     try {
-      const { data, error } = await supabaseBrowserClient
+      const { error } = await supabaseBrowserClient
         .from("student")
         .insert({
           full_name: newStudent.full_name,
@@ -342,7 +327,9 @@ export function StudentsTable({
 
       if (error) throw error;
 
-      setStudents((prev) => [data as Student, ...prev]);
+      // Re-run the server loader so the paged source reflects the new row
+      // rather than patching a possibly partial page in memory.
+      router.refresh();
       toast.success("Student added successfully");
       setAddStudentOpen(false);
       setNewStudent(EMPTY_STUDENT_FORM);
@@ -355,147 +342,95 @@ export function StudentsTable({
     }
   };
 
-  const openEdit = (student: Student) => {
-    setEditingStudent(student);
-    setEditForm({
-      ...EMPTY_STUDENT_FORM,
-      full_name: student.full_name,
-      email: student.email,
-      major: student.major ?? "",
-      class_standing: student.class_standing ?? "",
-      gpa: student.gpa != null ? String(student.gpa) : "",
-      is_ch_student: student.is_ch_student,
-      first_gen: student.first_gen,
-      honors_college: student.honors_college,
-      us_citizen: student.us_citizen,
-    });
+  const openEdit = async (student: Student) => {
+    editStarted.current = false;
     setEditFormErrors({});
+    setEditVersion(null);
+    setEditingStudent(student);
+    setEditForm({ ...EMPTY_STUDENT_FORM, full_name: student.full_name, email: student.email, major: student.major ?? "", minor: student.minor ?? "", class_standing: student.class_standing ?? "", gpa: student.gpa != null ? String(student.gpa) : "", age: student.age != null ? String(student.age) : "", gender: student.gender ?? "", pronouns: student.pronouns ?? "", languages: student.languages ?? "", race_ethnicity: student.race_ethnicity ?? "", is_ch_student: student.is_ch_student, first_gen: student.first_gen, honors_college: student.honors_college, us_citizen: student.us_citizen });
     setEditStudentOpen(true);
+
+    // The form and version come from this one query. Never pair a rendered list
+    // row with a separately refreshed version.
+    const { data, error } = await supabaseBrowserClient
+      .from("student")
+      .select("student_id, full_name, email, is_ch_student, major, minor, gpa, class_standing, us_citizen, age, gender, pronouns, race_ethnicity, languages, first_gen, honors_college, archived_at, row_version, updated_at")
+      .eq("student_id", student.student_id)
+      .single();
+    if (!error && data) {
+      const snapshot = data as Database["public"]["Tables"]["student"]["Row"];
+      setEditingStudent(snapshot as unknown as Student);
+      if (!editStarted.current) setEditForm({ ...EMPTY_STUDENT_FORM, full_name: snapshot.full_name, email: snapshot.email, major: snapshot.major ?? "", minor: snapshot.minor ?? "", class_standing: snapshot.class_standing ?? "", gpa: snapshot.gpa != null ? String(snapshot.gpa) : "", age: snapshot.age != null ? String(snapshot.age) : "", gender: snapshot.gender ?? "", pronouns: snapshot.pronouns ?? "", languages: snapshot.languages ?? "", race_ethnicity: snapshot.race_ethnicity ?? "", is_ch_student: snapshot.is_ch_student, first_gen: snapshot.first_gen, honors_college: snapshot.honors_college, us_citizen: snapshot.us_citizen });
+      setEditVersion(snapshot.row_version);
+    }
   };
 
   const handleEditSubmit = async () => {
     if (!editingStudent) return;
-    const errors = validateStudentForm(editForm, true);
+    const errors = validateStudentForm(editForm);
     setEditFormErrors(errors);
     if (Object.keys(errors).length > 0) return;
+    if (editVersion == null) {
+      // Fail closed: the loaded version is not available.
+      toast.error(STALE_VERSION_GUIDANCE);
+      return;
+    }
 
     setIsLoading(true);
     try {
-      const { data, error } = await supabaseBrowserClient
-        .from("student")
-        .update({
-          full_name: editForm.full_name,
-          email: editForm.email,
-          major: editForm.major || null,
-          class_standing: editForm.class_standing || null,
-          gpa: editForm.gpa ? parseFloat(editForm.gpa) : null,
-          is_ch_student: editForm.is_ch_student,
-          first_gen: editForm.first_gen,
-          honors_college: editForm.honors_college,
-          us_citizen: editForm.us_citizen,
-        })
-        .eq("student_id", editingStudent.student_id)
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      setStudents((prev) =>
-        prev.map((s) =>
-          s.student_id === editingStudent.student_id ? (data as Student) : s
-        )
+      // Full-replacement writer: unedited columns pass through from the loaded
+      // list row so only the edited fields change.
+      const { data, error } = await supabaseBrowserClient.rpc(
+        "update_student_profile",
+        {
+          p_student_id: editingStudent.student_id,
+          p_expected_version: editVersion,
+          p_full_name: editForm.full_name,
+          p_email: editForm.email,
+          p_is_ch_student: editForm.is_ch_student,
+          p_major: (editForm.major || null) as string,
+          p_minor: (editingStudent.minor ?? null) as string,
+          p_gpa: (editForm.gpa ? parseFloat(editForm.gpa) : null) as number,
+          p_class_standing: (editForm.class_standing || null) as string,
+          p_us_citizen: editForm.us_citizen,
+          p_age: (editingStudent.age ?? null) as number,
+          p_gender: (editingStudent.gender ?? null) as string,
+          p_pronouns: (editingStudent.pronouns ?? null) as string,
+          p_race_ethnicity: (editingStudent.race_ethnicity ?? null) as string,
+          p_languages: (editingStudent.languages ?? null) as string,
+          p_first_gen: editForm.first_gen,
+          p_honors_college: editForm.honors_college,
+        },
       );
+
+      if (error) {
+        if (isVersionConflict(error)) {
+          // Keep the edited values visible for review; require a manual
+          // refresh. No retry, no overwrite.
+          toast.error(STALE_VERSION_GUIDANCE);
+          return;
+        }
+        throw error;
+      }
+
+      const updated = Array.isArray(data) ? data[0] : data;
+      if (updated) setEditVersion(updated.row_version);
+
+      // Re-run the server loader so the edited row's new sort position and
+      // any filter membership are reflected on the current paged source.
+      router.refresh();
       toast.success("Student updated successfully");
       setEditStudentOpen(false);
       setEditingStudent(null);
       setEditForm(EMPTY_STUDENT_FORM);
       setEditFormErrors({});
+      setEditVersion(null);
     } catch (err) {
       console.error(err);
       toast.error("Failed to update student");
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const handleClearFilters = () => {
-    setSearchQuery("");
-    setDebouncedSearch("");
-    setStatusFilter("all");
-    setStandingFilter("all");
-    setMajorFilter("all");
-    setSortField(null);
-    setSortDirection(null);
-    setCurrentPage(1);
-  };
-
-  const handleExport = () => {
-    if (filteredAndSortedStudents.length === 0) {
-      toast.info("No students to export");
-      return;
-    }
-
-    const headers = [
-      "student_id",
-      "full_name",
-      "email",
-      "major",
-      "minor",
-      "class_standing",
-      "gpa",
-      "age",
-      "gender",
-      "pronouns",
-      "languages",
-      "race_ethnicity",
-      "is_ch_student",
-      "first_gen",
-      "honors_college",
-      "us_citizen",
-    ];
-
-    const escapeCell = (val: unknown): string => {
-      const str = val == null ? "" : String(val);
-      if (str.includes(",") || str.includes('"') || str.includes("\n")) {
-        return `"${str.replace(/"/g, '""')}"`;
-      }
-      return str;
-    };
-
-    const rows = filteredAndSortedStudents.map((s) =>
-      [
-        s.student_id,
-        s.full_name,
-        s.email,
-        s.major ?? "",
-        s.minor ?? "",
-        s.class_standing ?? "",
-        s.gpa ?? "",
-        s.age ?? "",
-        s.gender ?? "",
-        s.pronouns ?? "",
-        s.languages ?? "",
-        s.race_ethnicity ?? "",
-        s.is_ch_student,
-        s.first_gen,
-        s.honors_college,
-        s.us_citizen,
-      ]
-        .map(escapeCell)
-        .join(",")
-    );
-
-    const csv = [headers.join(","), ...rows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `students-${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    toast.success(`Exported ${filteredAndSortedStudents.length} students`);
   };
 
   const SortIcon = ({ field }: { field: SortField }) => {
@@ -534,13 +469,16 @@ export function StudentsTable({
                 >
                   <SlidersHorizontal className="h-4 w-4" />
                   Filters
-                  {(statusFilter !== "all" || standingFilter !== "all" || majorFilter !== "all") && (
+                  {(statusFilter !== "all" || standingFilter !== "all") && (
                     <span className="flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-white">•</span>
                   )}
                 </Button>
               </div>
               <div className={`${filtersOpen ? "flex" : "hidden xl:flex"} flex-wrap gap-3 xl:flex-row xl:items-center`}>
-                <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <Select
+                  value={statusFilter}
+                  onValueChange={(v) => navigateTo({ flag: v === "all" ? null : v })}
+                >
                   <SelectTrigger className="w-full sm:w-40">
                     <SelectValue placeholder="All statuses" />
                   </SelectTrigger>
@@ -553,7 +491,10 @@ export function StudentsTable({
                   </SelectContent>
                 </Select>
 
-                <Select value={standingFilter} onValueChange={setStandingFilter}>
+                <Select
+                  value={standingFilter}
+                  onValueChange={(v) => navigateTo({ standing: v === "all" ? null : v })}
+                >
                   <SelectTrigger className="w-full sm:w-44">
                     <SelectValue placeholder="All standings" />
                   </SelectTrigger>
@@ -564,41 +505,18 @@ export function StudentsTable({
                     ))}
                   </SelectContent>
                 </Select>
-
-                <Select value={majorFilter} onValueChange={setMajorFilter}>
-                  <SelectTrigger className="w-full sm:w-40">
-                    <SelectValue placeholder="All majors" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All majors</SelectItem>
-                    {uniqueMajors.map((major) => (
-                      <SelectItem key={major} value={major}>
-                        {major}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
               </div>
             </>
           }
           trailing={
             <>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleExport}
-                className="gap-2"
-              >
-                <FileDown className="h-4 w-4" />
-                Export CSV
-              </Button>
-              <Button
+              {!archiveView && <Button
                 size="sm"
                 onClick={() => setAddStudentOpen(true)}
               >
                 <UserPlus className="mr-2 h-4 w-4" />
                 Add Student
-              </Button>
+              </Button>}
             </>
           }
         />
@@ -606,21 +524,21 @@ export function StudentsTable({
         {/* Students Table */}
         <AppCard>
           <AppCardContent className="p-0">
-            {filteredAndSortedStudents.length === 0 ? (
+            {students.length === 0 ? (
               <EmptyState
                 icon={Search}
                 title="No students found"
                 description={
-                  debouncedSearch || statusFilter !== "all" || standingFilter !== "all" || majorFilter !== "all"
+                  hasActiveCriteria
                     ? "Try adjusting your filters or search query."
                     : "Get started by adding your first student."
                 }
                 action={
-                  debouncedSearch || statusFilter !== "all" || standingFilter !== "all" || majorFilter !== "all" ? (
+                  hasActiveCriteria ? (
                     <Button variant="outline" onClick={handleClearFilters}>
                       Clear filters
                     </Button>
-                  ) : (
+                  ) : archiveView ? undefined : (
                     <Button onClick={() => setAddStudentOpen(true)}>
                       <UserPlus className="mr-2 h-4 w-4" />
                       Add Student
@@ -632,12 +550,13 @@ export function StudentsTable({
               <>
                 {/* ── Mobile card list (below md) ───────────────── */}
                 <div className="md:hidden divide-y divide-gray-200">
-                  {paginatedStudents.map((student) => (
+                  {students.map((student) => (
                     <div key={student.student_id} className="p-4">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
                           <Link
                             href={`/students/${student.student_id}`}
+                            prefetch={false}
                             className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
                           >
                             {student.full_name}
@@ -672,19 +591,21 @@ export function StudentsTable({
                               <Eye className="mr-2 h-4 w-4" />
                               View
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => openEdit(student)}>
+                            {!archiveView && <DropdownMenuItem onClick={() => openEdit(student)}>
                               <Pencil className="mr-2 h-4 w-4" />
                               Edit
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() => setDeleteStudentId(student.student_id)}
-                              className="text-red-600 focus:text-red-600"
-                            >
-                              <Trash2 className="mr-2 h-4 w-4" />
-                              Delete
-                            </DropdownMenuItem>
+                            </DropdownMenuItem>}
                           </DropdownMenuContent>
                         </DropdownMenu>
+                        <LifecycleAction
+                          entity="student"
+                          entityId={student.student_id}
+                          entityLabel={student.full_name}
+                          action={archiveView ? "restore" : "archive"}
+                          variant="ghost"
+                          iconOnly
+                          className="h-9 w-9 shrink-0 text-amber-700 hover:bg-amber-50 hover:text-amber-800"
+                        />
                       </div>
                     </div>
                   ))}
@@ -743,7 +664,7 @@ export function StudentsTable({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200 bg-white">
-                      {paginatedStudents.map((student) => (
+                      {students.map((student) => (
                         <tr
                           key={student.student_id}
                           onClick={() => handleRowClick(student.student_id)}
@@ -752,6 +673,7 @@ export function StudentsTable({
                           <td className="whitespace-nowrap px-3 py-3 sm:px-6 sm:py-4">
                             <Link
                               href={`/students/${student.student_id}`}
+                              prefetch={false}
                               className="font-medium text-slate-900 hover:text-[#006747] hover:underline"
                               onClick={(e) => e.stopPropagation()}
                             >
@@ -809,7 +731,7 @@ export function StudentsTable({
                                 </TooltipContent>
                               </Tooltip>
 
-                              <Tooltip>
+                              {!archiveView && <Tooltip>
                                 <TooltipTrigger asChild>
                                   <Button
                                     variant="ghost"
@@ -826,24 +748,26 @@ export function StudentsTable({
                                 <TooltipContent>
                                   <p>Edit student</p>
                                 </TooltipContent>
-                              </Tooltip>
+                              </Tooltip>}
 
                               <Tooltip>
                                 <TooltipTrigger asChild>
-                                  <Button
+                                  <LifecycleAction
+                                    entity="student"
+                                    entityId={student.student_id}
+                                    entityLabel={student.full_name}
+                                    action={archiveView ? "restore" : "archive"}
                                     variant="ghost"
-                                    size="icon"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setDeleteStudentId(student.student_id);
-                                    }}
-                                    className="h-8 w-8 text-slate-500 hover:bg-red-50 hover:text-red-600"
-                                  >
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
+                                    iconOnly
+                                    className="h-8 w-8 text-amber-700 hover:bg-amber-50 hover:text-amber-800"
+                                  />
                                 </TooltipTrigger>
                                 <TooltipContent>
-                                  <p>Delete student</p>
+                                  <p>
+                                    {archiveView
+                                      ? "Restore student"
+                                      : "Archive student"}
+                                  </p>
                                 </TooltipContent>
                               </Tooltip>
                             </div>
@@ -853,93 +777,28 @@ export function StudentsTable({
                     </tbody>
                   </table>
                 </div>{/* end hidden md:block */}
-
-                {/* Pagination */}
-                <div className="flex flex-col gap-3 border-t border-gray-200 bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6 sm:py-4">
-                  <div className="flex items-center gap-4">
-                    <p className="text-sm text-slate-600">
-                      Showing {startIndex}–{endIndex} of{" "}
-                      {filteredAndSortedStudents.length}
-                    </p>
-                    <div className="hidden sm:block">
-                      <Select
-                        value={String(pageSize)}
-                        onValueChange={(v) => {
-                          setPageSize(Number(v));
-                          setCurrentPage(1);
-                        }}
-                      >
-                        <SelectTrigger className="w-24">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="10">10 / page</SelectItem>
-                          <SelectItem value="20">20 / page</SelectItem>
-                          <SelectItem value="50">50 / page</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                      disabled={currentPage === 1}
-                    >
-                      Previous
-                    </Button>
-                    <div className="hidden items-center gap-1 sm:flex">
-                      {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
-                        let pageNum: number;
-                        if (totalPages <= 5) {
-                          pageNum = i + 1;
-                        } else if (currentPage <= 3) {
-                          pageNum = i + 1;
-                        } else if (currentPage >= totalPages - 2) {
-                          pageNum = totalPages - 4 + i;
-                        } else {
-                          pageNum = currentPage - 2 + i;
-                        }
-
-                        return (
-                          <Button
-                            key={pageNum}
-                            variant={currentPage === pageNum ? "default" : "outline"}
-                            size="sm"
-                            onClick={() => setCurrentPage(pageNum)}
-                            className={
-                              currentPage === pageNum
-                                ? "bg-[#006747] hover:bg-[#00563b]"
-                                : ""
-                            }
-                          >
-                            {pageNum}
-                          </Button>
-                        );
-                      })}
-                    </div>
-                    {/* Mobile: show page indicator instead of numbered buttons */}
-                    <span className="text-sm text-slate-600 sm:hidden">
-                      {currentPage} / {totalPages}
-                    </span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        setCurrentPage((p) => Math.min(totalPages, p + 1))
-                      }
-                      disabled={currentPage === totalPages}
-                    >
-                      Next
-                    </Button>
-                  </div>
-                </div>
               </>
             )}
           </AppCardContent>
         </AppCard>
+
+        {/* Shared pagination: URL-driven Previous/Next, summary, and
+            25/50/100 selector. The server loads the page it points to. */}
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          totalCount={totalCount}
+          totalPages={totalPages}
+          getPageHref={(p) => {
+            const next = updateListSearchParams(searchParams.toString(), { page: p });
+            return `/students?${next.toString()}`;
+          }}
+          getPageSizeHref={(s) => {
+            const next = updateListSearchParams(searchParams.toString(), { pageSize: s });
+            return `/students?${next.toString()}`;
+          }}
+          className="mt-4"
+        />
       </div>
 
       {/* Add Student Dialog */}
@@ -1218,7 +1077,7 @@ export function StudentsTable({
 
       {/* Edit Student Dialog */}
       <Dialog open={editStudentOpen} onOpenChange={setEditStudentOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-lg" onChangeCapture={() => { editStarted.current = true; }}>
           <DialogHeader>
             <DialogTitle>Edit Student</DialogTitle>
             <DialogDescription>
@@ -1367,6 +1226,7 @@ export function StudentsTable({
                 setEditingStudent(null);
                 setEditForm(EMPTY_STUDENT_FORM);
                 setEditFormErrors({});
+                setEditVersion(null);
               }}
             >
               Cancel
@@ -1382,30 +1242,11 @@ export function StudentsTable({
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirmation Dialog */}
-      <AlertDialog
-        open={deleteStudentId !== null}
-        onOpenChange={(open) => !open && setDeleteStudentId(null)}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete student?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will remove the student record and related references (if
-              applicable). This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDeleteConfirm}
-              className="bg-red-600 hover:bg-red-700"
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* No destructive delete dialog: lifecycle is handled by LifecycleAction
+          (Archive / Restore) which renders its own confirmation dialog. The
+          historical destructive delete control has been removed; archived
+          students remain reachable in the explicit archive filter context
+          (`?view=archived`) and can be restored by an administrator. */}
     </TooltipProvider>
   );
 }

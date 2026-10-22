@@ -97,7 +97,8 @@ import path from "node:path";
 import {
   assertLoopbackRuntime,
   captureRuntimeEnv,
-  completeRetryableTeardown,
+  createScopedLaneTeardown,
+  installSignalTeardown,
   isPortConflictOutput,
   isPortFree,
   killChildGracefully,
@@ -105,6 +106,7 @@ import {
   prepareIsolatedAppDir,
   prepareIsolatedSupabase,
   presenceSummary,
+  reapScopedDockerResources,
   redactSensitiveOutput,
   runtimeEnv,
   runProbe,
@@ -158,6 +160,8 @@ const STATUS_CAPTURE_TIMEOUT_MS = 120_000;
 // never a hang.
 const TEARDOWN_PROBE_TIMEOUT_MS = 30_000;
 const STOP_TIMEOUT_MS = 120_000;
+// Hard deadline for each scoped Docker fallback-reaper list/remove child.
+const DOCKER_REAP_TIMEOUT_MS = 30_000;
 // SIGTERM grace before SIGKILL escalation when a child hits its timeout.
 const TIMEOUT_KILL_GRACE_MS = 3_000;
 // Bounded whole-lane retries: a port conflict on `supabase start` tears down
@@ -323,9 +327,12 @@ function chromiumAvailability() {
   }
 }
 
-// ---- Scoped teardown -------------------------------------------------------
+// ---- Scoped, memoized teardown --------------------------------------------
 // Only the isolated Supabase instance is ever stopped; the repository's own
-// local Supabase project is never touched.
+// local Supabase project is never touched. Teardown is memoized (per lane) and
+// falls back to a label-scoped Docker reaper ONLY when the normal
+// project-scoped `supabase stop` cannot be confirmed. No global
+// Docker/Supabase cleanup command can ever be issued by this lane.
 let isolated = null;
 let supabaseBin = null;
 // The single sanitized lane environment, computed once in `main()` and reused
@@ -333,32 +340,40 @@ let supabaseBin = null;
 // NEVER inherits the raw parent env.
 let sanitizedLaneEnv = null;
 
+/** The sanitized lane env for teardown children (never the raw parent env). */
+function laneEnv() {
+  return sanitizedLaneEnv ?? sanitizeEnv(process.env);
+}
+
 /**
- * Stop ONLY the isolated instance's stack (no backup). Operates on the STABLE
- * `lane` reference captured by the caller (default: the current global), so an
- * async teardown can never dereference a global a later attempt reassigned or
- * null-ed.
+ * Normal scoped stop:
+ * `supabase stop --no-backup --yes` scoped to the isolated `--workdir` (whose
+ * config.toml carries this lane's unique project id). Operates on the STABLE
+ * `lane` reference captured by the caller. Returns `{ confirmed }` — true only
+ * for a clean, non-timed-out exit.
  */
 async function stopSupabase(lane = isolated) {
-  if (!lane) return;
+  if (!lane) return { confirmed: true };
   // Teardown containment for the Docker availability probe: the probe child is
   // a TRACKED ASYNC child running with the SANITIZED lane env (a hostile
   // inherited credential can never reach it) under a hard deadline with
   // SIGTERM→SIGKILL escalation — a hung probe cannot block signal handling.
   // Its output is captured (never inherited raw) and is not surfaced raw.
   const probe = await runTrackedSubprocess("docker", ["info"], {
-    env: sanitizedLaneEnv ?? sanitizeEnv(process.env),
+    env: laneEnv(),
     timeoutMs: TEARDOWN_PROBE_TIMEOUT_MS,
   });
   if (probe.status !== 0) {
     log("Skipping `supabase stop` (Docker daemon unavailable).");
-    return;
+    return { confirmed: false };
   }
   if (!supabaseBin) {
     log("Skipping `supabase stop` (supabase CLI unavailable).");
-    return;
+    return { confirmed: false };
   }
-  log(`Stopping isolated Supabase (workdir ${lane.workdir}, no backup)...`);
+  log(
+    `Stopping isolated Supabase (workdir ${lane.workdir}, project ${lane.projectId}, no backup)...`
+  );
   // Teardown containment: the stop child runs with the SANITIZED lane env (a
   // hostile inherited credential can never reach it) as a TRACKED ASYNC child
   // with a hard deadline and SIGTERM→SIGKILL escalation — a hung `supabase
@@ -366,18 +381,36 @@ async function stopSupabase(lane = isolated) {
   // Its captured output is already scrubbed by `stopIsolatedSupabase` before
   // it is logged.
   const stop = await stopIsolatedSupabase(supabaseBin, lane.workdir, {
-    env: sanitizedLaneEnv ?? sanitizeEnv(process.env),
+    env: laneEnv(),
     timeoutMs: STOP_TIMEOUT_MS,
   });
   if (stop.timedOut) {
-    warn(`supabase stop hit its hard deadline and was SIGKILLed; the isolated stack may need manual cleanup.`);
+    warn(`supabase stop hit its hard deadline and was SIGKILLed; trying the scoped Docker fallback reaper.`);
   }
   if (stop.output) log(`supabase stop output:\n${stop.output}`);
-  if (stop.status === 0) {
+  if (stop.confirmed) {
     log("Isolated Supabase stopped without backup.");
-  } else if (!stop.timedOut) {
-    warn(`supabase stop exited with code ${stop.status}; the isolated stack may need manual cleanup.`);
+    return { confirmed: true };
   }
+  warn(
+    `supabase stop exited with code ${stop.status}; falling back to the label-scoped Docker reaper.`
+  );
+  return { confirmed: false };
+}
+
+/**
+ * Label-scoped Docker fallback reaper. It lists ONLY resources carrying this
+ * lane's own `com.supabase.cli.project` value and removes ONLY the ids those
+ * scoped list commands returned; it never performs a global Docker cleanup.
+ */
+function reapIsolatedDocker(lane) {
+  return reapScopedDockerResources({
+    projectId: lane.projectId,
+    run: (cmd, args) =>
+      runTrackedSubprocess(cmd, args, { env: laneEnv(), timeoutMs: DOCKER_REAP_TIMEOUT_MS }),
+    log,
+    warn,
+  });
 }
 
 /**
@@ -396,14 +429,39 @@ function cleanupIsolatedWorkdir(lane = isolated) {
   if (isolated === lane) isolated = null;
 }
 
-let teardownDone = false;
+/**
+ * Memoized, idempotent, scoped lane teardown: the normal project-scoped
+ * `supabase stop` first, the label-scoped Docker reaper only when that stop
+ * cannot be confirmed, and workdir removal ONLY after confirmed cleanup.
+ */
+const teardownLane = createScopedLaneTeardown({
+  stop: stopSupabase,
+  reap: reapIsolatedDocker,
+  removeWorkdir: cleanupIsolatedWorkdir,
+  log,
+  warn,
+});
+
+/** Await the scoped teardown for `lane`, then clear the lane global. */
+async function teardownIsolated(lane = isolated) {
+  if (!lane) return { confirmed: true };
+  const result = await teardownLane(lane);
+  if (isolated === lane) isolated = null;
+  return result;
+}
+
 let nextChild = null;
 let serverLogStream = null;
 let appDir = null;
+let teardownPromise = null;
 
-async function teardown() {
-  if (teardownDone) return;
-  teardownDone = true;
+/** Full E2E teardown (memoized): Next server, scoped Supabase lane, app dir. */
+function teardown() {
+  if (!teardownPromise) teardownPromise = runTeardown();
+  return teardownPromise;
+}
+
+async function runTeardown() {
   if (nextChild) {
     if (nextChild.exitCode === null && nextChild.signalCode === null) {
       log("Stopping the Next.js server (SIGTERM, escalating to SIGKILL if needed)...");
@@ -418,8 +476,10 @@ async function teardown() {
     serverLogStream.end();
     serverLogStream = null;
   }
-  await stopSupabase();
-  cleanupIsolatedWorkdir();
+  // Scoped Supabase teardown: normal project-scoped stop, then the label-scoped
+  // Docker reaper only if the stop cannot be confirmed. The workdir is removed
+  // ONLY after confirmed cleanup; otherwise it is retained for recovery.
+  await teardownIsolated(isolated);
   // The isolated app workdir holds the build output and any stray artifacts;
   // removing it guarantees nothing lands in (or pollutes) the repository.
   if (appDir) {
@@ -433,14 +493,13 @@ async function teardown() {
   }
 }
 
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => {
-    error(`\nReceived ${signal}; terminating spawned children, then running teardown before exit.`);
-    terminateAllChildren({ graceMs: SERVER_STOP_GRACE_MS }).finally(() => {
-      teardown().finally(() => process.exit(130));
-    });
-  });
-}
+// Signal handling: terminate every spawned child, then AWAIT the shared
+// teardown promise. SIGINT/SIGTERM/SIGHUP are each handled exactly once.
+installSignalTeardown({
+  terminate: () => terminateAllChildren({ graceMs: SERVER_STOP_GRACE_MS }),
+  teardown: () => teardown(),
+  error,
+});
 
 /**
  * Build/start env for the Next.js app: the runtime LOCAL Supabase values must
@@ -517,17 +576,12 @@ async function runLane(attempt, { supabaseBin, tsxBin, playwrightBin, sanitizedE
     const conflict = isPortConflictOutput(start.output);
     if (conflict && attempt < MAX_LANE_ATTEMPTS) {
       warn(startFailureSummary({ exitCode: start.code, attempt, maxAttempts: MAX_LANE_ATTEMPTS, retryable: true, output: start.output }));
-      // The full async teardown (Docker probe → supabase stop → workdir
-      // removal) MUST complete before the next attempt may begin — a retry can
-      // never start against a still-running previous stack, and the stable
-      // lane snapshot keeps the async teardown from dereferencing a global the
-      // next attempt will reassign/null.
-      await completeRetryableTeardown({
-        lane: isolated,
-        stop: (lane) => stopSupabase(lane),
-        removeWorkdir: (lane) => cleanupIsolatedWorkdir(lane),
-        onError: (caught) => warn(`Retryable teardown issue: ${caught.message}`),
-      });
+      // The full async teardown (Docker probe → supabase stop → scoped reaper →
+      // workdir removal) MUST complete before the next attempt may begin — a
+      // retry can never start against a still-running previous stack, and the
+      // memoized teardown operates on the stable `isolated` lane snapshot. A
+      // workdir whose cleanup could not be confirmed is retained for recovery.
+      await teardownIsolated(isolated);
       return { retryable: true };
     }
     if (conflict) {
@@ -656,7 +710,12 @@ async function runLane(attempt, { supabaseBin, tsxBin, playwrightBin, sanitizedE
     E2E_INACTIVE_ADVISOR_NAME: seed.inactiveAdvisorName,
     E2E_STUDENT_NAME: seed.studentName,
     E2E_STUDENT_EMAIL: seed.studentEmail,
+    E2E_STUDENT_TWO_NAME: seed.secondStudentName,
     E2E_FELLOWSHIP_NAME: seed.fellowshipName,
+    E2E_FELLOWSHIP_TWO_NAME: seed.secondFellowshipName,
+    E2E_APPLICATION_YEAR: String(seed.studentApplicationYear),
+    E2E_CYCLE_YEAR_OLD: String(seed.cycleYearOld),
+    E2E_CYCLE_YEAR_NEW: String(seed.cycleYearNew),
     E2E_REPORT_TOTALS: JSON.stringify(seed.reportTotals),
   };
   if (Object.values(seedEnv).some((value) => value === undefined || value === null || value === "")) {

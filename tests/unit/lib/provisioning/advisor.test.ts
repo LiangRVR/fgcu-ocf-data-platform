@@ -48,6 +48,7 @@ function createMockAdmin() {
     select: vi.fn(),
     eq: vi.fn(),
     is: vi.fn(),
+    insert: vi.fn(),
     update: vi.fn(),
     maybeSingle: vi.fn(),
     single: vi.fn(),
@@ -55,8 +56,10 @@ function createMockAdmin() {
   query.select.mockReturnValue(query);
   query.eq.mockReturnValue(query);
   query.is.mockReturnValue(query);
+  query.insert.mockReturnValue(query);
   query.update.mockReturnValue(query);
   query.maybeSingle.mockResolvedValue({ data: null, error: null });
+  query.single.mockResolvedValue({ data: null, error: null });
 
   const admin = {
     auth: {
@@ -64,9 +67,12 @@ function createMockAdmin() {
         inviteUserByEmail: vi.fn(),
         createUser: vi.fn(),
         deleteUser: vi.fn(),
+        updateUserById: vi.fn(),
+        getUserById: vi.fn(),
       },
     },
     from: vi.fn().mockReturnValue(query),
+    rpc: vi.fn(),
   };
 
   return { admin, query };
@@ -939,5 +945,524 @@ describe("never binds or authorizes by email", () => {
       "auth.uid()",
       expect.anything(),
     );
+  });
+});
+describe("AdvisorProvisioning.provisionAdvisor (role-aware, trusted provision_advisor RPC)", () => {
+  it("invites a plain Advisor: matching false claim, then provisions the bound advisor record via the trusted RPC", async () => {
+    admin.auth.admin.inviteUserByEmail.mockResolvedValue({
+      data: { user: { id: "invited-user-1" } },
+      error: null,
+    });
+    admin.auth.admin.updateUserById.mockResolvedValue({
+      data: { user: { id: "invited-user-1" } },
+      error: null,
+    });
+    admin.rpc.mockResolvedValue({
+      data: [{ advisor_id: 42, role: "Advisor", auth_user_id: "invited-user-1" }],
+      error: null,
+    });
+
+    const result = await provisioner.provisionAdvisor({
+      email: "jane@example.com",
+      name: "Jane Advisor",
+      actorAdvisorId: 7,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      advisorId: 42,
+      authUserId: "invited-user-1",
+      created: true,
+      role: "Advisor",
+    });
+
+    // Invite has no app_metadata argument; the claim is set by exact user id.
+    expect(admin.auth.admin.inviteUserByEmail).toHaveBeenCalledWith("jane@example.com", {
+      data: { advisor_name: "Jane Advisor" },
+    });
+    expect(admin.auth.admin.updateUserById).toHaveBeenCalledWith("invited-user-1", {
+      app_metadata: { ocf_admin: false },
+    });
+    // The advisor record is created ACTIVE with the matching display role,
+    // bound to the exact auth uuid and attributed to the route-resolved
+    // effective-Admin actor id — never a payload field.
+    expect(admin.rpc).toHaveBeenCalledWith("provision_advisor", {
+      p_actor_id: 7,
+      p_advisor_name: "Jane Advisor",
+      p_email: "jane@example.com",
+      p_auth_user_id: "invited-user-1",
+      p_role: "Advisor",
+    });
+    // No direct PostgREST advisor write (the trusted RPC owns the insert).
+    expect(admin.from).not.toHaveBeenCalled();
+  });
+
+  it("creates an Admin: claim true, bound advisor record with display role Admin", async () => {
+    admin.auth.admin.createUser.mockResolvedValue({
+      data: { user: { id: "created-user-1" } },
+      error: null,
+    });
+    admin.rpc.mockResolvedValue({
+      data: [{ advisor_id: 42, role: "Admin", auth_user_id: "created-user-1" }],
+      error: null,
+    });
+
+    const result = await provisioner.provisionAdvisor({
+      email: "admin@example.com",
+      name: "Admin Lead",
+      role: "Admin",
+      method: "create",
+      actorAdvisorId: 7,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      advisorId: 42,
+      authUserId: "created-user-1",
+      created: true,
+      role: "Admin",
+    });
+    expect(admin.auth.admin.createUser).toHaveBeenCalledWith({
+      email: "admin@example.com",
+      email_confirm: false,
+      user_metadata: { advisor_name: "Admin Lead" },
+      app_metadata: { ocf_admin: true },
+    });
+    expect(admin.rpc).toHaveBeenCalledWith(
+      "provision_advisor",
+      expect.objectContaining({ p_role: "Admin", p_actor_id: 7 }),
+    );
+  });
+
+  it("defaults the display name to the email local part when none is provided", async () => {
+    admin.auth.admin.inviteUserByEmail.mockResolvedValue({
+      data: { user: { id: "invited-user-1" } },
+      error: null,
+    });
+    admin.auth.admin.updateUserById.mockResolvedValue({
+      data: { user: { id: "invited-user-1" } },
+      error: null,
+    });
+    admin.rpc.mockResolvedValue({
+      data: [{ advisor_id: 42, role: "Advisor", auth_user_id: "invited-user-1" }],
+      error: null,
+    });
+
+    await provisioner.provisionAdvisor({ email: "jane@example.com", actorAdvisorId: 7 });
+
+    expect(admin.rpc).toHaveBeenCalledWith(
+      "provision_advisor",
+      expect.objectContaining({ p_advisor_name: "jane", p_actor_id: 7 }),
+    );
+  });
+
+  it("fails generically BEFORE any Auth work when the trusted actor id is missing/malformed", async () => {
+    const result = await provisioner.provisionAdvisor({
+      email: "jane@example.com",
+      actorAdvisorId: 0,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: "bind_failed",
+      message: expect.stringContaining("could not be attributed"),
+    });
+    // No invite/create ran, no trusted RPC ran, nothing was cleaned up.
+    expect(admin.auth.admin.inviteUserByEmail).not.toHaveBeenCalled();
+    expect(admin.auth.admin.createUser).not.toHaveBeenCalled();
+    expect(admin.rpc).not.toHaveBeenCalled();
+    expect(admin.auth.admin.deleteUser).not.toHaveBeenCalled();
+  });
+
+  it("deletes the invited identity when setting the matching claim fails, and never creates the advisor", async () => {
+    admin.auth.admin.inviteUserByEmail.mockResolvedValue({
+      data: { user: { id: "invited-user-1" } },
+      error: null,
+    });
+    admin.auth.admin.updateUserById.mockResolvedValue({
+      data: { user: null },
+      error: { name: "AuthApiError", message: `claim failed: ${SECRET_MARKER}` },
+    });
+    admin.auth.admin.deleteUser.mockResolvedValue({ data: { user: { id: "invited-user-1" } }, error: null });
+
+    const result = await provisioner.provisionAdvisor({
+      email: "invited@example.com",
+      role: "Admin",
+      actorAdvisorId: 7,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: "invite_failed",
+      message: expect.stringContaining("Unable to invite the user"),
+    });
+    expect(result).not.toEqual(expect.objectContaining({ message: expect.stringContaining(SECRET_MARKER) }));
+    // Cleanup by the exact user id; no advisor record was created.
+    expect(admin.auth.admin.deleteUser).toHaveBeenCalledWith("invited-user-1");
+    expect(admin.rpc).not.toHaveBeenCalled();
+  });
+
+  it("cleans up the created identity when the trusted advisor RPC fails (generic bind_failed)", async () => {
+    admin.auth.admin.createUser.mockResolvedValue({
+      data: { user: { id: "created-user-1" } },
+      error: null,
+    });
+    admin.auth.admin.deleteUser.mockResolvedValue({ data: { user: { id: "created-user-1" } }, error: null });
+    // The trusted RPC fails and the read-back confirms no advisor row exists
+    // for the bound auth uuid.
+    admin.rpc.mockResolvedValue({
+      data: null,
+      error: { name: "PostgrestError", message: `rpc failed: ${SECRET_MARKER}` },
+    });
+    query.maybeSingle.mockResolvedValue({ data: null, error: null });
+
+    const result = await provisioner.provisionAdvisor({
+      email: "created@example.com",
+      method: "create",
+      actorAdvisorId: 7,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: "bind_failed",
+      message: expect.stringContaining("Unable to bind the advisor account"),
+    });
+    expect(result).not.toEqual(expect.objectContaining({ message: expect.stringContaining(SECRET_MARKER) }));
+    expect(admin.auth.admin.deleteUser).toHaveBeenCalledWith("created-user-1");
+  });
+
+  it("converges to success when a committed advisor creation loses its response (exact read-back)", async () => {
+    admin.auth.admin.createUser.mockResolvedValue({
+      data: { user: { id: "created-user-1" } },
+      error: null,
+    });
+    // The trusted RPC committed but its response was lost (thrown); the
+    // read-back by the exact bound auth uuid proves the row exists with the
+    // matching role.
+    admin.rpc.mockRejectedValue(new Error(`lost response: ${SECRET_MARKER}`));
+    query.maybeSingle.mockResolvedValue({
+      data: { advisor_id: 42, role: "Admin" },
+      error: null,
+    });
+
+    const result = await provisioner.provisionAdvisor({
+      email: "admin@example.com",
+      role: "Admin",
+      method: "create",
+      actorAdvisorId: 7,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      advisorId: 42,
+      authUserId: "created-user-1",
+      created: true,
+      role: "Admin",
+    });
+    expect(result).not.toEqual(expect.objectContaining({ message: expect.stringContaining(SECRET_MARKER) }));
+    expect(admin.auth.admin.deleteUser).not.toHaveBeenCalled();
+  });
+
+  it("never binds or authorizes by email: the trusted RPC receives the exact auth uuid only", async () => {
+    admin.auth.admin.inviteUserByEmail.mockResolvedValue({
+      data: { user: { id: "invited-user-1" } },
+      error: null,
+    });
+    admin.auth.admin.updateUserById.mockResolvedValue({
+      data: { user: { id: "invited-user-1" } },
+      error: null,
+    });
+    admin.rpc.mockResolvedValue({
+      data: [{ advisor_id: 42, role: "Advisor", auth_user_id: "invited-user-1" }],
+      error: null,
+    });
+
+    await provisioner.provisionAdvisor({ email: "jane@example.com", actorAdvisorId: 7 });
+
+    expect(admin.rpc).toHaveBeenCalledWith(
+      "provision_advisor",
+      expect.objectContaining({ p_auth_user_id: "invited-user-1" }),
+    );
+    expect(query.eq).not.toHaveBeenCalledWith("email", expect.anything());
+  });
+});
+
+describe("AdvisorProvisioning.setAdvisorRole (atomic service-role DB RPC, actor-and-reason contract)", () => {
+  it("promotes a bound advisor to Admin through the SINGLE atomic RPC (claim + display in one transaction)", async () => {
+    admin.rpc.mockResolvedValue({
+      data: [{ advisor_id: 42, role: "Admin", auth_user_id: "user-1" }],
+      error: null,
+    });
+
+    const result = await provisioner.setAdvisorRole({
+      advisorId: 42,
+      role: "Admin",
+      actorAdvisorId: 7,
+      reason: "Operational promotion",
+      expectedVersion: 5,
+    });
+
+    expect(result).toEqual({ ok: true, advisorId: 42, role: "Admin", authUserId: "user-1" });
+    // The agreed trusted role RPC contract: target advisor id + new role +
+    // verified actor id + required reason.
+    expect(admin.rpc).toHaveBeenCalledWith("set_advisor_role", {
+      p_advisor_id: 42,
+      p_role: "Admin",
+      p_actor_id: 7,
+      p_reason: "Operational promotion",
+      p_expected_version: 5,
+    });
+    // No external GoTrue Auth Admin write and NO lease/fenced/read-back/saga
+    // machinery: the whole role change is one atomic DB transaction.
+    expect(admin.auth.admin.updateUserById).not.toHaveBeenCalled();
+    expect(admin.rpc).not.toHaveBeenCalledWith("acquire_advisor_role_lock", expect.anything());
+    expect(admin.rpc).not.toHaveBeenCalledWith("fenced_write_advisor_role_display", expect.anything());
+    expect(admin.rpc).not.toHaveBeenCalledWith("fenced_read_advisor_role_display", expect.anything());
+    expect(admin.rpc).not.toHaveBeenCalledWith("reconcile_advisor_role_display", expect.anything());
+  });
+
+  it("demotes a bound Admin to Advisor through the single atomic RPC", async () => {
+    admin.rpc.mockResolvedValue({
+      data: [{ advisor_id: 42, role: "Advisor", auth_user_id: "user-1" }],
+      error: null,
+    });
+
+    const result = await provisioner.setAdvisorRole({
+      advisorId: 42,
+      role: "Advisor",
+      actorAdvisorId: 7,
+      reason: "Role realignment",
+      expectedVersion: 5,
+    });
+
+    expect(result).toEqual({ ok: true, advisorId: 42, role: "Advisor", authUserId: "user-1" });
+    expect(admin.rpc).toHaveBeenCalledWith("set_advisor_role", {
+      p_advisor_id: 42,
+      p_role: "Advisor",
+      p_actor_id: 7,
+      p_reason: "Role realignment",
+      p_expected_version: 5,
+    });
+  });
+
+  it("forwards the trimmed (non-blank) reason and the verified actor id to the RPC", async () => {
+    admin.rpc.mockResolvedValue({
+      data: [{ advisor_id: 42, role: "Admin", auth_user_id: "user-1" }],
+      error: null,
+    });
+
+    const result = await provisioner.setAdvisorRole({
+      advisorId: 42,
+      role: "Admin",
+      actorAdvisorId: 7,
+      reason: "  Promotion on 2026-10-12  ",
+      expectedVersion: 5,
+    });
+
+    expect(result).toEqual({ ok: true, advisorId: 42, role: "Admin", authUserId: "user-1" });
+    expect(admin.rpc).toHaveBeenCalledWith("set_advisor_role", {
+      p_advisor_id: 42,
+      p_role: "Admin",
+      p_actor_id: 7,
+      p_reason: "Promotion on 2026-10-12",
+      p_expected_version: 5,
+    });
+  });
+
+  it("fails generically WITHOUT calling the RPC when the reason is blank/missing", async () => {
+    const result = await provisioner.setAdvisorRole({
+      advisorId: 42,
+      role: "Admin",
+      actorAdvisorId: 7,
+      reason: "   ",
+      expectedVersion: 3,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: "role_update_failed",
+      message: expect.stringContaining("reason"),
+    });
+    // The atomic RPC never ran — nothing changed.
+    expect(admin.rpc).not.toHaveBeenCalled();
+    expect(admin.auth.admin.updateUserById).not.toHaveBeenCalled();
+  });
+
+  it("fails generically WITHOUT calling the RPC when the trusted actor id is missing/malformed", async () => {
+    const result = await provisioner.setAdvisorRole({
+      advisorId: 42,
+      role: "Admin",
+      actorAdvisorId: -1,
+      reason: "Promotion",
+      expectedVersion: 3,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: "role_update_failed",
+      message: expect.any(String),
+    });
+    expect(admin.rpc).not.toHaveBeenCalled();
+  });
+
+  it("fails generically WITHOUT calling the RPC when the expected version is missing/malformed", async () => {
+    // A missing/zero/negative/non-integer expected version is rejected BEFORE
+    // the atomic RPC runs (defense in depth): no role or claim change can
+    // occur with a bogus optimistic-concurrency value.
+    for (const expectedVersion of [undefined, 0, -2, 1.5, Number.NaN]) {
+      admin.rpc.mockClear();
+      const result = await provisioner.setAdvisorRole({
+        advisorId: 42,
+        role: "Admin",
+        actorAdvisorId: 7,
+        reason: "Promotion",
+        expectedVersion: expectedVersion as number,
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        code: "role_update_failed",
+        message: expect.any(String),
+      });
+      expect(admin.rpc).not.toHaveBeenCalled();
+    }
+  });
+
+  it("maps P0002 -> advisor_not_found (the atomic transaction changed nothing)", async () => {
+    admin.rpc.mockResolvedValue({
+      data: null,
+      error: { code: "P0002", message: "advisor 9999 does not exist" },
+    });
+
+    const result = await provisioner.setAdvisorRole({
+      advisorId: 9999,
+      role: "Admin",
+      actorAdvisorId: 7,
+      reason: "Demotion",
+      expectedVersion: 3,
+    });
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: "advisor_not_found" }));
+    expect(admin.auth.admin.updateUserById).not.toHaveBeenCalled();
+  });
+
+  it("maps 42501 -> not_bound (advisor is not bound to an Auth identity; nothing changed)", async () => {
+    admin.rpc.mockResolvedValue({
+      data: null,
+      error: { code: "42501", message: "advisor 42 is not bound to an Auth identity" },
+    });
+
+    const result = await provisioner.setAdvisorRole({
+      advisorId: 42,
+      role: "Admin",
+      actorAdvisorId: 7,
+      reason: "Promotion",
+      expectedVersion: 3,
+    });
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: "not_bound" }));
+    expect(admin.auth.admin.updateUserById).not.toHaveBeenCalled();
+  });
+
+  it("maps PT409 -> stale_version (no change; the refresh-and-review guidance is surfaced, R4)", async () => {
+    // A concurrent writer won: the DB rejects the stale expected version with
+    // `PT409` BEFORE any claim/display change. The adapter maps it to the
+    // explicit `stale_version` outcome so the API returns the required
+    // refresh-and-review 409 guidance — never a retry or overwrite.
+    admin.rpc.mockResolvedValue({
+      data: null,
+      error: { code: "PT409", message: "version conflict" },
+    });
+
+    const result = await provisioner.setAdvisorRole({
+      advisorId: 42,
+      role: "Admin",
+      actorAdvisorId: 7,
+      reason: "Promotion",
+      expectedVersion: 2,
+    });
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: "stale_version" }));
+    expect(result).toEqual(
+      expect.objectContaining({
+        message: expect.stringContaining("Refresh and review the latest information"),
+      })
+    );
+    // No external Auth write and no display mutation ran.
+    expect(admin.auth.admin.updateUserById).not.toHaveBeenCalled();
+  });
+
+  it("maps an invalid-role RPC rejection (22023) to role_update_failed (atomic no-op)", async () => {
+    admin.rpc.mockResolvedValue({
+      data: null,
+      error: { code: "22023", message: "set_advisor_role role must be Admin or Advisor" },
+    });
+
+    const result = await provisioner.setAdvisorRole({
+      advisorId: 42,
+      role: "Admin",
+      actorAdvisorId: 7,
+      reason: "Promotion",
+      expectedVersion: 3,
+    });
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: "role_update_failed" }));
+    expect(admin.auth.admin.updateUserById).not.toHaveBeenCalled();
+  });
+
+  it("maps an unknown/network RPC failure to role_update_failed — the atomic transaction is a consistent no-op-or-apply", async () => {
+    admin.rpc.mockRejectedValue(new Error("network dropped"));
+
+    const result = await provisioner.setAdvisorRole({
+      advisorId: 42,
+      role: "Admin",
+      actorAdvisorId: 7,
+      reason: "Promotion",
+      expectedVersion: 3,
+    });
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: "role_update_failed" }));
+  });
+
+  it("maps an empty RPC result row to role_update_failed (no state was returned, nothing changed)", async () => {
+    admin.rpc.mockResolvedValue({ data: [], error: null });
+
+    const result = await provisioner.setAdvisorRole({
+      advisorId: 42,
+      role: "Admin",
+      actorAdvisorId: 7,
+      reason: "Promotion",
+      expectedVersion: 3,
+    });
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: "role_update_failed" }));
+  });
+
+  it("concurrency/atomicity: concurrent role changes all go through the ONE atomic RPC — claim ⇔ display can never diverge", async () => {
+    admin.rpc.mockImplementation((fn: string, args: { p_role: "Admin" | "Advisor" }) =>
+      Promise.resolve({
+        data: [{ advisor_id: 42, role: args.p_role, auth_user_id: "user-1" }],
+        error: null,
+      })
+    );
+
+    const [promote, demote] = await Promise.all([
+      provisioner.setAdvisorRole({ advisorId: 42, role: "Admin", actorAdvisorId: 7, reason: "Promote", expectedVersion: 3 }),
+      provisioner.setAdvisorRole({ advisorId: 42, role: "Advisor", actorAdvisorId: 7, reason: "Demote", expectedVersion: 3 }),
+    ]);
+
+    expect(promote).toEqual({ ok: true, advisorId: 42, role: "Admin", authUserId: "user-1" });
+    expect(demote).toEqual({ ok: true, advisorId: 42, role: "Advisor", authUserId: "user-1" });
+    // Every call is the single atomic RPC — no lease/fenced/reconcile/saga
+    // paths exist in the role-change flow, so the database serializes each
+    // transaction and the last writer wins with claim+display always set
+    // together (proven at the DB level by the contract suite).
+    expect(admin.rpc).toHaveBeenCalledTimes(2);
+    for (const call of admin.rpc.mock.calls) {
+      expect(call[0], "only the atomic set_advisor_role RPC is used").toBe("set_advisor_role");
+      expect(call[1], "every role change carries a verified actor id").toMatchObject({
+        p_actor_id: 7,
+      });
+    }
   });
 });

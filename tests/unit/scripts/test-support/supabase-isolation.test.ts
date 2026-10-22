@@ -48,23 +48,35 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import {
+  REPOSITORY_PROJECT_ID,
+  SUPABASE_PROJECT_LABEL,
   activeChildCount,
+  assertSafeProjectId,
   captureRuntimeEnv,
   completeRetryableTeardown,
   createRedactTransform,
+  createScopedLaneTeardown,
+  dockerScopedListArgs,
+  dockerScopedRemoveArgs,
   findFreePorts,
   hasRequiredRuntime,
+  installSignalTeardown,
   isLoopbackDbUrl,
   isLoopbackHttpUrl,
   isPortConflictOutput,
   isPortFree,
+  isSafeProjectId,
   killChildGracefully,
+  laneRecoverySummary,
   mergeRuntimeMaps,
+  parseDockerIds,
   parseSupabaseStatus,
   parseSupabaseStatusJson,
   pipeRedacted,
   presenceSummary,
+  reapScopedDockerResources,
   redactSensitiveOutput,
   runtimeEnv,
   runProbe,
@@ -1228,12 +1240,17 @@ describe("spawned-child registry", () => {
 
 describe("stopIsolatedSupabase teardown containment", () => {
   /** Write a throwaway fake `supabase` executable used as the stop target. */
-  function makeFakeSupabaseBin(dir: string, { stdout = "", stderr = "", exitCode = 0 } = {}) {
+  function makeFakeSupabaseBin(
+    dir: string,
+    { stdout = "", stderr = "", exitCode = 0, argvDump = false } = {}
+  ) {
     const script = [
       "#!/usr/bin/env node",
       'const fs = require("node:fs");',
       "const dump = process.env.TEST_ENV_DUMP;",
       "if (dump) fs.writeFileSync(dump, JSON.stringify(process.env));",
+      "const argvDumpFile = process.env.TEST_ARGV_DUMP;",
+      "if (argvDumpFile) fs.writeFileSync(argvDumpFile, JSON.stringify(process.argv.slice(2)));",
       `process.stdout.write(${JSON.stringify(stdout)});`,
       `process.stderr.write(${JSON.stringify(stderr)});`,
       `process.exit(${exitCode});`,
@@ -1253,6 +1270,36 @@ describe("stopIsolatedSupabase teardown containment", () => {
     "NEXT_PUBLIC_SUPABASE_URL",
   ];
 
+  it("issues ONLY the workdir-scoped stop: `stop --workdir <wd> --no-backup --yes` (scope via the isolated config)", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "ocf-stop-"));
+    try {
+      const argvDump = path.join(dir, "argv.json");
+      const bin = makeFakeSupabaseBin(dir, { argvDump: true });
+      const workdir = path.join(dir, "workdir");
+      const result = await stopIsolatedSupabase(bin, workdir, {
+        env: { ...process.env, PATH: process.env.PATH ?? "", TEST_ARGV_DUMP: argvDump },
+      });
+      expect(result.status).toBe(0);
+      expect(result.confirmed).toBe(true);
+      const args = JSON.parse(readFileSync(argvDump, "utf8")) as string[];
+      // The stop is scoped to the isolated workdir (whose config.toml carries
+      // the lane's unique project id) — the repository project is never a target.
+      const workdirAt = args.indexOf("--workdir");
+      expect(workdirAt).toBeGreaterThanOrEqual(0);
+      expect(args[workdirAt + 1]).toBe(workdir);
+      // The normal stop path carries exactly the design flags, once.
+      expect(args.filter((arg) => arg === "stop")).toHaveLength(1);
+      expect(args).toContain("--no-backup");
+      expect(args).toContain("--yes");
+      // The CLI's `stop` does not accept --project-id; scope comes from
+      // --workdir, and a global all-projects stop is never emitted either.
+      expect(args).not.toContain("--project-id");
+      expect(args).not.toContain("--all");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("never passes hostile inherited credentials into the `supabase stop` child env", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "ocf-stop-"));
     try {
@@ -1270,7 +1317,9 @@ describe("stopIsolatedSupabase teardown containment", () => {
         NEXT_PUBLIC_SUPABASE_URL: "https://hostile-project.supabase.co",
         TEST_ENV_DUMP: dumpFile,
       };
-      const result = await stopIsolatedSupabase(bin, path.join(dir, "workdir"), { env: hostileEnv });
+      const result = await stopIsolatedSupabase(bin, path.join(dir, "workdir"), {
+        env: hostileEnv,
+      });
       expect(result.status).toBe(0);
       const childEnv = JSON.parse(readFileSync(dumpFile, "utf8"));
       for (const key of HOSTILE_KEYS) {
@@ -1339,7 +1388,7 @@ describe("stopIsolatedSupabase teardown containment", () => {
     }
   });
 
-  it("reports a non-zero stop exit and redacts its captured stderr", async () => {
+  it("reports a non-zero stop exit (unconfirmed) and redacts its captured stderr", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "ocf-stop-"));
     try {
       const bin = makeFakeSupabaseBin(dir, {
@@ -1350,6 +1399,7 @@ describe("stopIsolatedSupabase teardown containment", () => {
         env: { ...process.env, PATH: process.env.PATH ?? "" },
       });
       expect(result.status).toBe(1);
+      expect(result.confirmed).toBe(false);
       expect(result.output).not.toContain("eyJstderrSecret");
       expect(result.output).toContain("SERVICE_ROLE_KEY=[REDACTED]");
       expect(result.output).toContain("Error: failed to stop stack");
@@ -1757,7 +1807,7 @@ describe("completeRetryableTeardown retry-path sequencing (amendment A3)", () =>
     // teardown (stop + workdir removal), and only then proceed to attempt 2.
     await completeRetryableTeardown({
       lane,
-      stop: async (l) => {
+      stop: async () => {
         await sleep(25);
         events.push("stop");
       },
@@ -1772,7 +1822,7 @@ describe("completeRetryableTeardown retry-path sequencing (amendment A3)", () =>
     const lane = { workdir: "/tmp/lane-e2e", cleanup: () => events.push("remove") };
     await completeRetryableTeardown({
       lane,
-      stop: async (l) => {
+      stop: async () => {
         // Analogue of the E2E teardown Docker availability probe: a TRACKED
         // async subprocess that must fully finish (and be unregistered) before
         // the stack is stopped.
@@ -1863,5 +1913,467 @@ describe("completeRetryableTeardown retry-path sequencing (amendment A3)", () =>
     });
     events.push("attempt-2");
     expect(events).toEqual(["attempt-2"]);
+  });
+});
+
+describe("assertSafeProjectId dangerous-identifier guard (R13/NFR3)", () => {
+  it("accepts lane-generated unique project ids", () => {
+    expect(assertSafeProjectId("ocf-contract-abcd1234")).toBe("ocf-contract-abcd1234");
+    expect(assertSafeProjectId("ocf-e2e-00112233")).toBe("ocf-e2e-00112233");
+    expect(isSafeProjectId("ocf-schema-inventory-beef0001")).toBe(true);
+  });
+
+  it("rejects empty/whitespace ids before any command can be built", () => {
+    expect(() => assertSafeProjectId("")).toThrow(/empty/i);
+    expect(() => assertSafeProjectId("   ")).toThrow(/empty/i);
+    expect(() => assertSafeProjectId(null as unknown as string)).toThrow(/empty/i);
+    expect(isSafeProjectId(undefined as unknown as string)).toBe(false);
+  });
+
+  it("rejects repository and CLI-default project ids", () => {
+    expect(() => assertSafeProjectId(REPOSITORY_PROJECT_ID)).toThrow(/repository/i);
+    expect(() => assertSafeProjectId("supabase")).toThrow(/default/i);
+    expect(isSafeProjectId(REPOSITORY_PROJECT_ID)).toBe(false);
+  });
+
+  it("rejects ids carrying unsafe characters", () => {
+    expect(() => assertSafeProjectId("ocf-contract; echo pwned")).toThrow(/unsafe/i);
+    expect(() => assertSafeProjectId("ocf contract 123")).toThrow(/unsafe/i);
+  });
+
+  it("honors an explicit repositoryProjectId override (rugged against repo rename)", () => {
+    expect(() =>
+      assertSafeProjectId("ocf-contract-abcd1234", { repositoryProjectId: "ocf-contract-abcd1234" })
+    ).toThrow(/repository/i);
+  });
+});
+
+describe("scoped Docker argument builders (label-only, no global commands)", () => {
+  const ID = "ocf-contract-abcd1234";
+
+  it("builds only label-scoped list commands for each resource kind", () => {
+    expect(dockerScopedListArgs("container", ID)).toEqual([
+      "ps",
+      "-aq",
+      "--filter",
+      `label=${SUPABASE_PROJECT_LABEL}=${ID}`,
+    ]);
+    expect(dockerScopedListArgs("network", ID)).toEqual([
+      "network",
+      "ls",
+      "-q",
+      "--filter",
+      `label=${SUPABASE_PROJECT_LABEL}=${ID}`,
+    ]);
+    expect(dockerScopedListArgs("volume", ID)).toEqual([
+      "volume",
+      "ls",
+      "-q",
+      "--filter",
+      `label=${SUPABASE_PROJECT_LABEL}=${ID}`,
+    ]);
+  });
+
+  it("never emits a global/unfiltered list command", () => {
+    for (const kind of ["container", "network", "volume"] as const) {
+      const args = dockerScopedListArgs(kind, ID);
+      expect(args).not.toContain("--all");
+      expect(args).not.toContain("prune");
+      expect(args.join(" ")).toContain(`label=${SUPABASE_PROJECT_LABEL}=${ID}`);
+    }
+  });
+
+  it("builds scoped remove commands for the exact returned ids only", () => {
+    expect(dockerScopedRemoveArgs("container", ["abc", "def"])).toEqual(["rm", "-f", "abc", "def"]);
+    expect(dockerScopedRemoveArgs("network", ["net1"])).toEqual(["network", "rm", "net1"]);
+    expect(dockerScopedRemoveArgs("volume", ["vol1"])).toEqual(["volume", "rm", "vol1"]);
+  });
+
+  it("refuses an unfiltered remove (empty id list)", () => {
+    expect(() => dockerScopedRemoveArgs("container", [])).toThrow(/unfiltered/i);
+    expect(() => dockerScopedRemoveArgs("network", [])).toThrow(/unfiltered/i);
+    expect(() => dockerScopedRemoveArgs("volume", [])).toThrow(/unfiltered/i);
+  });
+
+  it("throws for an unknown resource kind", () => {
+    expect(() => dockerScopedListArgs("image" as never, ID)).toThrow(/kind/i);
+    expect(() => dockerScopedRemoveArgs("image" as never, ["x"])).toThrow(/kind/i);
+  });
+
+  it("parses `docker ls -q` output into trimmed non-empty ids", () => {
+    expect(parseDockerIds("abc123\r\ndef456\r\n\n   \n")).toEqual(["abc123", "def456"]);
+    expect(parseDockerIds(null)).toEqual([]);
+    expect(parseDockerIds("")).toEqual([]);
+  });
+});
+
+describe("reapScopedDockerResources label-scoped reaper", () => {
+  const ID = "ocf-e2e-00112233";
+  const LABEL = `label=${SUPABASE_PROJECT_LABEL}=${ID}`;
+
+  it("lists only label-scoped resources and removes ONLY the returned ids, in list→remove order", async () => {
+    const calls: Array<[string, string[]]> = [];
+    const run = async (_cmd: string, args: string[]) => {
+      calls.push(["docker", args]);
+      const joined = args.join(" ");
+      if (joined.startsWith("ps ")) return { status: 0, stdout: "abc123\ndef456\n" };
+      if (joined.startsWith("network ls")) return { status: 0, stdout: "net1\n" };
+      if (joined.startsWith("volume ls")) return { status: 0, stdout: "vol1\n" };
+      return { status: 0, stdout: "" };
+    };
+
+    const result = await reapScopedDockerResources({ projectId: ID, run });
+    expect(result.confirmed).toBe(true);
+    expect(result.removed).toEqual({ containers: 2, networks: 1, volumes: 1 });
+    expect(result.errors).toEqual([]);
+
+    expect(calls).toEqual([
+      ["docker", ["ps", "-aq", "--filter", LABEL]],
+      ["docker", ["rm", "-f", "abc123", "def456"]],
+      ["docker", ["network", "ls", "-q", "--filter", LABEL]],
+      ["docker", ["network", "rm", "net1"]],
+      ["docker", ["volume", "ls", "-q", "--filter", LABEL]],
+      ["docker", ["volume", "rm", "vol1"]],
+    ]);
+  });
+
+  it("confirms immediately (and removes nothing) when no scoped resources exist", async () => {
+    const calls: string[][] = [];
+    const run = async (_cmd: string, args: string[]) => {
+      calls.push(args);
+      return { status: 0, stdout: "" };
+    };
+    const result = await reapScopedDockerResources({ projectId: ID, run });
+    expect(result.confirmed).toBe(true);
+    expect(result.removed).toEqual({ containers: 0, networks: 0, volumes: 0 });
+    // Only the three scoped LIST commands ran; no remove was ever issued.
+    expect(calls).toEqual([
+      ["ps", "-aq", "--filter", LABEL],
+      ["network", "ls", "-q", "--filter", LABEL],
+      ["volume", "ls", "-q", "--filter", LABEL],
+    ]);
+  });
+
+  it("is NOT confirmed when a scoped list fails, and removes nothing", async () => {
+    const calls: string[][] = [];
+    const run = async (_cmd: string, args: string[]) => {
+      calls.push(args);
+      if (args[0] === "ps") return { status: 1, stdout: "daemon unavailable" };
+      return { status: 0, stdout: "" };
+    };
+    const result = await reapScopedDockerResources({ projectId: ID, run });
+    expect(result.confirmed).toBe(false);
+    expect(result.removed).toEqual({ containers: 0, networks: 0, volumes: 0 });
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(calls.some((args) => args[0] === "rm")).toBe(false);
+  });
+
+  it("is NOT confirmed when a scoped remove fails", async () => {
+    const run = async (_cmd: string, args: string[]) => {
+      if (args[0] === "ps") return { status: 0, stdout: "abc123\n" };
+      if (args[0] === "rm") return { status: 1, stdout: "" };
+      return { status: 0, stdout: "" };
+    };
+    const result = await reapScopedDockerResources({ projectId: ID, run });
+    expect(result.confirmed).toBe(false);
+    expect(result.removed.containers).toBe(0);
+    expect(result.errors.length).toBeGreaterThan(0);
+  });
+
+  it("rejects empty/repository project ids (never a global reap)", async () => {
+    await expect(
+      reapScopedDockerResources({ projectId: "", run: async () => ({ status: 0, stdout: "" }) })
+    ).rejects.toThrow(/empty/i);
+    await expect(
+      reapScopedDockerResources({
+        projectId: REPOSITORY_PROJECT_ID,
+        run: async () => ({ status: 0, stdout: "" }),
+      })
+    ).rejects.toThrow(/repository/i);
+  });
+
+  it("never issues a global cleanup command across the whole lifecycle", async () => {
+    const calls: Array<[string, string[]]> = [];
+    const run = async (_cmd: string, args: string[]) => {
+      calls.push(["docker", args]);
+      if (args[0] === "ps") return { status: 0, stdout: "abc123\n" };
+      if (args[0] === "network" && args[1] === "ls") return { status: 0, stdout: "net1\n" };
+      if (args[0] === "volume" && args[1] === "ls") return { status: 0, stdout: "vol1\n" };
+      return { status: 0, stdout: "" };
+    };
+    await reapScopedDockerResources({ projectId: ID, run });
+    for (const [, args] of calls) {
+      // No global token can ever be passed to Docker.
+      expect(args).not.toContain("--all");
+      expect(args.join(" ")).not.toMatch(/prune/i);
+      // Every LIST is label-scoped; every REMOVE carries an explicit id list.
+      if (args[0] === "ps" || (args[0] === "network" && args[1] === "ls") || (args[0] === "volume" && args[1] === "ls")) {
+        expect(args).toContain("--filter");
+        expect(args.join(" ")).toContain(LABEL);
+      } else {
+        expect(args.filter((a) => a.startsWith("--"))).toEqual([]);
+        expect(args.filter((a) => a !== "rm" && a !== "-f" && a !== "network" && a !== "volume").length).toBeGreaterThan(0);
+      }
+    }
+  });
+});
+
+describe("createScopedLaneTeardown memoized scoped teardown (R13)", () => {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function makeLane(projectId: string, workdir: string) {
+    return { projectId, workdir, cleanup: () => {} };
+  }
+
+  it("runs the normal stop first and removes the workdir only when confirmed", async () => {
+    const events: string[] = [];
+    const teardownLane = createScopedLaneTeardown({
+      stop: async () => {
+        events.push("stop");
+        return { confirmed: true };
+      },
+      reap: async () => {
+        events.push("reap");
+        return { confirmed: true };
+      },
+      removeWorkdir: () => events.push("remove"),
+    });
+    const result = await teardownLane(makeLane("ocf-contract-abcd1234", "/tmp/lane"));
+    expect(events).toEqual(["stop", "remove"]);
+    expect(result.confirmed).toBe(true);
+  });
+
+  it("falls back to the label-scoped reaper ONLY when the normal stop cannot be confirmed", async () => {
+    const events: string[] = [];
+    const teardownLane = createScopedLaneTeardown({
+      stop: async () => {
+        events.push("stop");
+        return { confirmed: false };
+      },
+      reap: async () => {
+        events.push("reap");
+        return { confirmed: true };
+      },
+      removeWorkdir: () => events.push("remove"),
+    });
+    const result = await teardownLane(makeLane("ocf-contract-abcd1234", "/tmp/lane"));
+    expect(events).toEqual(["stop", "reap", "remove"]);
+    expect(result.confirmed).toBe(true);
+  });
+
+  it("never runs the reaper when the normal stop is confirmed", async () => {
+    const events: string[] = [];
+    const teardownLane = createScopedLaneTeardown({
+      stop: async () => {
+        events.push("stop");
+        return { confirmed: true };
+      },
+      reap: async () => {
+        events.push("reap");
+      },
+      removeWorkdir: () => events.push("remove"),
+    });
+    await teardownLane(makeLane("ocf-contract-abcd1234", "/tmp/lane"));
+    expect(events).toEqual(["stop", "remove"]);
+  });
+
+  it("retains the workdir and returns recovery metadata when cleanup cannot be confirmed", async () => {
+    const events: string[] = [];
+    const warnings: string[] = [];
+    const lane = makeLane("ocf-contract-abcd1234", "/tmp/lane-retained");
+    const teardownLane = createScopedLaneTeardown({
+      stop: async () => ({ confirmed: false }),
+      reap: async () => ({ confirmed: false }),
+      removeWorkdir: () => events.push("remove"),
+      warn: (message: unknown) => warnings.push(String(message)),
+    });
+    const result = await teardownLane(lane);
+    // Workdir was NEVER removed.
+    expect(events).toEqual([]);
+    expect(result.confirmed).toBe(false);
+    expect(result.projectId).toBe("ocf-contract-abcd1234");
+    expect(result.workdir).toBe("/tmp/lane-retained");
+    // The workdir-scoped recovery command is surfaced for deterministic
+    // recovery (scope comes from --workdir, never a --project-id flag).
+    expect(result.command).toContain("supabase stop --no-backup --yes --workdir /tmp/lane-retained");
+    expect(result.command).not.toContain("--project-id");
+    expect(result.command).toContain(SUPABASE_PROJECT_LABEL);
+    expect(warnings.join("\n")).toContain("retaining workdir /tmp/lane-retained");
+    expect(warnings.join("\n")).toContain("Recovery: supabase stop --no-backup --yes --workdir /tmp/lane-retained");
+  });
+
+  it("is memoized and idempotent for the same lane (signal handler + finally)", async () => {
+    const events: string[] = [];
+    const lane = makeLane("ocf-contract-abcd1234", "/tmp/lane");
+    const teardownLane = createScopedLaneTeardown({
+      stop: async () => {
+        await sleep(20);
+        events.push("stop");
+        return { confirmed: true };
+      },
+      removeWorkdir: () => events.push("remove"),
+    });
+    const [first, second] = await Promise.all([teardownLane(lane), teardownLane(lane)]);
+    expect(events.filter((event) => event === "stop")).toHaveLength(1);
+    expect(events.filter((event) => event === "remove")).toHaveLength(1);
+    expect(first.confirmed).toBe(true);
+    expect(second.confirmed).toBe(true);
+  });
+
+  it("gives a fresh lane (retry attempt) its own teardown", async () => {
+    const stops: string[] = [];
+    const teardownLane = createScopedLaneTeardown({
+      stop: async (lane) => {
+        stops.push(lane.projectId);
+        return { confirmed: true };
+      },
+    });
+    const first = await teardownLane(makeLane("ocf-contract-11111111", "/tmp/lane-1"));
+    const second = await teardownLane(makeLane("ocf-contract-22222222", "/tmp/lane-2"));
+    expect(stops).toEqual(["ocf-contract-11111111", "ocf-contract-22222222"]);
+    expect(first.projectId).toBe("ocf-contract-11111111");
+    expect(second.projectId).toBe("ocf-contract-22222222");
+  });
+
+  it("a throwing stop routes to the reaper; a throwing reaper is non-fatal and retains the workdir", async () => {
+    const events: string[] = [];
+    const teardownLane = createScopedLaneTeardown({
+      stop: async () => {
+        events.push("stop");
+        throw new Error("stop exploded");
+      },
+      reap: async () => {
+        events.push("reap");
+        throw new Error("reap exploded");
+      },
+      removeWorkdir: () => events.push("remove"),
+    });
+    const result = await teardownLane(makeLane("ocf-contract-abcd1234", "/tmp/lane"));
+    expect(events).toEqual(["stop", "reap"]);
+    expect(result.confirmed).toBe(false);
+    expect(result.workdir).toBe("/tmp/lane");
+  });
+
+  it("is a no-op for a nulled/absent lane", async () => {
+    const events: string[] = [];
+    const teardownLane = createScopedLaneTeardown({
+      stop: async () => events.push("stop"),
+    });
+    const result = await teardownLane(null);
+    expect(result.confirmed).toBe(true);
+    expect(result.skipped).toBe(true);
+    expect(events).toEqual([]);
+  });
+});
+
+describe("installSignalTeardown one-time awaited signal teardown", () => {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("awaits terminate + teardown on SIGINT/SIGHUP and handles every signal exactly once", async () => {
+    const events: string[] = [];
+    const originalExit = process.exit;
+    process.exit = ((code?: number) => {
+      events.push(`exit:${code}`);
+    }) as typeof process.exit;
+    const dispose = installSignalTeardown({
+      terminate: async () => {
+        await sleep(5);
+        events.push("terminate");
+      },
+      teardown: async () => {
+        await sleep(15);
+        events.push("teardown");
+      },
+      error: () => {},
+    });
+    try {
+      process.emit("SIGINT");
+      await sleep(10);
+      // SIGHUP and SIGTERM arrive while teardown is still in flight: must be ignored.
+      process.emit("SIGHUP");
+      process.emit("SIGTERM");
+      await sleep(60);
+      expect(events).toEqual(["terminate", "teardown", "exit:130"]);
+    } finally {
+      dispose();
+      process.exit = originalExit;
+    }
+  });
+
+  it("supports a custom signal set and exit code, ignoring others", async () => {
+    const events: string[] = [];
+    const originalExit = process.exit;
+    process.exit = ((code?: number) => {
+      events.push(`exit:${code}`);
+    }) as typeof process.exit;
+    const dispose = installSignalTeardown({
+      signals: ["SIGUSR2"],
+      exitCode: 42,
+      terminate: async () => events.push("terminate"),
+      teardown: async () => events.push("teardown"),
+      error: () => {},
+    });
+    try {
+      process.emit("SIGINT");
+      await sleep(10);
+      expect(events).toEqual([]);
+      process.emit("SIGUSR2");
+      await sleep(30);
+      expect(events).toEqual(["terminate", "teardown", "exit:42"]);
+    } finally {
+      dispose();
+      process.exit = originalExit;
+    }
+  });
+
+  it("the disposer removes the handlers so no teardown runs afterward", async () => {
+    const events: string[] = [];
+    const originalExit = process.exit;
+    process.exit = ((code?: number) => {
+      events.push(`exit:${code}`);
+    }) as typeof process.exit;
+    const dispose = installSignalTeardown({
+      teardown: async () => events.push("teardown"),
+      error: () => {},
+    });
+    try {
+      dispose();
+      process.emit("SIGHUP");
+      await sleep(30);
+      expect(events).toEqual([]);
+    } finally {
+      process.exit = originalExit;
+    }
+  });
+});
+
+describe("static dangerous-command guard (R13/NFR3)", () => {
+  const MODULE_PATH = fileURLToPath(
+    new URL("../../../../scripts/test-support/supabase-isolation.mjs", import.meta.url)
+  );
+
+  it("the harness source never contains a global Docker/Supabase cleanup command", () => {
+    const source = readFileSync(MODULE_PATH, "utf8");
+    // No Docker/system prune anywhere in the harness.
+    expect(source).not.toMatch(/prune/i);
+    // No all-projects Supabase stop flag anywhere in the harness.
+    expect(source).not.toMatch(/--all\b/);
+    // No unfiltered `docker … rm` with no id list is possible by construction
+    // (the argument builder rejects empty id lists — covered above).
+  });
+
+  it("the exported command builders are provably project-scoped", () => {
+    const id = "ocf-contract-abcd1234";
+    for (const kind of ["container", "network", "volume"] as const) {
+      const list = dockerScopedListArgs(kind, id);
+      expect(list.join(" ")).toContain(`label=${SUPABASE_PROJECT_LABEL}=${id}`);
+      expect(() => dockerScopedRemoveArgs(kind, [])).toThrow();
+    }
+    // The recovery command stays workdir-scoped (no unsupported --project-id),
+    // with the label still naming the lane's own resources for the reaper.
+    const recovery = laneRecoverySummary(id, { workdir: "/tmp/lane" });
+    expect(recovery).toContain("supabase stop --no-backup --yes --workdir /tmp/lane");
+    expect(recovery).not.toContain("--project-id");
+    expect(recovery).toContain(SUPABASE_PROJECT_LABEL);
   });
 });

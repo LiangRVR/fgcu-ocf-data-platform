@@ -1,8 +1,8 @@
 /**
  * tests/e2e/mobile.spec.ts
  *
- * Meaningful mobile smoke lane (hardening plan Work 8 / R8). Runs under BOTH
- * Playwright projects:
+ * Meaningful mobile smoke lane (advising-continuity UI R10 / hardening plan
+ * Work 8 / R8). Runs under BOTH Playwright projects:
  *   - "chromium" (Desktop Chrome) — full-lane spec;
  *   - "mobile-chromium" (Pixel 7) — the ONLY spec this project runs
  *     (see playwright.config.ts testMatch), exercising the same flows at a
@@ -11,6 +11,12 @@
  * Layout-independent: every locator is semantic and visibility-filtered, with
  * one explicit responsive assertion (the desktop-only table is hidden below
  * the md breakpoint) gated on the mobile project.
+ *
+ * The advising workflow test proves a key Student Detail + advising flow stays
+ * usable at the mobile viewport: the profile, the derived advising-session
+ * count, the advising-history filter, and the Log Meeting dialog's essential
+ * fields (student, application choices incl. General Advising, date, mode,
+ * notes) all remain reachable.
  */
 import { test, expect, type Page } from "@playwright/test";
 
@@ -30,6 +36,7 @@ const ACTIVE_EMAIL = requireEnv("E2E_ACTIVE_EMAIL");
 const ACTIVE_PASSWORD = requireEnv("E2E_ACTIVE_PASSWORD");
 const STUDENT_NAME = requireEnv("E2E_STUDENT_NAME");
 const FELLOWSHIP_NAME = requireEnv("E2E_FELLOWSHIP_NAME");
+const APPLICATION_YEAR = requireEnv("E2E_APPLICATION_YEAR");
 
 async function signInAsActive(page: Page): Promise<void> {
   await page.goto("/login");
@@ -68,6 +75,12 @@ test.describe("mobile smoke", () => {
     // a trailing span ("Advising Meetings(1)"), and the shell sidebar's "Advising"
     // nav item must not be picked up.
     await expect(page.locator("main").getByText("Advising Meetings").first()).toBeVisible();
+
+    // The student's unified audit history surface remains reachable at this
+    // viewport.
+    await expect(
+      page.getByRole("heading", { name: "Activity & Change History" }),
+    ).toBeVisible();
   });
 
   test("renders the fellowship catalog as cards and opens the seeded fellowship detail", async ({ page }, testInfo) => {
@@ -85,5 +98,96 @@ test.describe("mobile smoke", () => {
       .click();
     await expect(page.getByRole("heading", { name: FELLOWSHIP_NAME })).toBeVisible();
     await expect(page.getByText("Program Detail", { exact: true })).toBeVisible();
+
+    // The fellowship's audit history surface stays usable at this viewport.
+    await expect(
+      page.getByRole("heading", { name: "Fellowship change history" }),
+    ).toBeVisible();
+  });
+
+  test("the global activity log and its controls stay usable at this viewport", async ({ page }) => {
+    await signInAsActive(page);
+    await page.goto("/activity");
+
+    // The record-type filter, page-size control, and server-rendered history
+    // list all remain reachable on a narrow viewport (card/stacked layout).
+    await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Recent changes" })).toBeVisible();
+    await expect(page.getByLabel(/^Record type/)).toBeVisible();
+    await expect(page.getByLabel(/^Change/)).toBeVisible();
+    await expect(page.getByLabel("Rows per page", { exact: true })).toBeVisible();
+    await expect(page.locator("main section[aria-label='Recent changes'] ol")).toBeVisible();
+    await expect(page.getByText(/Page 1 of \d+/)).toBeVisible();
+  });
+
+  test("a key advising/student-detail workflow reaches its essential fields", async ({ page }) => {
+    await signInAsActive(page);
+
+    // ── Student Detail: profile, derived session count, history filter ──────
+    await page.goto("/students");
+    await page
+      .getByRole("link", { name: STUDENT_NAME, exact: true })
+      .filter({ visible: true })
+      .first()
+      .click();
+    await expect(page.getByRole("heading", { name: STUDENT_NAME })).toBeVisible();
+
+    // The profile surface and the advising history filter remain accessible.
+    await expect(page.locator("section[aria-label='Student Profile']")).toBeVisible();
+    const historyFilter = page.getByLabel("Filter advising history");
+    await expect(historyFilter).toBeVisible();
+
+    // Filter to General Advising: the seeded meeting stays reachable.
+    await historyFilter.selectOption("general");
+    await expect(
+      page
+        .locator("main")
+        .locator("section", { hasText: "Advising history" })
+        .locator("article", { hasText: "E2E seeded advising session" }),
+    ).toBeVisible();
+
+    // R6: the shared Add Correction affordance stays reachable at this viewport.
+    await expect(
+      page
+        .locator("main")
+        .locator("section", { hasText: "Advising history" })
+        .getByRole("button", { name: "Add Correction" })
+        .first(),
+    ).toBeVisible();
+
+    // The application-specific advising-session count renders at this size
+    // (desktop table cell "0 sessions" or mobile card badge "0 advising
+    // sessions", whichever this project surfaces).
+    await expect(
+      page
+        .locator("main")
+        .getByText(/0 (advising )?sessions/)
+        .filter({ visible: true })
+        .first(),
+    ).toBeVisible();
+
+    // ── Advising: the Log Meeting dialog exposes its essential fields ───────
+    await page.goto("/advising");
+    await page.getByRole("button", { name: "Log Meeting" }).click();
+
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.locator("#student-search")).toBeVisible();
+    await expect(dialog.locator("#application_id")).toBeVisible();
+    await expect(dialog.locator("#meeting_date")).toBeVisible();
+    await expect(dialog.locator("#meeting_mode")).toBeVisible();
+    await expect(dialog.locator("#no_show")).toBeVisible();
+    await expect(dialog.locator("#notes")).toBeVisible();
+
+    // Selecting a student offers that student's applications plus General
+    // Advising — the dependent meeting-selector behavior stays usable. The
+    // student field is a lazy bounded typeahead: type at least two characters,
+    // then choose the bounded option.
+    await dialog.locator("#student-search").fill(STUDENT_NAME);
+    await dialog.getByRole("button", { name: STUDENT_NAME, exact: true }).click();
+    await dialog.locator("#application_id").click();
+    await expect(page.getByRole("option", { name: "General Advising", exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("option", { name: `${FELLOWSHIP_NAME} — ${APPLICATION_YEAR}`, exact: true }),
+    ).toBeVisible();
   });
 });

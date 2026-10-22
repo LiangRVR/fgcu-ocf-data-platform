@@ -19,10 +19,78 @@
  *     is stored, only a body hash;
  *   - COMPLETE – every documented catalog section is present as an array, and
  *     the key expected local-chain catalog facts hold:
- *       * six local migration-ledger rows (the exact Git chain);
- *       * RLS enabled on all seven operational tables;
+ *       * thirty-eight local migration-ledger rows (the exact Git chain);
+ *       * RLS enabled on all eight operational tables;
  *       * application foreign keys keep the default NO ACTION semantics;
- *       * the advisor identity/RLS lockdown trigger and policies are present.
+ *       * the advisor identity/RLS lockdown trigger and policies are present;
+ *       * migration 20260929000001 adds the advising↔application link columns
+ *         (nullable application.application_year, nullable
+ *         advising_meeting.application_id, NOT NULL created_at default now(),
+ *         nullable created_by_advisor_id), the direct + composite application
+ *         FKs, the unique (application_id, student_id) target, and the
+ *         hardened SECURITY DEFINER creation-metadata trigger/function; and
+ *       * migration 20260930000002 adds indexes for the composite
+ *         advising/application FK and the creator-advisor FK.
+ *       * migration 20260930000003 makes advising meetings append-only for
+ *         authenticated users: active-advisor SELECT and INSERT policies only,
+ *         with no authenticated UPDATE or DELETE grant;
+ *       * migration 20260930000005 adds the entity-lifecycle catalog: nullable
+ *         `student.archived_at` / `fellowship.archived_at` (timestamptz, no
+ *         default), the archive-filter indexes, the trusted INVOKER
+ *         `is_ocf_admin()` predicate, the SECURITY DEFINER
+ *         `lifecycle_transition(text, text, integer)` RPC, and the
+ *         invoker-security column-scoped lifecycle guard triggers/functions
+ *         (EXECUTE pinned to authenticated / service_role only);
+ *       * migration 20260930000006 locks down authenticated DELETE on the core
+ *         historical entities (`advisor`, `student`, `fellowship`,
+ *         `application`): the authenticated DELETE table grant is revoked and
+ *         the FOR ALL / DELETE RLS policies are replaced by explicit
+ *         SELECT/INSERT/UPDATE policies, while `fellowship_thursday` /
+ *         `scholarship_history` stayed mutable until migration 20261008000001
+ *         and `advising_meeting` / `advising_meeting_amendment` stay
+ *         append-only;
+ *       * migration 20260930000007 (review remediation) replaces the
+ *         `lifecycle_transition` RPC to require an ACTIVE bound advisor in
+ *         addition to the `ocf_admin` claim, and adds invoker-security
+ *         archive-parent guard triggers/functions (EXECUTE pinned to
+ *         service_role only) on the operational child tables `application`,
+ *         `advising_meeting`, `fellowship_thursday`, and `scholarship_history`;
+ *       * migration 20261001000001 (explicit admin/advisor permissions)
+ *         normalizes `advisor.role` to the exact display vocabulary
+ *         `Admin`/`Advisor` and pins it with a CHECK constraint plus the
+ *         `'Advisor'` column default, hardens `is_ocf_admin()` to a strict
+ *         JSON-boolean claim comparison, adds the SECURITY DEFINER
+ *         `is_effective_admin()` predicate (active bound advisor + boolean
+ *         claim), and adds the invoker-security `guard_advisor_role_display`
+ *         trigger/function (EXECUTE pinned to service_role only) that rejects
+ *         direct authenticated writes to the protected display role.
+ *       * migration 20261008000001 (historical integrity remediation) adds the
+ *         append-only `fellowship_thursday_amendment` /
+ *         `scholarship_history_amendment` tables (SELECT/INSERT-only for
+ *         authenticated, SECURITY DEFINER creation-metadata triggers, trim-aware
+ *         reason CHECKs, at-least-one-correction / controlled correction-void
+ *         payload CHECKs), locks the base-history rows
+ *         `fellowship_thursday` / `scholarship_history` down to
+ *         SELECT/INSERT-only, adds the SECURITY INVOKER
+ *         `effective_fellowship_thursday` / `effective_scholarship_history`
+ *         views, replaces the seven-stage application vocabulary with the nine
+ *         stage + flag-consistency + year-bound CHECKs, and adds the
+ *         authenticated new-meeting advisor guard trigger;
+ *       * migration 20261010000001 (server-side pagination list views) adds the
+ *         six explicit-column, read-only, SECURITY INVOKER list views
+ *         (`student_list`, `application_list`, `advising_meeting_list`,
+ *         `fellowship_thursday_list`, `scholarship_history_list`,
+ *         `fellowship_list`) granted SELECT to `authenticated` only (anon
+ *         revoked); no base-table policy, grant, write path, sequence, or index
+ *         is changed.
+ *       * migration 20261011000001 (scholarship history operational summary)
+ *         adds the STABLE SECURITY INVOKER aggregate
+ *         `scholarship_history_operational_summary(text, integer)` that returns
+ *         the non-void award count and distinct-student count over
+ *         `scholarship_history_list` under the same search/effective-fellowship
+ *         filters, with EXECUTE granted to `authenticated` only (PUBLIC/anon
+ *         revoked); it replaces the client-side unbounded `student_id`
+ *         projection and never bypasses RLS.
  *
  * Safety: this test writes no output files, reads no hosted values, and never
  * queries business rows — it only runs the read-only catalog SELECTs inside
@@ -40,18 +108,21 @@ import { getContractEnv } from "./helpers/setup";
 
 const env = getContractEnv();
 
-/** The seven operational tables created by the migration chain. */
+/** The ten operational tables created by the migration chain. */
 const OPERATIONAL_TABLES = [
   "advisor",
   "fellowship",
   "student",
   "application",
   "advising_meeting",
+  "advising_meeting_amendment",
   "fellowship_thursday",
+  "fellowship_thursday_amendment",
   "scholarship_history",
+  "scholarship_history_amendment",
 ] as const;
 
-/** The exact Git migration chain recorded in the local ledger (six rows). */
+/** The exact Git migration chain recorded in the local ledger (thirty-eight rows). */
 const EXPECTED_LEDGER = [
   { version: "20260305000000", name: "initial_schema" },
   { version: "20260305000001", name: "allow_anon_read" },
@@ -59,6 +130,38 @@ const EXPECTED_LEDGER = [
   { version: "20260317000003", name: "advisor_auth" },
   { version: "20260317000004", name: "active_advisor_rls" },
   { version: "20260318000001", name: "advisor_self_activation_lockdown" },
+  { version: "20260929000001", name: "advising_application_link" },
+  { version: "20260930000002", name: "advising_application_fk_indexes" },
+  { version: "20260930000003", name: "advising_meeting_append_only" },
+  { version: "20260930000004", name: "advising_meeting_amendments" },
+  { version: "20260930000005", name: "entity_lifecycle_archiving" },
+  { version: "20260930000006", name: "core_history_delete_lockdown" },
+  { version: "20260930000007", name: "lifecycle_review_remediation" },
+  { version: "20261001000001", name: "explicit_admin_advisor_permissions" },
+  { version: "20261002000001", name: "advisor_self_service_role_reconciliation" },
+  { version: "20261003000001", name: "advisor_role_change_lock" },
+  { version: "20261004000001", name: "advisor_role_fenced_write" },
+  { version: "20261005000001", name: "advisor_role_fenced_read" },
+  { version: "20261006000001", name: "advisor_role_display_reconcile" },
+  { version: "20261007000001", name: "atomic_advisor_role_change" },
+  { version: "20261008000001", name: "historical_integrity_remediation" },
+  { version: "20261009000001", name: "scholarship_void_serialization" },
+  { version: "20261010000001", name: "security_invoker_list_views" },
+  { version: "20261011000001", name: "scholarship_history_operational_summary" },
+  { version: "20261012000001", name: "immutable_audit" },
+  { version: "20261013000001", name: "advisor_admin_immutable_history" },
+  { version: "20261014000001", name: "advisor_admin_profile_name" },
+  { version: "20261015000001", name: "protected_current_state_writers" },
+  { version: "20261015000002", name: "historical_audit_activity" },
+  { version: "20261016000001", name: "insert_metadata_and_positive_version" },
+  { version: "20261017000001", name: "revoke_advising_meeting_truncate" },
+  { version: "20261018000001", name: "lock_application_relink_parents" },
+  { version: "20261019000001", name: "final_immutable_history_remediation" },
+  { version: "20261020000001", name: "complete_immutable_history_context" },
+  { version: "20261021000001", name: "audit_presentation_projection" },
+  { version: "20261022000001", name: "audit_activity_browser_safe" },
+  { version: "20261023000001", name: "audit_event_raw_payload_boundary" },
+  { version: "20261024000001", name: "dated_attendance_award_year" },
 ] as const;
 
 /** One shared capture: read-only catalog queries against the lane database. */
@@ -120,12 +223,608 @@ describe("schema inventory packet shape (local/schema-only/complete)", () => {
 });
 
 describe("migration ledger", () => {
-  it("records exactly the six local-chain migrations", () => {
+  it("records exactly the thirty-eight local-chain migrations", () => {
     const ledger = packet.catalog.migrationLedger;
     expect(ledger).toHaveLength(EXPECTED_LEDGER.length);
     const byVersion = new Map(ledger.map((record) => [record.fields.version, record.fields.name]));
     for (const { version, name } of EXPECTED_LEDGER) {
       expect(byVersion.get(version), `ledger row ${version}`).toBe(name);
+    }
+  });
+});
+
+describe("advising_meeting append-only authorization (migration 20260930000003)", () => {
+  it("captures only authenticated active-advisor SELECT and INSERT policies", () => {
+    const policies = packet.catalog.policies
+      .filter((record) => record.fields.table === "advising_meeting")
+      .map((record) => ({
+        name: record.fields.name,
+        command: record.fields.command,
+        roles: record.fields.roles,
+      }))
+      .sort((left, right) => String(left.name).localeCompare(String(right.name)));
+    expect(policies).toEqual([
+      {
+        name: "active_advisor_insert_advising_meeting",
+        command: "INSERT",
+        roles: ["authenticated"],
+      },
+      {
+        name: "active_advisor_select_advising_meeting",
+        command: "SELECT",
+        roles: ["authenticated"],
+      },
+    ]);
+  });
+
+  it("captures no authenticated advising_meeting UPDATE or DELETE grant", () => {
+    const privileges = packet.catalog.grants
+      .filter(
+        (record) =>
+          record.fields.objectType === "TABLE" &&
+          record.fields.objectName === "advising_meeting" &&
+          record.fields.grantee === "authenticated"
+      )
+      .map((record) => record.fields.privilege);
+    expect(privileges).toContain("SELECT");
+    expect(privileges).toContain("INSERT");
+    expect(privileges).not.toContain("UPDATE");
+    expect(privileges).not.toContain("DELETE");
+  });
+});
+
+describe("advising_meeting_amendment append-only authorization (migration 20260930000004)", () => {
+  it("captures only authenticated active-advisor SELECT and INSERT policies", () => {
+    const policies = packet.catalog.policies
+      .filter((record) => record.fields.table === "advising_meeting_amendment")
+      .map((record) => ({
+        name: record.fields.name,
+        command: record.fields.command,
+        roles: record.fields.roles,
+      }))
+      .sort((left, right) => String(left.name).localeCompare(String(right.name)));
+    expect(policies).toEqual([
+      {
+        name: "active_advisor_insert_advising_meeting_amendment",
+        command: "INSERT",
+        roles: ["authenticated"],
+      },
+      {
+        name: "active_advisor_select_advising_meeting_amendment",
+        command: "SELECT",
+        roles: ["authenticated"],
+      },
+    ]);
+  });
+
+  it("captures no authenticated advising_meeting_amendment UPDATE or DELETE grant and no anon grant", () => {
+    const amendmentGrants = packet.catalog.grants.filter(
+      (record) =>
+        record.fields.objectType === "TABLE" &&
+        record.fields.objectName === "advising_meeting_amendment"
+    );
+    const authenticatedPrivileges = amendmentGrants
+      .filter((record) => record.fields.grantee === "authenticated")
+      .map((record) => record.fields.privilege);
+    expect(authenticatedPrivileges).toContain("SELECT");
+    expect(authenticatedPrivileges).toContain("INSERT");
+    expect(authenticatedPrivileges).not.toContain("UPDATE");
+    expect(authenticatedPrivileges).not.toContain("DELETE");
+    expect(
+      amendmentGrants.some((record) => record.fields.grantee === "anon"),
+      "anon must hold no grant on the amendment table"
+    ).toBe(false);
+  });
+
+  it("captures the amendment creation-metadata trigger/function as SECURITY DEFINER", () => {
+    const trigger = packet.catalog.triggers.find(
+      (record) => record.fields.name === "trg_advising_meeting_amendment_created_metadata"
+    );
+    expect(trigger, "amendment metadata trigger").toBeDefined();
+    expect(trigger!.fields.table).toBe("advising_meeting_amendment");
+    expect(String(trigger!.fields.function)).toContain("set_advising_meeting_amendment_created_metadata");
+    expect(trigger!.fields.state).toBe("O");
+    expect(String(trigger!.fields.events)).toContain("INSERT");
+    expect(String(trigger!.fields.definitionHash)).toMatch(/^[0-9a-f]{64}$/);
+
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "set_advising_meeting_amendment_created_metadata"
+    );
+    expect(fn, "amendment metadata function").toBeDefined();
+    expect(fn!.fields.securityMode).toBe("DEFINER");
+    expect(fn!.fields.searchPath).toEqual([]);
+    expect(String(fn!.fields.bodyHash)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("records EXECUTE revoked from PUBLIC, anon, and authenticated on the amendment metadata function", () => {
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "set_advising_meeting_amendment_created_metadata"
+    );
+    expect(fn, "amendment metadata function").toBeDefined();
+    // Effective ACL (proacl, default PUBLIC EXECUTE never hidden): the
+    // amendment migration REVOKEs ALL from PUBLIC/anon/authenticated and grants
+    // EXECUTE only to service_role — so the ACL must be non-empty (service_role
+    // pins it; never an empty fallback) and carry no PUBLIC (`=X`), anon, or
+    // authenticated EXECUTE entry.
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "amendment metadata function must carry an effective ACL").toBe(true);
+    // No exposed role may hold EXECUTE — with or without the grant option
+    // (`X*`, the aclitem `*` suffix) — on the hardened function. normalizeAcl
+    // strips only the grantor suffix, so PUBLIC (`=X`/`=X*`), anon, and
+    // authenticated entries survive verbatim and must all be absent.
+    const exposedExecutes = acl.filter((entry) =>
+      ["=X", "=X*", "anon=X", "anon=X*", "authenticated=X", "authenticated=X*"].includes(entry)
+    );
+    expect(
+      exposedExecutes,
+      "PUBLIC/anon/authenticated must hold no EXECUTE (with or without grant option) on the amendment metadata function"
+    ).toHaveLength(0);
+    expect(acl, "service_role EXECUTE pins the amendment metadata function ACL").toContain("service_role=X");
+  });
+
+  it("captures the trim-aware nonempty reason/details CHECK constraints", () => {
+    const constraints = packet.catalog.constraints;
+    const byName = new Map(constraints.map((record) => [record.fields.name, record]));
+
+    for (const name of [
+      "advising_meeting_amendment_reason_not_blank",
+      "advising_meeting_amendment_details_not_blank",
+    ]) {
+      const record = byName.get(name);
+      expect(record, `CHECK constraint ${name}`).toBeDefined();
+      expect(record!.fields.type, `${name} type`).toBe("CHECK");
+      // Schema-only inventory: the raw definition is reduced to a hash.
+      expect(String(record!.fields.definitionHash), `${name} definitionHash`).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+});
+
+describe("entity lifecycle archiving catalog (migration 20260930000005)", () => {
+  it("captures the lifecycle columns as nullable timestamptz with no default", () => {
+    const columns = packet.catalog.columns;
+    const byIdentity = new Map(columns.map((record) => [record.identity, record]));
+
+    for (const identity of ["public.student.archived_at", "public.fellowship.archived_at"]) {
+      const record = byIdentity.get(identity);
+      expect(record, `column ${identity}`).toBeDefined();
+      expect(record!.fields.dataType, `${identity} data type`).toBe("timestamp with time zone");
+      expect(record!.fields.nullable, `${identity} nullable`).toBe(true);
+      // No default expression: only the lifecycle RPC (or a trusted technical
+      // session) writes the field, so a DEFAULT would be misleading.
+      expect(record!.fields.defaultHash, `${identity} defaultHash`).toBeNull();
+    }
+  });
+
+  it("captures the lifecycle archive-filter indexes", () => {
+    const indexes = packet.catalog.indexes.map((record) => record.identity);
+    expect(indexes, "student archive index").toContain("public.student.idx_student_archived_at");
+    expect(indexes, "fellowship archive index").toContain("public.fellowship.idx_fellowship_archived_at");
+  });
+
+  it("captures is_ocf_admin as a trusted INVOKER predicate with authenticated EXECUTE and no PUBLIC/anon EXECUTE", () => {
+    const fn = packet.catalog.functions.find((record) => record.fields.name === "is_ocf_admin");
+    expect(fn, "is_ocf_admin function").toBeDefined();
+    expect(fn!.fields.securityMode, "is_ocf_admin security mode").toBe("INVOKER");
+    expect(fn!.fields.searchPath, "is_ocf_admin search path").toEqual([]);
+    expect(String(fn!.fields.bodyHash)).toMatch(/^[0-9a-f]{64}$/);
+
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "is_ocf_admin must carry an effective ACL").toBe(true);
+    expect(acl, "authenticated EXECUTE on is_ocf_admin").toContain("authenticated=X");
+    // No PUBLIC (`=X`/`=X*`) or anon EXECUTE — with or without grant option.
+    const exposed = acl.filter((entry) => ["=X", "=X*", "anon=X", "anon=X*"].includes(entry));
+    expect(exposed, "no PUBLIC/anon EXECUTE on is_ocf_admin").toHaveLength(0);
+  });
+
+  it("captures lifecycle_transition as SECURITY DEFINER with authenticated EXECUTE and no PUBLIC/anon EXECUTE", () => {
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "lifecycle_transition"
+    );
+    expect(fn, "lifecycle_transition function").toBeDefined();
+    expect(fn!.fields.securityMode, "lifecycle_transition security mode").toBe("DEFINER");
+    expect(fn!.fields.searchPath, "lifecycle_transition search path").toEqual([]);
+    expect(String(fn!.fields.signature), "lifecycle_transition signature").toContain("text");
+    expect(String(fn!.fields.bodyHash)).toMatch(/^[0-9a-f]{64}$/);
+
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "lifecycle_transition must carry an effective ACL").toBe(true);
+    expect(acl, "authenticated EXECUTE on lifecycle_transition").toContain("authenticated=X");
+    const exposed = acl.filter((entry) => ["=X", "=X*", "anon=X", "anon=X*"].includes(entry));
+    expect(exposed, "no PUBLIC/anon EXECUTE on lifecycle_transition").toHaveLength(0);
+  });
+
+  it("captures the invoker-security lifecycle guard functions with service_role-pinned ACLs", () => {
+    const byName = new Map(packet.catalog.functions.map((record) => [record.fields.name, record]));
+    for (const name of [
+      "guard_student_archived_at_lifecycle",
+      "guard_fellowship_archived_at_lifecycle",
+      "guard_advisor_is_active_lifecycle",
+    ]) {
+      const fn = byName.get(name);
+      expect(fn, `guard function ${name}`).toBeDefined();
+      expect(fn!.fields.securityMode, `${name} security mode`).toBe("INVOKER");
+      expect(fn!.fields.searchPath, `${name} search path`).toEqual([]);
+      expect(String(fn!.fields.bodyHash), `${name} bodyHash`).toMatch(/^[0-9a-f]{64}$/);
+
+      const acl = fn!.fields.acl as string[];
+      expect(Array.isArray(acl) && acl.length > 0, `${name} must carry an effective ACL`).toBe(true);
+      // PUBLIC/anon/authenticated EXECUTE revoked; service_role EXECUTE pins the
+      // ACL non-empty (never the default PUBLIC fallback).
+      const exposed = acl.filter((entry) =>
+        ["=X", "=X*", "anon=X", "anon=X*", "authenticated=X", "authenticated=X*"].includes(entry)
+      );
+      expect(exposed, `${name} PUBLIC/anon/authenticated EXECUTE`).toHaveLength(0);
+      expect(acl, `${name} service_role EXECUTE`).toContain("service_role=X");
+    }
+  });
+
+  it("captures the lifecycle column-scoped triggers on student, fellowship, and advisor", () => {
+    const byName = new Map(packet.catalog.triggers.map((record) => [record.fields.name, record]));
+    const expected: Array<{ name: string; table: string; function: string }> = [
+      {
+        name: "trg_student_archived_at_lifecycle",
+        table: "student",
+        function: "guard_student_archived_at_lifecycle",
+      },
+      {
+        name: "trg_fellowship_archived_at_lifecycle",
+        table: "fellowship",
+        function: "guard_fellowship_archived_at_lifecycle",
+      },
+      {
+        name: "trg_advisor_is_active_lifecycle",
+        table: "advisor",
+        function: "guard_advisor_is_active_lifecycle",
+      },
+    ];
+    for (const { name, table, function: fnName } of expected) {
+      const record = byName.get(name);
+      expect(record, `trigger ${name}`).toBeDefined();
+      expect(record!.fields.table, `${name} table`).toBe(table);
+      expect(String(record!.fields.function), `${name} function`).toContain(fnName);
+      expect(record!.fields.state, `${name} state`).toBe("O");
+      expect(String(record!.fields.timing), `${name} timing`).toBe("ROW");
+      expect(record!.fields.events, `${name} events`).toContain("INSERT");
+      expect(record!.fields.events, `${name} events`).toContain("UPDATE");
+      expect(String(record!.fields.definitionHash), `${name} definitionHash`).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+});
+
+describe("core-history DELETE lockdown catalog (migration 20260930000006)", () => {
+  it("captures no authenticated DELETE or UPDATE table grant on advisor, student, fellowship, or application", () => {
+    const grants = packet.catalog.grants.filter(
+      (record) =>
+        record.fields.objectType === "TABLE" &&
+        ["advisor", "student", "fellowship", "application"].includes(String(record.fields.objectName)) &&
+        record.fields.grantee === "authenticated"
+    );
+    expect(grants.length, "core tables must carry authenticated table grants").toBeGreaterThan(0);
+    for (const grant of grants) {
+      expect(grant.fields.privilege, `${grant.fields.objectName} authenticated grant`).not.toBe("DELETE");
+      // Migration 20261015000001 also revokes direct authenticated UPDATE on
+      // all four current-state tables; the versioned RPCs are the only writers.
+      expect(grant.fields.privilege, `${grant.fields.objectName} authenticated grant`).not.toBe("UPDATE");
+    }
+  });
+
+  it("captures explicit SELECT/INSERT active-advisor policies and no UPDATE/DELETE policy on the core tables", () => {
+    const policies = packet.catalog.policies.filter(
+      (record) =>
+        ["advisor", "student", "fellowship", "application"].includes(String(record.fields.table)) &&
+        Array.isArray(record.fields.roles) &&
+        record.fields.roles.includes("authenticated")
+    );
+    expect(
+      policies.some((record) => String(record.fields.command).toUpperCase() === "DELETE"),
+      "no DELETE policy may exist on the core tables"
+    ).toBe(false);
+
+    const byTable = new Map<string, string[]>();
+    for (const record of policies) {
+      const list = byTable.get(String(record.fields.table)) ?? [];
+      list.push(String(record.fields.command).toUpperCase());
+      byTable.set(String(record.fields.table), list);
+    }
+    // Migration 20261015000001 removes the direct authenticated UPDATE
+    // policies: every normal authenticated mutation now flows through the
+    // expected-version SECURITY DEFINER writer RPCs, so only the SELECT/INSERT
+    // surfaces remain.
+    for (const table of ["student", "fellowship", "application"]) {
+      expect(byTable.get(table)?.sort(), `${table} policy commands`).toEqual(["INSERT", "SELECT"]);
+    }
+    // Migration 20261002000001 + 20261015000001: advisor keeps only its
+    // self-or-active-staff SELECT policy; both its broad authenticated INSERT
+    // policy and its self-scoped UPDATE policy are gone (rows are created only
+    // through trusted provisioning and mutated only through versioned RPCs).
+    expect(byTable.get("advisor")?.sort(), "advisor policy commands").toEqual(["SELECT"]);
+  });
+
+  it("revokes authenticated DELETE on the base-history rows fellowship_thursday and scholarship_history", () => {
+    const deleteGrants = packet.catalog.grants.filter(
+      (record) =>
+        record.fields.objectType === "TABLE" &&
+        ["fellowship_thursday", "scholarship_history"].includes(String(record.fields.objectName)) &&
+        record.fields.grantee === "authenticated" &&
+        record.fields.privilege === "DELETE"
+    );
+    // Migration 20261008000001 locks both base tables down to SELECT/INSERT
+    // (append-only style); correction/void flows move to the amendment tables.
+    expect(deleteGrants).toHaveLength(0);
+  });
+
+  it("gives authenticated only SELECT/INSERT on the amendment tables (no UPDATE/DELETE/TRUNCATE, no anon grant)", () => {
+    for (const table of ["fellowship_thursday_amendment", "scholarship_history_amendment"]) {
+      const tableGrants = packet.catalog.grants.filter(
+        (record) => record.fields.objectType === "TABLE" && record.fields.objectName === table
+      );
+      const authenticatedPrivileges = tableGrants
+        .filter((record) => record.fields.grantee === "authenticated")
+        .map((record) => record.fields.privilege);
+      expect(authenticatedPrivileges, `${table} authenticated privileges`).toContain("INSERT");
+      expect(authenticatedPrivileges, `${table} authenticated privileges`).toContain("SELECT");
+      for (const denied of ["UPDATE", "DELETE", "TRUNCATE"]) {
+        expect(authenticatedPrivileges, `${table} authenticated must not hold ${denied}`).not.toContain(denied);
+      }
+      expect(
+        tableGrants.some((record) => record.fields.grantee === "anon"),
+        `anon must hold no grant on ${table}`
+      ).toBe(false);
+    }
+  });
+});
+
+describe("lifecycle review remediation catalog (migration 20260930000007)", () => {
+  it("keeps lifecycle_transition as SECURITY DEFINER with authenticated EXECUTE after the review-remediation replacement", () => {
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "lifecycle_transition"
+    );
+    expect(fn, "lifecycle_transition function").toBeDefined();
+    // The review-remediation migration replaces the body in place with
+    // CREATE OR REPLACE FUNCTION; the security posture is preserved.
+    expect(fn!.fields.securityMode, "lifecycle_transition security mode").toBe("DEFINER");
+    expect(fn!.fields.searchPath, "lifecycle_transition search path").toEqual([]);
+    expect(String(fn!.fields.signature), "lifecycle_transition signature").toContain("text");
+    expect(String(fn!.fields.bodyHash)).toMatch(/^[0-9a-f]{64}$/);
+
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "lifecycle_transition must carry an effective ACL").toBe(true);
+    expect(acl, "authenticated EXECUTE on lifecycle_transition").toContain("authenticated=X");
+    const exposed = acl.filter((entry) => ["=X", "=X*", "anon=X", "anon=X*"].includes(entry));
+    expect(exposed, "no PUBLIC/anon EXECUTE on lifecycle_transition").toHaveLength(0);
+  });
+
+  it("captures the four archive-parent guard functions as INVOKER with service_role-pinned ACLs", () => {
+    const byName = new Map(packet.catalog.functions.map((record) => [record.fields.name, record]));
+    for (const name of [
+      "guard_application_archive_parents",
+      "guard_advising_meeting_archive_student",
+      "guard_fellowship_thursday_archive_student",
+      "guard_scholarship_history_archive_parents",
+    ]) {
+      const fn = byName.get(name);
+      expect(fn, `guard function ${name}`).toBeDefined();
+      expect(fn!.fields.securityMode, `${name} security mode`).toBe("INVOKER");
+      expect(fn!.fields.searchPath, `${name} search path`).toEqual([]);
+      expect(String(fn!.fields.bodyHash), `${name} bodyHash`).toMatch(/^[0-9a-f]{64}$/);
+
+      const acl = fn!.fields.acl as string[];
+      expect(Array.isArray(acl) && acl.length > 0, `${name} must carry an effective ACL`).toBe(true);
+      const exposed = acl.filter((entry) =>
+        ["=X", "=X*", "anon=X", "anon=X*", "authenticated=X", "authenticated=X*"].includes(entry)
+      );
+      expect(exposed, `${name} PUBLIC/anon/authenticated EXECUTE`).toHaveLength(0);
+      expect(acl, `${name} service_role EXECUTE`).toContain("service_role=X");
+    }
+  });
+
+  it("captures the archive-parent column-scoped triggers on the four operational child tables", () => {
+    const byName = new Map(packet.catalog.triggers.map((record) => [record.fields.name, record]));
+    const expected: Array<{ name: string; table: string; function: string }> = [
+      { name: "trg_application_archive_parents", table: "application", function: "guard_application_archive_parents" },
+      {
+        name: "trg_advising_meeting_archive_student",
+        table: "advising_meeting",
+        function: "guard_advising_meeting_archive_student",
+      },
+      {
+        name: "trg_fellowship_thursday_archive_student",
+        table: "fellowship_thursday",
+        function: "guard_fellowship_thursday_archive_student",
+      },
+      {
+        name: "trg_scholarship_history_archive_parents",
+        table: "scholarship_history",
+        function: "guard_scholarship_history_archive_parents",
+      },
+    ];
+    for (const { name, table, function: fnName } of expected) {
+      const record = byName.get(name);
+      expect(record, `trigger ${name}`).toBeDefined();
+      expect(record!.fields.table, `${name} table`).toBe(table);
+      expect(String(record!.fields.function), `${name} function`).toContain(fnName);
+      expect(record!.fields.state, `${name} state`).toBe("O");
+      expect(String(record!.fields.timing), `${name} timing`).toBe("ROW");
+      expect(record!.fields.events, `${name} events`).toContain("INSERT");
+      expect(record!.fields.events, `${name} events`).toContain("UPDATE");
+      expect(String(record!.fields.definitionHash), `${name} definitionHash`).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+});
+
+describe("explicit admin/advisor permissions catalog (migration 20261001000001)", () => {
+  it("captures advisor.role as the NOT NULL display column with the 'Advisor' default", () => {
+    const column = packet.catalog.columns.find(
+      (record) => record.identity === "public.advisor.role"
+    );
+    expect(column, "public.advisor.role").toBeDefined();
+    expect(column!.fields.dataType, "advisor.role data type").toBe("text");
+    expect(column!.fields.nullable, "advisor.role must stay NOT NULL").toBe(false);
+    // Raw defaults are hashed (schema-only): the forward-only migration sets
+    // the safe 'Advisor' default, so a default expression must be present.
+    expect(String(column!.fields.defaultHash), "advisor.role defaultHash").toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("captures the advisor_role_display_check CHECK constraint pinning the vocabulary", () => {
+    const constraint = packet.catalog.constraints.find(
+      (record) => record.identity === "public.advisor.advisor_role_display_check"
+    );
+    expect(constraint, "advisor_role_display_check").toBeDefined();
+    expect(constraint!.fields.type, "advisor_role_display_check type").toBe("CHECK");
+    expect(String(constraint!.fields.definitionHash), "advisor_role_display_check definitionHash").toMatch(
+      /^[0-9a-f]{64}$/
+    );
+  });
+
+  it("keeps is_ocf_admin as the trusted INVOKER predicate with authenticated EXECUTE after the strict-boolean replacement", () => {
+    const fn = packet.catalog.functions.find((record) => record.fields.name === "is_ocf_admin");
+    expect(fn, "is_ocf_admin function").toBeDefined();
+    expect(fn!.fields.securityMode, "is_ocf_admin security mode").toBe("INVOKER");
+    expect(fn!.fields.searchPath, "is_ocf_admin search path").toEqual([]);
+    expect(String(fn!.fields.bodyHash)).toMatch(/^[0-9a-f]{64}$/);
+
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "is_ocf_admin must carry an effective ACL").toBe(true);
+    expect(acl, "authenticated EXECUTE on is_ocf_admin").toContain("authenticated=X");
+    const exposed = acl.filter((entry) => ["=X", "=X*", "anon=X", "anon=X*"].includes(entry));
+    expect(exposed, "no PUBLIC/anon EXECUTE on is_ocf_admin").toHaveLength(0);
+  });
+
+  it("captures is_effective_admin as SECURITY DEFINER with authenticated EXECUTE and no PUBLIC/anon EXECUTE", () => {
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "is_effective_admin"
+    );
+    expect(fn, "is_effective_admin function").toBeDefined();
+    expect(fn!.fields.securityMode, "is_effective_admin security mode").toBe("DEFINER");
+    expect(fn!.fields.searchPath, "is_effective_admin search path").toEqual([]);
+    expect(String(fn!.fields.bodyHash)).toMatch(/^[0-9a-f]{64}$/);
+
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "is_effective_admin must carry an effective ACL").toBe(true);
+    expect(acl, "authenticated EXECUTE on is_effective_admin").toContain("authenticated=X");
+    const exposed = acl.filter((entry) => ["=X", "=X*", "anon=X", "anon=X*"].includes(entry));
+    expect(exposed, "no PUBLIC/anon EXECUTE on is_effective_admin").toHaveLength(0);
+  });
+
+  it("captures the guard_advisor_role_display function as INVOKER with service_role-pinned ACLs", () => {
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "guard_advisor_role_display"
+    );
+    expect(fn, "guard_advisor_role_display function").toBeDefined();
+    expect(fn!.fields.securityMode, "guard_advisor_role_display security mode").toBe("INVOKER");
+    expect(fn!.fields.searchPath, "guard_advisor_role_display search path").toEqual([]);
+    expect(String(fn!.fields.bodyHash), "guard_advisor_role_display bodyHash").toMatch(/^[0-9a-f]{64}$/);
+
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "guard_advisor_role_display must carry an effective ACL").toBe(true);
+    const exposed = acl.filter((entry) =>
+      ["=X", "=X*", "anon=X", "anon=X*", "authenticated=X", "authenticated=X*"].includes(entry)
+    );
+    expect(exposed, "guard_advisor_role_display PUBLIC/anon/authenticated EXECUTE").toHaveLength(0);
+    expect(acl, "guard_advisor_role_display service_role EXECUTE").toContain("service_role=X");
+  });
+
+  it("captures the role column-scoped trigger on public.advisor", () => {
+    const record = packet.catalog.triggers.find(
+      (trigger) => trigger.fields.name === "trg_advisor_role_display"
+    );
+    expect(record, "trigger trg_advisor_role_display").toBeDefined();
+    expect(record!.fields.table, "trg_advisor_role_display table").toBe("advisor");
+    expect(String(record!.fields.function), "trg_advisor_role_display function").toContain(
+      "guard_advisor_role_display"
+    );
+    expect(record!.fields.state, "trg_advisor_role_display state").toBe("O");
+    expect(String(record!.fields.timing), "trg_advisor_role_display timing").toBe("ROW");
+    expect(record!.fields.events, "trg_advisor_role_display events").toContain("INSERT");
+    expect(record!.fields.events, "trg_advisor_role_display events").toContain("UPDATE");
+    expect(String(record!.fields.definitionHash), "trg_advisor_role_display definitionHash").toMatch(
+      /^[0-9a-f]{64}$/
+    );
+  });
+});
+
+describe("historical integrity remediation catalog (migration 20261008000001)", () => {
+  it("captures the two append-only amendment tables with their creation-metadata triggers as SECURITY DEFINER", () => {
+    for (const table of ["fellowship_thursday_amendment", "scholarship_history_amendment"] as const) {
+      // RLS is enabled (covered by the generic rls section) and active-advisor
+      // SELECT/INSERT policies only.
+      const policies = packet.catalog.policies
+        .filter((record) => record.fields.table === table)
+        .map((record) => ({ name: record.fields.name, command: record.fields.command, roles: record.fields.roles }))
+        .sort((left, right) => String(left.name).localeCompare(String(right.name)));
+      expect(policies, `${table} policies`).toEqual([
+        { name: `active_advisor_insert_${table}`, command: "INSERT", roles: ["authenticated"] },
+        { name: `active_advisor_select_${table}`, command: "SELECT", roles: ["authenticated"] },
+      ]);
+    }
+
+    const trigger = packet.catalog.triggers.find(
+      (record) => record.fields.name === "trg_fellowship_thursday_amendment_created_metadata"
+    );
+    expect(trigger, "FT amendment metadata trigger").toBeDefined();
+    expect(trigger!.fields.table).toBe("fellowship_thursday_amendment");
+    expect(String(trigger!.fields.function)).toContain("set_fellowship_thursday_amendment_metadata");
+    expect(trigger!.fields.state).toBe("O");
+    expect(String(trigger!.fields.timing)).toBe("ROW");
+    expect(trigger!.fields.events).toContain("INSERT");
+    expect(String(trigger!.fields.definitionHash)).toMatch(/^[0-9a-f]{64}$/);
+
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "set_fellowship_thursday_amendment_metadata"
+    );
+    expect(fn, "FT amendment metadata function").toBeDefined();
+    expect(fn!.fields.securityMode).toBe("DEFINER");
+    expect(fn!.fields.searchPath).toEqual([]);
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "amendment metadata function must carry an effective ACL").toBe(true);
+    const exposed = acl.filter((entry) =>
+      ["=X", "=X*", "anon=X", "anon=X*", "authenticated=X", "authenticated=X*"].includes(entry)
+    );
+    expect(exposed, "no PUBLIC/anon/authenticated EXECUTE on amendment metadata functions").toHaveLength(0);
+    expect(acl, "service_role EXECUTE pins the amendment metadata ACL").toContain("service_role=X");
+  });
+
+  it("captures the effective-value views as SECURITY INVOKER", () => {
+    for (const view of ["effective_fellowship_thursday", "effective_scholarship_history"]) {
+      const record = packet.catalog.views.find((v) => String(v.fields.name) === view);
+      expect(record, `view ${view}`).toBeDefined();
+      expect(String(record!.fields.definitionHash), `${view} definitionHash`).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+
+  it("captures the authenticated new-meeting advisor guard trigger/function as INVOKER", () => {
+    const trigger = packet.catalog.triggers.find(
+      (record) => record.fields.name === "trg_advising_meeting_advisor_required"
+    );
+    expect(trigger, "advisor-required trigger").toBeDefined();
+    expect(trigger!.fields.table).toBe("advising_meeting");
+    expect(String(trigger!.fields.function)).toContain("guard_advising_meeting_advisor_required");
+    expect(trigger!.fields.state).toBe("O");
+    expect(trigger!.fields.events).not.toContain("UPDATE");
+
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "guard_advising_meeting_advisor_required"
+    );
+    expect(fn, "advisor-required guard function").toBeDefined();
+    expect(fn!.fields.securityMode).toBe("INVOKER");
+    expect(fn!.fields.searchPath).toEqual([]);
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "advisor-required guard must carry an effective ACL").toBe(true);
+    const exposed = acl.filter((entry) =>
+      ["=X", "=X*", "anon=X", "anon=X*", "authenticated=X", "authenticated=X*"].includes(entry)
+    );
+    expect(exposed, "no PUBLIC/anon/authenticated EXECUTE on the advisor guard").toHaveLength(0);
+    expect(acl, "service_role EXECUTE pins the advisor guard ACL").toContain("service_role=X");
+  });
+
+  it("captures the production application CHECK constraints (nine stages + flags + year)", () => {
+    const constraints = packet.catalog.constraints;
+    const byName = new Map(constraints.map((record) => [String(record.fields.name), record]));
+    for (const name of ["application_stage_check", "application_stage_flag_consistency_check", "application_year_range_check"]) {
+      const record = byName.get(name);
+      expect(record, `constraint ${name}`).toBeDefined();
+      expect(record!.fields.type, `${name} type`).toBe("CHECK");
+      expect(String(record!.fields.definitionHash), `${name} definitionHash`).toMatch(/^[0-9a-f]{64}$/);
     }
   });
 });
@@ -216,6 +915,130 @@ describe("foreign keys", () => {
   });
 });
 
+describe("advising↔application link columns (migration 20260929000001)", () => {
+  it("captures the application_year, application_id, and creation-metadata columns", () => {
+    const columns = packet.catalog.columns;
+    const byIdentity = new Map(columns.map((record) => [record.identity, record]));
+
+    const applicationYear = byIdentity.get("public.application.application_year");
+    expect(applicationYear, "application.application_year").toBeDefined();
+    expect(applicationYear!.fields.dataType).toBe("smallint");
+    expect(applicationYear!.fields.nullable).toBe(true);
+    // No default: legacy rows keep a truthful NULL cycle.
+    expect(applicationYear!.fields.defaultHash).toBeNull();
+
+    const applicationId = byIdentity.get("public.advising_meeting.application_id");
+    expect(applicationId, "advising_meeting.application_id").toBeDefined();
+    expect(applicationId!.fields.dataType).toBe("integer");
+    expect(applicationId!.fields.nullable).toBe(true);
+    expect(applicationId!.fields.defaultHash).toBeNull();
+
+    const createdAt = byIdentity.get("public.advising_meeting.created_at");
+    expect(createdAt, "advising_meeting.created_at").toBeDefined();
+    expect(createdAt!.fields.dataType).toBe("timestamp with time zone");
+    expect(createdAt!.fields.nullable).toBe(false);
+    // Raw defaults are hashed (schema-only): the non-null default is present.
+    expect(String(createdAt!.fields.defaultHash)).toMatch(/^[0-9a-f]{64}$/);
+
+    const createdBy = byIdentity.get("public.advising_meeting.created_by_advisor_id");
+    expect(createdBy, "advising_meeting.created_by_advisor_id").toBeDefined();
+    expect(createdBy!.fields.dataType).toBe("integer");
+    expect(createdBy!.fields.nullable).toBe(true);
+    expect(createdBy!.fields.defaultHash).toBeNull();
+  });
+});
+
+describe("advising↔application link foreign keys (migration 20260929000001)", () => {
+  it("captures the direct, composite, and creator FKs with column order", () => {
+    const fks = packet.catalog.foreignKeys;
+    const byName = new Map(fks.map((record) => [record.fields.name, record]));
+
+    const expected: Record<string, { table: string; columns: string[]; referencedTable: string; referencedColumns: string[] }> = {
+      advising_meeting_application_id_fkey: {
+        table: "advising_meeting",
+        columns: ["application_id"],
+        referencedTable: "application",
+        referencedColumns: ["application_id"],
+      },
+      advising_meeting_application_student_fkey: {
+        table: "advising_meeting",
+        columns: ["application_id", "student_id"],
+        referencedTable: "application",
+        referencedColumns: ["application_id", "student_id"],
+      },
+      advising_meeting_created_by_advisor_id_fkey: {
+        table: "advising_meeting",
+        columns: ["created_by_advisor_id"],
+        referencedTable: "advisor",
+        referencedColumns: ["advisor_id"],
+      },
+    };
+    for (const [name, value] of Object.entries(expected)) {
+      const record = byName.get(name);
+      expect(record, `FK ${name}`).toBeDefined();
+      expect(record!.fields.table, `${name} table`).toBe(value.table);
+      expect(record!.fields.columns, `${name} columns`).toEqual(value.columns);
+      expect(record!.fields.referencedTable, `${name} referenced table`).toBe(value.referencedTable);
+      expect(record!.fields.referencedColumns, `${name} referenced columns`).toEqual(value.referencedColumns);
+      expect(record!.fields.onDelete, `${name} onDelete`).toBe("NO ACTION");
+      expect(record!.fields.onUpdate, `${name} onUpdate`).toBe("NO ACTION");
+    }
+  });
+
+  it("captures the application UNIQUE (application_id, student_id) key", () => {
+    const constraints = packet.catalog.constraints;
+    const unique = constraints.find(
+      (record) => record.identity === "public.application.application_application_id_student_id_key"
+    );
+    expect(unique, "application_application_id_student_id_key constraint").toBeDefined();
+    expect(unique!.fields.type).toBe("UNIQUE");
+    expect(String(unique!.fields.definitionHash)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("captures the advising application indexes, including follow-up FK indexes", () => {
+    const indexes = packet.catalog.indexes.map((record) => record.identity);
+    // The link migration's query indexes.
+    expect(indexes).toContain("public.advising_meeting.idx_advising_meeting_application");
+    expect(indexes).toContain("public.advising_meeting.idx_advising_meeting_student_application");
+    // 20260930000002 covers the composite application/student and creator FKs.
+    expect(indexes).toContain("public.advising_meeting.idx_advising_meeting_application_student");
+    expect(indexes).toContain("public.advising_meeting.idx_advising_meeting_created_by_advisor");
+    // The unique constraint's backing index is captured too.
+    expect(indexes).toContain("public.application.application_application_id_student_id_key");
+  });
+});
+
+describe("advising_meeting creation-metadata trigger/function (migration 20260929000001)", () => {
+  it("records the metadata trigger on public.advising_meeting", () => {
+    const trigger = packet.catalog.triggers.find(
+      (record) => record.fields.name === "trg_advising_meeting_created_metadata"
+    );
+    expect(trigger, "creation-metadata trigger").toBeDefined();
+    expect(trigger!.fields.table).toBe("advising_meeting");
+    expect(String(trigger!.fields.function)).toContain("set_advising_meeting_created_metadata");
+    expect(trigger!.fields.state).toBe("O");
+    expect(String(trigger!.fields.timing)).toBe("ROW");
+    expect(trigger!.fields.events).toContain("INSERT");
+    expect(trigger!.fields.events).toContain("UPDATE");
+    expect(String(trigger!.fields.definitionHash)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("records the metadata function as SECURITY DEFINER with empty search_path and a non-empty ACL", () => {
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "set_advising_meeting_created_metadata"
+    );
+    expect(fn, "metadata function").toBeDefined();
+    expect(fn!.fields.securityMode).toBe("DEFINER");
+    // Empty search_path is the hardened configuration (`SET search_path = ''`).
+    expect(fn!.fields.searchPath).toEqual([]);
+    expect(String(fn!.fields.bodyHash)).toMatch(/^[0-9a-f]{64}$/);
+    // Non-empty effective ACL: PUBLIC/anon/authenticated EXECUTE revoked,
+    // service_role EXECUTE pins the ACL non-empty (never an empty fallback).
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "metadata function must carry an effective ACL").toBe(true);
+  });
+});
+
 describe("advisor identity/RLS lockdown (migration ...001)", () => {
   it("records the one-time-bind trigger on public.advisor", () => {
     const trigger = packet.catalog.triggers.find(
@@ -232,13 +1055,22 @@ describe("advisor identity/RLS lockdown (migration ...001)", () => {
     expect(String(trigger!.fields.definitionHash)).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it("records the lockdown SELECT/UPDATE policies on public.advisor", () => {
+  it("records the lockdown SELECT policy and no authenticated UPDATE/INSERT policy on public.advisor", () => {
     const policyNames = packet.catalog.policies.map((record) => record.fields.name);
     expect(policyNames, "self-or-active-staff SELECT policy").toContain(
       "advisor_select_self_or_active_staff"
     );
-    expect(policyNames, "active-staff-only UPDATE policy").toContain(
-      "advisor_update_active_staff_only"
+    // Migration 20261015000001 removes the self-scoped own-profile UPDATE
+    // policy: an advisor display-name edit now flows through the
+    // expected-version `update_my_advisor_profile` / `update_advisor_profile_name`
+    // SECURITY DEFINER RPCs, so no direct authenticated UPDATE policy remains.
+    expect(
+      policyNames,
+      "the direct own-profile UPDATE policy is removed (versioned RPCs only)"
+    ).not.toContain("advisor_update_own_profile");
+    // No authenticated advisor INSERT policy exists (trusted provisioning only).
+    expect(policyNames, "no advisor_insert_active_staff policy").not.toContain(
+      "advisor_insert_active_staff"
     );
   });
 
@@ -317,5 +1149,30 @@ describe("expanded catalog sections (sequences/views/extensions/privileges)", ()
     expect(objectTypes.has("TABLE"), "TABLE grants present").toBe(true);
     expect(objectTypes.has("SEQUENCE"), "SEQUENCE grants present").toBe(true);
     expect(objectTypes.has("FUNCTION"), "FUNCTION grants present").toBe(true);
+  });
+});
+
+describe("advisor admin profile-name RPC catalog (migration 20261014000001)", () => {
+  it("captures update_advisor_profile_name as SECURITY DEFINER with authenticated-only EXECUTE (no PUBLIC/anon/service_role)", () => {
+    const fn = packet.catalog.functions.find(
+      (record) => record.fields.name === "update_advisor_profile_name"
+    );
+    expect(fn, "update_advisor_profile_name function").toBeDefined();
+    expect(fn!.fields.securityMode, "update_advisor_profile_name security mode").toBe("DEFINER");
+    expect(fn!.fields.searchPath, "update_advisor_profile_name search path").toEqual([]);
+    expect(String(fn!.fields.signature), "update_advisor_profile_name signature").toContain("integer");
+    expect(String(fn!.fields.signature), "update_advisor_profile_name signature").toContain("text");
+    expect(String(fn!.fields.bodyHash)).toMatch(/^[0-9a-f]{64}$/);
+
+    const acl = fn!.fields.acl as string[];
+    expect(Array.isArray(acl) && acl.length > 0, "update_advisor_profile_name must carry an effective ACL").toBe(true);
+    expect(acl, "authenticated EXECUTE on update_advisor_profile_name").toContain("authenticated=X");
+    const exposed = acl.filter((entry) =>
+      ["=X", "=X*", "anon=X", "anon=X*", "service_role=X", "service_role=X*"].includes(entry)
+    );
+    expect(
+      exposed,
+      "no PUBLIC/anon/service_role EXECUTE on update_advisor_profile_name (actor must be an authenticated auth.uid())"
+    ).toHaveLength(0);
   });
 });

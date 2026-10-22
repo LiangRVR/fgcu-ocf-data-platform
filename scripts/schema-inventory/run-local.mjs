@@ -51,12 +51,14 @@ import path from "node:path";
 import {
   assertLoopbackRuntime,
   captureRuntimeEnv,
-  completeRetryableTeardown,
+  createScopedLaneTeardown,
+  installSignalTeardown,
   isPortConflictOutput,
   killChildGracefully,
   pipeRedacted,
   prepareIsolatedSupabase,
   presenceSummary,
+  reapScopedDockerResources,
   redactSensitiveOutput,
   runProbe,
   runTrackedSubprocess,
@@ -86,6 +88,8 @@ const STOP_TIMEOUT_MS = 120_000;
 const PROBE_TIMEOUT_MS = 15_000;
 // SIGTERM grace before SIGKILL escalation when a child hits its timeout.
 const TIMEOUT_KILL_GRACE_MS = 3_000;
+// Hard deadline for each scoped Docker fallback-reaper list/remove child.
+const DOCKER_REAP_TIMEOUT_MS = 30_000;
 // Bounded whole-lane retries: a port conflict on `supabase start` tears down
 // the isolated stack and retries with a fresh port allocation; anything else
 // is reported as the blocker it is.
@@ -233,9 +237,12 @@ function binPath(name) {
   return existsSync(p) ? p : null;
 }
 
-// ---- Scoped teardown -------------------------------------------------------
+// ---- Scoped, memoized teardown --------------------------------------------
 // Only the isolated instance is ever stopped; the repository's own local
-// Supabase project is never touched.
+// Supabase project is never touched. Teardown is memoized (per lane) and falls
+// back to a label-scoped Docker reaper ONLY when the normal project-scoped
+// `supabase stop` cannot be confirmed. No global Docker/Supabase cleanup
+// command can ever be issued by this lane.
 let isolated = null;
 let supabaseBin = null;
 // The single sanitized lane environment, computed once in `main()` and reused
@@ -243,42 +250,69 @@ let supabaseBin = null;
 // NEVER inherits the raw parent env.
 let sanitizedLaneEnv = null;
 
+/** The sanitized lane env for teardown children (never the raw parent env). */
+function laneEnv() {
+  return sanitizedLaneEnv ?? sanitizeEnv(process.env);
+}
+
 /**
- * Stop ONLY the isolated instance's stack (no backup). Operates on the STABLE
- * `lane` reference captured by the caller (default: the current global), so an
- * async teardown can never dereference a global a later attempt reassigned.
+ * Normal scoped stop:
+ * `supabase stop --no-backup --yes` scoped to the isolated `--workdir` (whose
+ * config.toml carries this lane's unique project id). Operates on the STABLE
+ * `lane` reference captured by the caller. Returns `{ confirmed }` — true only
+ * for a clean, non-timed-out exit.
  */
 async function stopSupabase(lane = isolated) {
-  if (!lane) return;
+  if (!lane) return { confirmed: true };
   const probe = await runTrackedSubprocess("docker", ["info"], {
-    env: sanitizedLaneEnv ?? sanitizeEnv(process.env),
+    env: laneEnv(),
     timeoutMs: 30_000,
   });
   if (probe.status !== 0) {
     log("Skipping `supabase stop` (Docker daemon unavailable).");
-    return;
+    return { confirmed: false };
   }
   if (!supabaseBin) {
     log("Skipping `supabase stop` (supabase CLI unavailable).");
-    return;
+    return { confirmed: false };
   }
-  log(`Stopping isolated Supabase (workdir ${lane.workdir}, no backup)...`);
+  log(
+    `Stopping isolated Supabase (workdir ${lane.workdir}, project ${lane.projectId}, no backup)...`
+  );
   // Teardown containment: the stop child runs with the SANITIZED lane env as a
   // TRACKED ASYNC child with a hard deadline and SIGTERM→SIGKILL escalation; its
   // captured output is already scrubbed by `stopIsolatedSupabase`.
   const stop = await stopIsolatedSupabase(supabaseBin, lane.workdir, {
-    env: sanitizedLaneEnv ?? sanitizeEnv(process.env),
+    env: laneEnv(),
     timeoutMs: STOP_TIMEOUT_MS,
   });
   if (stop.timedOut) {
-    warn(`supabase stop hit its hard deadline and was SIGKILLed; the isolated stack may need manual cleanup.`);
+    warn(`supabase stop hit its hard deadline and was SIGKILLed; trying the scoped Docker fallback reaper.`);
   }
   if (stop.output) log(`supabase stop output:\n${stop.output}`);
-  if (stop.status === 0) {
+  if (stop.confirmed) {
     log("Isolated Supabase stopped without backup.");
-  } else if (!stop.timedOut) {
-    warn(`supabase stop exited with code ${stop.status}; the isolated stack may need manual cleanup.`);
+    return { confirmed: true };
   }
+  warn(
+    `supabase stop exited with code ${stop.status}; falling back to the label-scoped Docker reaper.`
+  );
+  return { confirmed: false };
+}
+
+/**
+ * Label-scoped Docker fallback reaper. It lists ONLY resources carrying this
+ * lane's own `com.supabase.cli.project` value and removes ONLY the ids those
+ * scoped list commands returned; it never performs a global Docker cleanup.
+ */
+function reapIsolatedDocker(lane) {
+  return reapScopedDockerResources({
+    projectId: lane.projectId,
+    run: (cmd, args) =>
+      runTrackedSubprocess(cmd, args, { env: laneEnv(), timeoutMs: DOCKER_REAP_TIMEOUT_MS }),
+    log,
+    warn,
+  });
 }
 
 /**
@@ -297,11 +331,25 @@ function cleanupIsolatedWorkdir(lane = isolated) {
   if (isolated === lane) isolated = null;
 }
 
-/** Full isolated-lane teardown: stop the stack, then remove the workdir. */
+/**
+ * Memoized, idempotent, scoped lane teardown: the normal project-scoped
+ * `supabase stop` first, the label-scoped Docker reaper only when that stop
+ * cannot be confirmed, and workdir removal ONLY after confirmed cleanup.
+ */
+const teardownLane = createScopedLaneTeardown({
+  stop: stopSupabase,
+  reap: reapIsolatedDocker,
+  removeWorkdir: cleanupIsolatedWorkdir,
+  log,
+  warn,
+});
+
+/** Await the scoped teardown for `lane`, then clear the lane global. */
 async function teardownIsolated(lane = isolated) {
-  if (!lane) return;
-  await stopSupabase(lane);
-  cleanupIsolatedWorkdir(lane);
+  if (!lane) return { confirmed: true };
+  const result = await teardownLane(lane);
+  if (isolated === lane) isolated = null;
+  return result;
 }
 
 /**
@@ -351,17 +399,12 @@ async function runLane(attempt, outputPath) {
     const conflict = isPortConflictOutput(start.output);
     if (conflict && attempt < MAX_LANE_ATTEMPTS) {
       warn(startFailureSummary({ exitCode: start.code, attempt, maxAttempts: MAX_LANE_ATTEMPTS, retryable: true, output: start.output }));
-      // The full async teardown (Docker probe → supabase stop → workdir
-      // removal) MUST complete before the next attempt may begin — a retry can
-      // never start against a still-running previous stack, and the stable
-      // lane snapshot keeps the async teardown from dereferencing a global the
-      // next attempt will reassign.
-      await completeRetryableTeardown({
-        lane: isolated,
-        stop: (lane) => stopSupabase(lane),
-        removeWorkdir: (lane) => cleanupIsolatedWorkdir(lane),
-        onError: (caught) => warn(`Retryable teardown issue: ${caught.message}`),
-      });
+      // The full async teardown (Docker probe → supabase stop → scoped reaper →
+      // workdir removal) MUST complete before the next attempt may begin — a
+      // retry can never start against a still-running previous stack, and the
+      // memoized teardown operates on the stable `isolated` lane snapshot. A
+      // workdir whose cleanup could not be confirmed is retained for recovery.
+      await teardownIsolated(isolated);
       return { retryable: true };
     }
     if (conflict) {
@@ -527,18 +570,13 @@ const isDirectRun =
 
 let exitCode = 1;
 if (isDirectRun) {
-  for (const signal of ["SIGINT", "SIGTERM"]) {
-    process.on(signal, () => {
-      error(`\nReceived ${signal}; terminating spawned children, then running teardown before exit.`);
-      terminateAllChildren({ graceMs: TIMEOUT_KILL_GRACE_MS }).finally(async () => {
-        try {
-          await teardownIsolated();
-        } finally {
-          process.exit(130);
-        }
-      });
-    });
-  }
+  // Signal handling: terminate every spawned child, then AWAIT the shared
+  // teardown promise. SIGINT/SIGTERM/SIGHUP are each handled exactly once.
+  installSignalTeardown({
+    terminate: () => terminateAllChildren({ graceMs: TIMEOUT_KILL_GRACE_MS }),
+    teardown: () => teardownIsolated(isolated),
+    error,
+  });
   try {
     exitCode = await main();
   } catch (caught) {

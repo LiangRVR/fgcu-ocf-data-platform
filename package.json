@@ -2,14 +2,14 @@
   "name": "ocf-fellowship-management-system",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "pnpm@10.34.5",
+  "packageManager": "pnpm@12.6.0",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "db:types": "supabase gen types typescript --project-id ${SUPABASE_PROJECT_ID:-your-project-id} > types/database.ts",
+    "db:types": "supabase gen types --local > types/database.ts",
     "test:connection": "tsx scripts/test-connection.ts",
     "schema-inventory:capture": "tsx scripts/schema-inventory/cli.ts capture",
     "schema-inventory:diff": "tsx scripts/schema-inventory/cli.ts diff",
@@ -65,10 +65,5 @@
     "tsx": "^4.21.0",
     "typescript": "^5",
     "vitest": "^5.0.2"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "supabase"
-    ]
   }
 }

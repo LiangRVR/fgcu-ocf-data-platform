@@ -39,6 +39,8 @@ export interface SeededCore {
   studentEmail: string;
   fellowshipId: number;
   applicationId: number;
+  /** Explicit application cycle seeded on the core application row. */
+  applicationYear: number;
   meetingId: number;
   attendanceId: number;
   historyId: number;
@@ -100,6 +102,10 @@ export async function seedCoreFixtures(service: SupabaseClient): Promise<SeededC
   if (fellowshipError) throw new Error(`seed fellowship: ${fellowshipError.message}`);
   const fellowshipId = fellowship.fellowship_id as number;
 
+  // Known explicit application cycle: 2026. The seed never relies on the
+  // NULL legacy default — every synthetic application row names its year.
+  const APPLICATION_YEAR = 2026;
+
   const { data: application, error: applicationError } = await service
     .from("application")
     .insert({
@@ -107,6 +113,7 @@ export async function seedCoreFixtures(service: SupabaseClient): Promise<SeededC
       fellowship_id: fellowshipId,
       destination_country: "Testland",
       stage_of_application: "Submitted",
+      application_year: APPLICATION_YEAR,
     })
     .select("application_id")
     .single();
@@ -154,18 +161,35 @@ export async function seedCoreFixtures(service: SupabaseClient): Promise<SeededC
     studentEmail,
     fellowshipId,
     applicationId,
+    applicationYear: APPLICATION_YEAR,
     meetingId,
     attendanceId,
     historyId,
   };
 }
 
+/** Extra attributes for a synthetic Auth user (admin-only app_metadata claim). */
+export interface CreateAuthUserOptions {
+  /**
+   * Auth `app_metadata` claims baked into the user's JWT (for example
+   * `{ ocf_admin: true }`). Users cannot edit app_metadata through standard
+   * client APIs; the admin createUser path is how the trusted lifecycle
+   * administrator claim is provisioned for contract fixtures.
+   */
+  appMetadata?: Record<string, unknown>;
+}
+
 /** Create a synthetic Supabase Auth user on the local instance; returns its id. */
-export async function createAuthUser(service: SupabaseClient, email: string): Promise<string> {
+export async function createAuthUser(
+  service: SupabaseClient,
+  email: string,
+  options: CreateAuthUserOptions = {}
+): Promise<string> {
   const { data, error } = await service.auth.admin.createUser({
     email,
     password: CONTRACT_TEST_PASSWORD,
     email_confirm: true,
+    ...(options.appMetadata ? { app_metadata: options.appMetadata } : {}),
   });
   if (error) throw new Error(`create auth user: ${error.message}`);
   if (!data?.user) throw new Error("create auth user: no user returned");

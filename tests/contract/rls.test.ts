@@ -29,20 +29,23 @@
  *     and never created), so an authenticated account whose email matches an
  *     unlinked `advisor` row can never claim, bind, or take over that identity
  *     (pre-existing-matching-account takeover, row 8);
- *   - pre-bound active advisors retain shared staff CRUD on EVERY operational
- *     table (`student`, `fellowship`, `application`, `advising_meeting`,
- *     `fellowship_thursday`, `scholarship_history`) and on advisor rows
- *     (insert/read/update/delete), unchanged from migration ...004;
+ *   - pre-bound active advisors retain shared staff SELECT/INSERT on the
+ *     operational rows `fellowship_thursday` and `scholarship_history`
+ *     (migration 20261008000001 locks these base-history tables down to
+ *     append-only INSERT + read; corrections/voids move to their amendment
+ *     tables), and INSERT/read/UPDATE (never DELETE) on the core historical
+ *     entities `student`, `fellowship`, `application`, and `advisor`
+ *     (migration ...006 revokes/denies authenticated DELETE of core history),
+ *     while `advising_meeting` is append-only: active advisors may SELECT and
+ *     INSERT but direct UPDATE and DELETE are denied;
  *   - pre-bound inactive advisors and authenticated users with no advisor row
  *     are blocked from operational data;
  *   - advisor email identity is case-normalized (R11, regression row 15): a
  *     case-variant duplicate advisor email is rejected by the unique
  *     `lower(email)` index, and a case-variant account has no claim/bind path;
  *   - the invoker-security `BEFORE INSERT OR UPDATE OF auth_user_id` trigger
- *     (rows 16–24, official research) makes `auth_user_id` a one-time bind: an
- *     unbound advisor row (`auth_user_id` NULL) may be INSERTed by ordinary
- *     active staff (row 22, row re-read proves the created row is unbound);
- *     the trusted `service_role`/DBA NULL→non-NULL bind succeeds once (row 18)
+ *     (rows 16–24, official research) makes `auth_user_id` a one-time bind: the
+ *     trusted `service_role`/DBA NULL→non-NULL bind succeeds once (row 18)
  *     and a trusted bound INSERT succeeds (row 24, row re-read proves the
  *     provisioned uuid); authenticated non-NULL INSERTs are rejected (row 23,
  *     absence re-read proves no row was created); trusted replaces/rebinds and
@@ -53,10 +56,33 @@
  *     transition is proven by a service-role row-intactness re-read or absence
  *     proof, and active-staff updates to other advisor columns stay intact
  *     (incl. a no-op update that carries the current binding unchanged);
+ *   - migration 20261002000001 (review remediation) removes broad
+ *     authenticated advisor write access: an ACTIVE, pre-bound advisor may
+ *     UPDATE only their OWN bound row (`advisor_update_own_profile`, self-scoped
+ *     by `auth_user_id = auth.uid()` + `is_active_advisor()`) and direct
+ *     authenticated advisor-row INSERT is denied (`advisor_insert_active_staff`
+ *     dropped) — row 22's former "active staff may INSERT an unbound advisor"
+ *     is now a denial with an absence proof, and row 10's former peer
+ *     non-authorization UPDATE is now a denial. The trusted service-role
+ *     provisioning path, E2E seeding, and no-op self restatements pass through;
+ *     `role`/`is_active`/`auth_user_id` stay protected by the column-scoped
+ *     guards on the self row.
  *   - service-role access is never asserted as a feature; it is used only to
  *     seed local synthetic fixtures, create local auth users, re-read rows to
  *     prove "denied + unchanged", and simulate ADMIN PRE-BINDING (the only
  *     legitimate way `auth_user_id` is ever written).
+ *   - migration 20261001000001 (explicit admin/advisor permissions): the
+ *     advisor display role is constrained to exactly `Admin`/`Advisor` and is
+ *     protected by an invoker-security column-scoped guard trigger — direct
+ *     self/peer role writes and the authenticated creation of an `Admin` row
+ *     are denied (42501) while the trusted service-role provisioning path and
+ *     no-op restatements pass through. The display role never grants
+ *     authorization (an `Admin`-display advisor without the claim has ordinary
+ *     staff powers and no lifecycle/role authority), immutable meeting and
+ *     amendment records stay append-only for BOTH display roles, anon cannot
+ *     EXECUTE `is_effective_admin()`, and a deactivated advisor loses
+ *     operational access while their historical advisor-linked meetings stay
+ *     readable by other active staff through the staff historical views.
  *
  * Regression proof (R2): the direct self-binding and the mixed
  * self-link+escalation assertions fail on the vulnerable chain (migrations
@@ -130,7 +156,7 @@ const UPDATE_PAYLOADS: Record<(typeof TABLES)[number], Record<string, unknown>> 
   scholarship_history: { student_id: 1 },
 };
 
-/** The six operational tables shared by active staff (row 11). */
+/** All operational tables covered by the authenticated denial matrices. */
 const OPERATIONAL_TABLES = [
   "student",
   "fellowship",
@@ -141,7 +167,29 @@ const OPERATIONAL_TABLES = [
 ] as const;
 type OperationalTable = (typeof OPERATIONAL_TABLES)[number];
 
-/** Insert payload for one active-staff CRUD cycle on an operational table. */
+/**
+ * Base-history tables locked down by migration 20261008000001: active staff
+ * may INSERT + read new base rows, but UPDATE and DELETE are revoked at both
+ * the grant and RLS-policy level (append-only style, like advising_meeting).
+ * Corrections/voids go through the append-only amendment records.
+ */
+const APPEND_ONLY_BASE_TABLES = [
+  "fellowship_thursday",
+  "scholarship_history",
+] as const satisfies readonly OperationalTable[];
+
+/**
+ * Core historical entities: active staff may insert/read/update, but DELETE
+ * is revoked and denied at the database boundary (migration
+ * 20260930000006_core_history_delete_lockdown).
+ */
+const CORE_HISTORY_DELETE_DENIED_TABLES = [
+  "student",
+  "fellowship",
+  "application",
+] as const satisfies readonly OperationalTable[];
+
+/** Insert payload for one active-staff insert/read cycle on an operational table. */
 function operationalInsertPayload(table: OperationalTable): Record<string, unknown> {
   switch (table) {
     case "student":
@@ -155,11 +203,13 @@ function operationalInsertPayload(table: OperationalTable): Record<string, unkno
         stage_of_application: "Started",
       };
     case "advising_meeting":
-      return { student_id: fixtures.studentId, meeting_date: "2026-09-20", meeting_mode: "Virtual" };
+      // R8 (migration 20261008000001): authenticated new meetings must name
+      // the conducting advisor at the database boundary.
+      return { student_id: fixtures.studentId, advisor_id: fixtures.advisorSelfId, meeting_date: "2026-09-20", meeting_mode: "Virtual" };
     case "fellowship_thursday":
-      return { student_id: fixtures.studentId, attended: true, source_info: "OCF" };
+      return { student_id: fixtures.studentId, attended: true, source_info: "OCF", event_date: "2026-09-20" };
     case "scholarship_history":
-      return { student_id: fixtures.studentId, fellowship_id: fixtures.fellowshipId };
+      return { student_id: fixtures.studentId, fellowship_id: fixtures.fellowshipId, award_year: 2026 };
   }
 }
 
@@ -185,9 +235,11 @@ let fixtures: SeededCore;
 let selfUserId: string;
 let inactiveUserId: string;
 let noAdvisorUserId: string;
+let amendmentNoAdvisorUserId: string;
 let selfClient: SupabaseClient;
 let inactiveClient: SupabaseClient;
 let noAdvisorClient: SupabaseClient;
+let amendmentNoAdvisorClient: SupabaseClient;
 
 // Dedicated rows for the escalation-denial matrix (rows 1–5). Each has its own
 // auth user so a red-run mutation of one row never cascades into another test.
@@ -214,6 +266,16 @@ let escalationInactiveCombinedClient: SupabaseClient;
 // touches.
 let triggerUnboundId: number;
 let triggerUserId: string;
+
+// Admin-display-role advisor (migration 20261001000001): a pre-bound ACTIVE
+// advisor whose protected display role was set to 'Admin' through the trusted
+// service-role provisioning path, but whose Auth user carries NO ocf_admin
+// claim. Proves the display role is presentation-only: this session has the
+// same staff powers (and the same role-write denials, append-only history
+// denials) as an ordinary Advisor display role, never extra authorization.
+let adminDisplayId: number;
+let adminDisplayUserId: string;
+let adminDisplayClient: SupabaseClient;
 
 // Dedicated denial-target student/fellowship rows for the INSERT denial
 // matrices (Work 1 remediation). Each identity gets its OWN target pair so the
@@ -458,6 +520,12 @@ beforeAll(async () => {
   const noAdvisorEmail = syntheticEmail("no-advisor");
   noAdvisorUserId = await createAuthUser(service, noAdvisorEmail);
 
+  // Dedicated no-advisor account for the amendment-specific SELECT/INSERT
+  // denial coverage: its own auth user (no advisor row) so the amendment
+  // assertions never share state with the general no-advisor matrix.
+  const amendmentNoAdvisorEmail = syntheticEmail("amendment-no-advisor");
+  amendmentNoAdvisorUserId = await createAuthUser(service, amendmentNoAdvisorEmail);
+
   // ADMIN PRE-BINDING (the only legitimate way auth_user_id is written, R11):
   // the active and inactive advisor rows are pre-bound to their auth users
   // BEFORE first sign-in. After this, selfClient is a pre-bound ACTIVE staff
@@ -546,6 +614,39 @@ beforeAll(async () => {
   triggerUnboundId = trigRow.advisor_id as number;
   triggerUserId = await createAuthUser(service, triggerEmail);
 
+  // Admin-display-role fixture (migration 20261001000001): the trusted
+  // provisioning path sets the protected display role to 'Admin' on an active,
+  // pre-bound advisor row whose Auth user carries NO ocf_admin claim. This is
+  // exactly the "display projection, never authorization" state: the session
+  // below proves it grants no extra authority.
+  const adminDisplayEmail = syntheticEmail("admin-display");
+  const { data: adminDisplayRow, error: adminDisplayRowError } = await service
+    .from("advisor")
+    .insert({
+      advisor_name: syntheticName("admin-display"),
+      email: adminDisplayEmail,
+      is_active: true,
+    })
+    .select("advisor_id")
+    .single();
+  if (adminDisplayRowError) throw new Error(`seed admin-display advisor: ${adminDisplayRowError.message}`);
+  adminDisplayId = adminDisplayRow.advisor_id as number;
+  adminDisplayUserId = await createAuthUser(service, adminDisplayEmail);
+  const { error: bindAdminDisplayError } = await service
+    .from("advisor")
+    .update({ auth_user_id: adminDisplayUserId })
+    .eq("advisor_id", adminDisplayId)
+    .select("advisor_id");
+  if (bindAdminDisplayError) throw new Error(`admin pre-bind admin-display advisor: ${bindAdminDisplayError.message}`);
+  const { error: adminDisplayRoleError } = await service
+    .from("advisor")
+    .update({ role: "Admin" })
+    .eq("advisor_id", adminDisplayId)
+    .select("advisor_id");
+  if (adminDisplayRoleError) {
+    throw new Error(`trusted role=Admin on admin-display advisor: ${adminDisplayRoleError.message}`);
+  }
+
   // Denial-target student/fellowship pairs for the INSERT denial matrices:
   // one pair per identity, referenced ONLY by denied INSERT attempts, so the
   // service-role absence reread (filtered on the target student_id or the
@@ -580,26 +681,32 @@ beforeAll(async () => {
   selfClient = freshClient();
   inactiveClient = freshClient();
   noAdvisorClient = freshClient();
+  amendmentNoAdvisorClient = freshClient();
   escalationInactiveClient = freshClient();
   escalationActiveClient = freshClient();
   escalationInactiveCombinedClient = freshClient();
+  adminDisplayClient = freshClient();
 
   const selfSigned = await signInWithPassword(selfClient, fixtures.advisorSelfEmail);
   const inactiveSigned = await signInWithPassword(inactiveClient, fixtures.advisorInactiveEmail);
   const noAdvisorSigned = await signInWithPassword(noAdvisorClient, noAdvisorEmail);
+  const amendmentNoAdvisorSigned = await signInWithPassword(amendmentNoAdvisorClient, amendmentNoAdvisorEmail);
   const escInactiveSigned = await signInWithPassword(escalationInactiveClient, escalationInactiveEmail);
   const escActiveSigned = await signInWithPassword(escalationActiveClient, escalationActiveEmail);
   const escInactiveCombinedSigned = await signInWithPassword(
     escalationInactiveCombinedClient,
     escalationInactiveCombinedEmail
   );
+  const adminDisplaySigned = await signInWithPassword(adminDisplayClient, adminDisplayEmail);
 
   expect(selfSigned).toBe(selfUserId);
   expect(inactiveSigned).toBe(inactiveUserId);
   expect(noAdvisorSigned).toBe(noAdvisorUserId);
+  expect(amendmentNoAdvisorSigned).toBe(amendmentNoAdvisorUserId);
   expect(escInactiveSigned).toBe(escalationInactiveUserId);
   expect(escActiveSigned).toBe(escalationActiveUserId);
   expect(escInactiveCombinedSigned).toBe(escalationInactiveCombinedUserId);
+  expect(adminDisplaySigned).toBe(adminDisplayUserId);
 });
 
 describe("unbound email-matched account cannot read advisor rows (row 25, amendment A1)", () => {
@@ -658,7 +765,7 @@ describe("unlinked advisors cannot change authorization fields (self-activation 
 
   it("denies an inactive advisor elevating role on their own row", async () => {
     await assertMutationBlocked(escalationInactiveClient, "advisor", "advisor_id", escalationInactiveId, {
-      role: "admin",
+      role: "Admin",
     });
   });
 
@@ -683,7 +790,7 @@ describe("unlinked advisors cannot change authorization fields (self-activation 
     await assertMutationBlocked(escalationActiveClient, "advisor", "advisor_id", escalationActiveId, {
       auth_user_id: escalationActiveUserId,
       is_active: true,
-      role: "admin",
+      role: "Admin",
     });
   });
 
@@ -702,7 +809,7 @@ describe("unlinked advisors cannot change authorization fields (self-activation 
       {
         auth_user_id: escalationInactiveCombinedUserId,
         is_active: true,
-        role: "admin",
+        role: "Admin",
       }
     );
   });
@@ -1004,10 +1111,14 @@ describe("invoker-security one-time-bind trigger on advisor.auth_user_id (rows 1
     );
   });
 
-  // Active-staff updates to other advisor columns stay intact (design §1.3):
-  // an update that happens to carry the current binding unchanged is a no-op
-  // for the trigger and passes through.
-  it("passes through an authenticated no-op update that keeps auth_user_id unchanged", async () => {
+  // Migration 20261015000001 revokes direct authenticated UPDATE on advisor
+  // entirely (the self-scoped table policy is replaced by the expected-version
+  // `update_my_advisor_profile` RPC), so no browser session — including one
+  // "carrying the current binding unchanged" — can reach the one-time-bind
+  // trigger through the table API. The binding is untouched and the row proves
+  // unchanged (R4).
+  it("keeps the one-time-bind boundary: an authenticated no-op self update carrying the binding is denied and the bind is untouched", async () => {
+    const before = await readRow("advisor", "advisor_id", fixtures.advisorSelfId);
     const { data, error } = await selfClient
       .from("advisor")
       .update({
@@ -1016,39 +1127,50 @@ describe("invoker-security one-time-bind trigger on advisor.auth_user_id (rows 1
       })
       .eq("advisor_id", fixtures.advisorSelfId)
       .select("advisor_id");
-    expect(error).toBeNull();
-    expect(data ?? [], "no-op update must affect one row").toHaveLength(1);
+    expect(error, "direct authenticated advisor UPDATE must now be revoked").not.toBeNull();
+    expect(error?.code, "direct advisor UPDATE revocation code").toBe("42501");
+    expect(data ?? [], "a denied advisor UPDATE returns no row").toHaveLength(0);
 
     const row = await readRow("advisor", "advisor_id", fixtures.advisorSelfId);
+    expect(row).toEqual(before);
     expect(row?.auth_user_id).toBe(selfUserId);
   });
 
-  // Row 22 — authenticated/active staff may INSERT an UNBOUND advisor row
-  // (`auth_user_id` NULL): the preserved active-staff INSERT path. Row re-read
-  // proves the created row exists with auth_user_id NULL.
-  it("lets an authenticated active-staff advisor INSERT an unbound advisor row (row 22)", async () => {
-    const { data: inserted, error } = await selfClient
+  // Row 22 — REVIEW REMEDIATION (migration 20261002000001): direct
+  // authenticated advisor-row creation is DENIED. The former broad
+  // `advisor_insert_active_staff` policy is dropped, so RLS rejects the INSERT
+  // (42501) before any trigger, and an absence re-read proves no row was
+  // created. Advisor rows are created only by the trusted service-role
+  // provisioning path (rows 24 / the protected management API).
+  it("denies an authenticated active-staff advisor INSERT of an advisor row (row 22, review remediation)", async () => {
+    const email = syntheticEmail("staff-unbound-insert-denied");
+    const { data, error } = await selfClient
       .from("advisor")
       .insert({
-        advisor_name: syntheticName("staff-unbound-insert"),
-        email: syntheticEmail("staff-unbound-insert"),
-        is_active: false,
+        advisor_name: syntheticName("staff-unbound-insert-denied"),
+        email,
+        is_active: true,
       })
       .select("advisor_id")
       .single();
-    expect(error, "active-staff unbound INSERT must succeed").toBeNull();
-    expect(inserted).not.toBeNull();
+    expect(data ?? [], "a denied advisor INSERT must not return a row").toHaveLength(0);
+    expect(error, "authenticated advisor INSERT must be denied").not.toBeNull();
+    expect(error?.code, "authenticated advisor INSERT denial error code").toBe("42501");
 
-    // Row proof: the created row exists and is UNBOUND.
-    const row = await readRow("advisor", "advisor_id", inserted!.advisor_id);
-    expect(row).not.toBeNull();
-    expect(row?.auth_user_id).toBeNull();
+    // Absence proof: no advisor row was created for the attempted email, even
+    // under the service role.
+    const { data: remaining } = await service
+      .from("advisor")
+      .select("advisor_id")
+      .eq("email", email);
+    expect(remaining ?? [], "no advisor row may exist for the denied INSERT").toHaveLength(0);
   });
 
   // Row 23 — authenticated/active staff INSERT of an advisor row carrying a
-  // non-NULL `auth_user_id` is rejected by the trigger (P0001; RLS would have
-  // allowed the insert). Absence proof: no row was created for that email,
-  // even under the service role.
+  // non-NULL `auth_user_id` is rejected by the one-time-bind trigger (P0001:
+  // BEFORE triggers fire before RLS is evaluated, so the non-NULL bind guard
+  // raises first). Absence proof: no row was created for that email, even
+  // under the service role.
   it("denies an authenticated active-staff INSERT carrying a non-NULL auth_user_id (row 23)", async () => {
     const email = syntheticEmail("auth-bound-insert");
     const { data, error } = await selfClient
@@ -1114,10 +1236,41 @@ describe("pre-bound active advisor has staff access", () => {
     expect(ids).toContain(fixtures.advisorOtherId);
   });
 
-  // Regression matrix row 11 — full active-staff coverage: CRUD is proven on
-  // EVERY operational table (insert → read → update → delete), not a sample.
-  it.each(OPERATIONAL_TABLES)(
-    "active staff can insert, read, update, and delete %s rows",
+  it("can select and insert append-only advising_meeting rows", async () => {
+    const { data: visible, error: selectError } = await selfClient
+      .from("advising_meeting")
+      .select("meeting_id")
+      .eq("meeting_id", fixtures.meetingId);
+    expect(selectError, "active advisor advising_meeting SELECT").toBeNull();
+    expect(visible ?? []).toHaveLength(1);
+
+    const { data: inserted, error: insertError } = await selfClient
+      .from("advising_meeting")
+      .insert(operationalInsertPayload("advising_meeting"))
+      .select("meeting_id")
+      .single();
+    expect(insertError, "active advisor advising_meeting INSERT").toBeNull();
+    expect(inserted).not.toBeNull();
+  });
+
+  it("denies an active advisor direct advising_meeting UPDATE and leaves the real row unchanged", async () => {
+    await assertMutationBlocked(selfClient, "advising_meeting", "meeting_id", fixtures.meetingId, {
+      meeting_mode: "In-Person",
+    });
+  });
+
+  it("denies an active advisor direct advising_meeting DELETE and leaves the real row present", async () => {
+    await assertDeleteBlocked(selfClient, "advising_meeting", "meeting_id", fixtures.meetingId);
+  });
+
+  // Regression matrix row 11 — CRUD was historically proven on every fully
+  // mutable operational table. Migration 20261008000001 removed the last fully
+  // mutable operational rows: `fellowship_thursday` and `scholarship_history`
+  // are now append-only base tables (INSERT + read only), so the insert/read
+  // cycle below plus blocked UPDATE/DELETE (row preserved) replaces the old
+  // full-CRUD proof.
+  it.each(APPEND_ONLY_BASE_TABLES)(
+    "active staff can insert and read %s base rows but cannot UPDATE or DELETE them (migration 20261008000001, row preserved)",
     async (table) => {
       const idColumn = ID_COLUMN[table];
 
@@ -1138,74 +1291,393 @@ describe("pre-bound active advisor has staff access", () => {
       expect(readError, `${table} read`).toBeNull();
       expect(read).not.toBeNull();
 
-      const { data: updated, error: updateError } = await selfClient
-        .from(table)
-        .update(operationalUpdatePayload(table))
-        .eq(idColumn, rowId)
-        .select(idColumn);
-      expect(updateError, `${table} update`).toBeNull();
-      expect(updated ?? [], `${table} update affected rows`).toHaveLength(1);
-
-      const { error: deleteError } = await selfClient
-        .from(table)
-        .delete()
-        .eq(idColumn, rowId);
-      expect(deleteError, `${table} delete`).toBeNull();
-
-      // Deleted for real: the row is gone even under service role.
-      const { data: remaining } = await service
-        .from(table)
-        .select(idColumn)
-        .eq(idColumn, rowId);
-      expect(remaining ?? [], `${table} post-delete rows`).toHaveLength(0);
+      // UPDATE/DELETE are denied at both the grant and RLS-policy boundary and
+      // the freshly inserted row is proven byte-for-byte unchanged.
+      await assertMutationBlocked(selfClient, table, idColumn, rowId, operationalUpdatePayload(table));
+      await assertDeleteBlocked(selfClient, table, idColumn, rowId);
     }
   );
 
-  // Regression matrix row 10 — active-staff advisor-row management preserved.
-  it("can update another advisor's non-authorization fields", async () => {
-    const { data, error } = await selfClient
-      .from("advisor")
-      .update({ advisor_name: syntheticName("advisor-renamed-by-staff") })
-      .eq("advisor_id", fixtures.advisorOtherId)
-      .select("advisor_id");
-    expect(error).toBeNull();
-    expect(data ?? []).toHaveLength(1);
+  // Migration 20260930000006: active staff may insert/read/update core
+  // historical entities, but browser DELETE is revoked and denied at both the
+  // grant and RLS-policy levels. Each freshly inserted row is UNREFERENCED (no
+  // children), so only the ...006 lockdown — never NO ACTION FK semantics — can
+  // be blocking the delete; the service-role re-read proves the row survives.
+  it.each(CORE_HISTORY_DELETE_DENIED_TABLES)(
+    "active staff can insert, read, and update %s rows but cannot DELETE them (row preserved; updates via the protected writers)",
+    async (table) => {
+      const idColumn = ID_COLUMN[table];
+
+      const { data: inserted, error: insertError } = await selfClient
+        .from(table)
+        .insert(operationalInsertPayload(table))
+        .select(idColumn)
+        .single();
+      expect(insertError, `${table} insert`).toBeNull();
+      expect(inserted).not.toBeNull();
+      const rowId = (inserted as unknown as Record<string, number>)[idColumn];
+
+      const { data: read, error: readError } = await selfClient
+        .from(table)
+        .select("*")
+        .eq(idColumn, rowId)
+        .maybeSingle();
+      expect(readError, `${table} read`).toBeNull();
+      expect(read).not.toBeNull();
+
+      // Migration 20261015000001 revokes direct authenticated UPDATE on these
+      // current-state tables; the write path is now the narrow expected-version
+      // writer RPC (fresh rows start at version 1).
+      let updateError: { code?: string; message?: string } | null = null;
+      if (table === "student") {
+        const row = await readRow("student", idColumn, rowId);
+        const updated = await selfClient.rpc("update_student_profile", {
+          p_student_id: rowId,
+          p_expected_version: 1,
+          p_full_name: row!.full_name,
+          p_email: row!.email,
+          p_is_ch_student: row!.is_ch_student,
+          p_major: "Chemistry",
+          p_minor: row!.minor,
+          p_gpa: row!.gpa,
+          p_class_standing: row!.class_standing,
+          p_us_citizen: row!.us_citizen,
+          p_age: row!.age,
+          p_gender: row!.gender,
+          p_pronouns: row!.pronouns,
+          p_race_ethnicity: row!.race_ethnicity,
+          p_languages: row!.languages,
+          p_first_gen: row!.first_gen,
+          p_honors_college: row!.honors_college,
+        });
+        updateError = (updated.error as { code?: string; message?: string } | null) ?? null;
+      } else if (table === "fellowship") {
+        const updated = await selfClient.rpc("update_fellowship", {
+          p_fellowship_id: rowId,
+          p_expected_version: 1,
+          p_fellowship_name: syntheticName("crud-fellowship-renamed"),
+        });
+        updateError = (updated.error as { code?: string; message?: string } | null) ?? null;
+      } else {
+        const row = await readRow("application", idColumn, rowId);
+        const updated = await selfClient.rpc("update_application", {
+          p_application_id: rowId,
+          p_expected_version: 1,
+          p_student_id: row!.student_id,
+          p_fellowship_id: row!.fellowship_id,
+          p_application_year: row!.application_year,
+          p_destination_country: row!.destination_country,
+          p_stage_of_application: "Under Review",
+          p_is_semi_finalist: row!.is_semi_finalist,
+          p_is_finalist: row!.is_finalist,
+        });
+        updateError = (updated.error as { code?: string; message?: string } | null) ?? null;
+      }
+      expect(updateError, `${table} update via the protected writer`).toBeNull();
+
+      await assertDeleteBlocked(selfClient, table, idColumn, rowId);
+    }
+  );
+
+  // Regression matrix row 10 — REVIEW REMEDIATION (migration 20261002000001):
+  // active staff can NO LONGER update another advisor's row. The broad
+  // `advisor_update_active_staff_only` policy is replaced by the self-scoped
+  // `advisor_update_own_profile` policy, so a peer row is invisible for UPDATE
+  // (RLS denial / zero rows) and the peer's fields stay byte-for-byte
+  // unchanged.
+  it("denies an active advisor updating another advisor's non-authorization fields (row 10, review remediation)", async () => {
+    await assertMutationBlocked(selfClient, "advisor", "advisor_id", fixtures.advisorOtherId, {
+      advisor_name: syntheticName("advisor-renamed-by-staff"),
+    });
   });
 
-  // Active-staff advisor-row management: insert, read, and delete an advisor
-  // row (row 11 covers advisor management alongside the operational tables).
-  it("can insert, read, and delete advisor rows as staff (advisor management)", async () => {
-    const { data: inserted, error: insertError } = await selfClient
+  // REVIEW REMEDIATION (migration 20261002000001): advisor rows are created
+  // and managed ONLY through the trusted service-role provisioning path (the
+  // protected management API). An authenticated active advisor can READ advisor
+  // rows (staff visibility) but cannot INSERT, cannot UPDATE another advisor's
+  // row, and cannot DELETE (the ...006 lockdown). Role/active-state changes go
+  // through the Admin-only management API / lifecycle RPC.
+  it("denies authenticated advisor INSERT and peer UPDATE; preserves staff read and DELETE denial (advisor management, review remediation)", async () => {
+    // INSERT is denied (no authenticated advisor-creation path).
+    const deniedEmail = syntheticEmail("staff-managed-advisor-denied");
+    const { data: insertData, error: insertError } = await selfClient
       .from("advisor")
       .insert({
-        advisor_name: syntheticName("staff-managed-advisor"),
-        email: syntheticEmail("staff-managed-advisor"),
-        is_active: false,
+        advisor_name: syntheticName("staff-managed-advisor-denied"),
+        email: deniedEmail,
+        is_active: true,
       })
+      .select("advisor_id");
+    expect(insertData ?? [], "authenticated advisor INSERT must return no row").toHaveLength(0);
+    expect(insertError, "authenticated advisor INSERT must be denied").not.toBeNull();
+    expect(insertError?.code, "authenticated advisor INSERT denial code").toBe("42501");
+    const { data: absent } = await service
+      .from("advisor")
       .select("advisor_id")
-      .single();
-    expect(insertError).toBeNull();
-    expect(inserted).not.toBeNull();
+      .eq("email", deniedEmail);
+    expect(absent ?? [], "no advisor row may exist for the denied INSERT").toHaveLength(0);
 
+    // Staff READ of advisor rows is preserved (own + active-staff visibility).
     const { data: read, error: readError } = await selfClient
       .from("advisor")
       .select("advisor_id")
-      .eq("advisor_id", inserted!.advisor_id)
+      .eq("advisor_id", fixtures.advisorSelfId)
       .maybeSingle();
     expect(readError).toBeNull();
     expect(read).not.toBeNull();
 
-    const { error: deleteError } = await selfClient
-      .from("advisor")
-      .delete()
-      .eq("advisor_id", inserted!.advisor_id);
-    expect(deleteError).toBeNull();
+    // Peer UPDATE is denied (self-scoped policy).
+    await assertMutationBlocked(selfClient, "advisor", "advisor_id", fixtures.advisorOtherId, {
+      advisor_name: syntheticName("staff-managed-advisor-peer-update"),
+    });
 
-    const { data: remaining } = await service
-      .from("advisor")
-      .select("advisor_id")
-      .eq("advisor_id", inserted!.advisor_id);
-    expect(remaining ?? []).toHaveLength(0);
+    // DELETE of an advisor row stays denied (the ...006 lockdown).
+    await assertDeleteBlocked(selfClient, "advisor", "advisor_id", fixtures.advisorSelfId);
+  });
+});
+
+describe("advising_meeting_amendment append-only corrections", () => {
+  it("lets an active advisor add and read multiple database-authored corrections without changing the original meeting", async () => {
+    const { data: originalBefore, error: originalBeforeError } = await service
+      .from("advising_meeting")
+      .select("*")
+      .eq("meeting_id", fixtures.meetingId)
+      .single();
+    expect(originalBeforeError).toBeNull();
+
+    const forgedTime = "2000-01-01T00:00:00.000Z";
+    const first = await selfClient
+      .from("advising_meeting_amendment")
+      .insert({
+        meeting_id: fixtures.meetingId,
+        reason: "Correct meeting summary",
+        details: "The original notes omitted the application discussion.",
+        created_by_advisor_id: fixtures.advisorOtherId,
+        created_at: forgedTime,
+      })
+      .select("amendment_id")
+      .single();
+    expect(first.error, "active advisor amendment INSERT").toBeNull();
+    expect(first.data).not.toBeNull();
+
+    const second = await selfClient
+      .from("advising_meeting_amendment")
+      .insert({
+        meeting_id: fixtures.meetingId,
+        reason: "Add follow-up detail",
+        details: "The student later confirmed the revised action item.",
+      })
+      .select("amendment_id")
+      .single();
+    expect(second.error, "a second correction for the same meeting").toBeNull();
+    expect(second.data).not.toBeNull();
+    expect(second.data!.amendment_id).not.toBe(first.data!.amendment_id);
+
+    const { data: visible, error: readError } = await selfClient
+      .from("advising_meeting_amendment")
+      .select("amendment_id, meeting_id, reason, details, created_by_advisor_id, created_at")
+      .in("amendment_id", [first.data!.amendment_id, second.data!.amendment_id])
+      .order("amendment_id");
+    expect(readError, "active advisor amendment SELECT").toBeNull();
+    expect(visible ?? []).toHaveLength(2);
+    expect(visible?.[0]).toMatchObject({
+      amendment_id: first.data!.amendment_id,
+      meeting_id: fixtures.meetingId,
+      reason: "Correct meeting summary",
+      details: "The original notes omitted the application discussion.",
+      created_by_advisor_id: fixtures.advisorSelfId,
+    });
+    expect(String(visible?.[0]?.created_at)).not.toBe(forgedTime);
+    expect(visible?.[1]).toMatchObject({
+      amendment_id: second.data!.amendment_id,
+      meeting_id: fixtures.meetingId,
+      reason: "Add follow-up detail",
+      created_by_advisor_id: fixtures.advisorSelfId,
+    });
+
+    const { data: originalAfter, error: originalAfterError } = await service
+      .from("advising_meeting")
+      .select("*")
+      .eq("meeting_id", fixtures.meetingId)
+      .single();
+    expect(originalAfterError).toBeNull();
+    // The COMPLETE source row is compared before/after the corrections: no
+    // column — including metadata, scoping, notes, or mode — may change.
+    expect(originalAfter, "a correction must not mutate its source meeting").toEqual(originalBefore);
+
+    const { data: amendmentBefore } = await service
+      .from("advising_meeting_amendment")
+      .select("*")
+      .eq("amendment_id", first.data!.amendment_id)
+      .single();
+    const update = await selfClient
+      .from("advising_meeting_amendment")
+      .update({ details: "This update must not apply." })
+      .eq("amendment_id", first.data!.amendment_id)
+      .select("amendment_id");
+    expect(update.data ?? [], "amendment UPDATE affected rows").toHaveLength(0);
+    expect(update.error, "active advisor amendment UPDATE is denied").not.toBeNull();
+    expect(update.error?.code).toBe("42501");
+
+    const deletion = await selfClient
+      .from("advising_meeting_amendment")
+      .delete()
+      .eq("amendment_id", first.data!.amendment_id);
+    expect(deletion.data ?? [], "amendment DELETE affected rows").toHaveLength(0);
+    expect(deletion.error, "active advisor amendment DELETE is denied").not.toBeNull();
+    expect(deletion.error?.code).toBe("42501");
+
+    const { data: amendmentAfter } = await service
+      .from("advising_meeting_amendment")
+      .select("*")
+      .eq("amendment_id", first.data!.amendment_id)
+      .single();
+    expect(amendmentAfter, "denied amendment mutations leave its real row unchanged").toEqual(amendmentBefore);
+  });
+
+  it("denies unauthenticated and inactive-advisor amendment creation", async () => {
+    for (const [label, client] of [["anon", anon], ["inactive", inactiveClient]] as const) {
+      const reason = syntheticName(`denied-amendment-${label}`);
+      const { data, error } = await client.from("advising_meeting_amendment").insert({
+        meeting_id: fixtures.meetingId,
+        reason,
+        details: "This correction must not be recorded.",
+      });
+      expect(data ?? [], `${label} amendment INSERT affected rows`).toHaveLength(0);
+      expect(error, `${label} amendment INSERT is denied`).not.toBeNull();
+      expect(error?.code, `${label} amendment INSERT denial code`).toBe("42501");
+
+      const { data: created, error: reReadError } = await service
+        .from("advising_meeting_amendment")
+        .select("amendment_id")
+        .eq("reason", reason);
+      expect(reReadError).toBeNull();
+      expect(created ?? [], `${label} denied amendment is absent`).toHaveLength(0);
+    }
+  });
+
+  it("rejects direct inserts carrying a blank, whitespace-only, or vertical-tab-only reason or details (23514)", async () => {
+    // The whitespace-trimming CHECK constraints reject the value at the
+    // database boundary even on a direct authenticated insert that would
+    // otherwise pass the trigger (creator resolution) and the RLS INSERT
+    // policy. Each case keeps a unique non-blank marker on the other field so
+    // the service-role absence re-read can prove no row was created (R4).
+    // Vertical tab is built with String.fromCharCode(11) so the test source
+    // never relies on an escape sequence.
+    const verticalTab = String.fromCharCode(11);
+    const cases = [
+      { label: "blank reason", blankField: "reason" as const, blankValue: "", marker: syntheticName("amendment-blank-reason") },
+      { label: "whitespace-only reason", blankField: "reason" as const, blankValue: "   ", marker: syntheticName("amendment-ws-reason") },
+      { label: "vertical-tab-only reason", blankField: "reason" as const, blankValue: verticalTab, marker: syntheticName("amendment-vt-reason") },
+      { label: "blank details", blankField: "details" as const, blankValue: "", marker: syntheticName("amendment-blank-details") },
+      { label: "whitespace-only details", blankField: "details" as const, blankValue: "\t  \n", marker: syntheticName("amendment-ws-details") },
+      { label: "vertical-tab-only details", blankField: "details" as const, blankValue: verticalTab, marker: syntheticName("amendment-vt-details") },
+    ];
+
+    for (const c of cases) {
+      const payload = {
+        meeting_id: fixtures.meetingId,
+        reason: c.blankField === "reason" ? c.blankValue : c.marker,
+        details: c.blankField === "details" ? c.blankValue : c.marker,
+      };
+      const { data, error } = await selfClient.from("advising_meeting_amendment").insert(payload);
+      expect(data ?? [], `${c.label} affected rows`).toHaveLength(0);
+      expect(error, `${c.label} direct insert must be rejected by the CHECK constraint`).not.toBeNull();
+      expect(error?.code, `${c.label} rejection code`).toBe("23514");
+
+      const { data: created, error: reReadError } = await service
+        .from("advising_meeting_amendment")
+        .select("amendment_id")
+        .eq(c.blankField === "reason" ? "details" : "reason", c.marker);
+      expect(reReadError, `${c.label} absence re-read`).toBeNull();
+      expect(created ?? [], `no amendment row may exist for ${c.label}`).toHaveLength(0);
+    }
+  });
+
+  it("never trims the literal letter v from reason or details", async () => {
+    // PostgreSQL has no \v escape in E'' strings, so the constraint must not
+    // treat 'v' as a vertical-tab trim character. A value consisting solely of
+    // the letter v is legitimate non-blank content and must be stored exactly.
+    const { data: inserted, error } = await selfClient
+      .from("advising_meeting_amendment")
+      .insert({
+        meeting_id: fixtures.meetingId,
+        reason: "v",
+        details: "vvv",
+      })
+      .select("amendment_id")
+      .single();
+    expect(error, "a literal-v reason/details must be accepted").toBeNull();
+    expect(inserted).not.toBeNull();
+
+    const { data: row, error: reReadError } = await service
+      .from("advising_meeting_amendment")
+      .select("reason, details")
+      .eq("amendment_id", inserted!.amendment_id)
+      .single();
+    expect(reReadError).toBeNull();
+    expect(row?.reason, "literal-v reason stored verbatim").toBe("v");
+    expect(row?.details, "literal-v details stored verbatim").toBe("vvv");
+  });
+});
+
+describe("amendment-specific authenticated user with no advisor row is blocked", () => {
+  it("cannot read amendment rows (real-row proof)", async () => {
+    // Seed a REAL amendment row as an active advisor, then prove the
+    // no-advisor account reads ZERO amendment rows while the seeded row still
+    // exists under the service role (R4: 0 rows alone never counts as blocked).
+    const { data: seeded, error: seedError } = await selfClient
+      .from("advising_meeting_amendment")
+      .insert({
+        meeting_id: fixtures.meetingId,
+        reason: syntheticName("no-advisor-amendment-read-target"),
+        details: "Real amendment row used as the SELECT-denial proof target.",
+      })
+      .select("amendment_id")
+      .single();
+    expect(seedError).toBeNull();
+    expect(seeded).not.toBeNull();
+
+    const { data, error } = await amendmentNoAdvisorClient
+      .from("advising_meeting_amendment")
+      .select("*");
+    if (error) {
+      expect(error.code, "amendment read error code").toBe("42501");
+    } else {
+      expect(data ?? [], "amendment read rows").toHaveLength(0);
+    }
+
+    // The hidden target is REAL: the seeded amendment row still exists.
+    const { data: real, error: reReadError } = await service
+      .from("advising_meeting_amendment")
+      .select("amendment_id")
+      .eq("amendment_id", seeded!.amendment_id)
+      .maybeSingle();
+    expect(reReadError).toBeNull();
+    expect(real).not.toBeNull();
+  });
+
+  it("cannot insert an amendment (no row created)", async () => {
+    const reason = syntheticName("no-advisor-amendment-insert");
+    const { data, error } = await amendmentNoAdvisorClient
+      .from("advising_meeting_amendment")
+      .insert({
+        meeting_id: fixtures.meetingId,
+        reason,
+        details: "This amendment must not be recorded.",
+      });
+    expect(data ?? [], "amendment insert affected rows").toHaveLength(0);
+    expect(error, "amendment insert is denied").not.toBeNull();
+    expect(error?.code, "amendment insert denial code").toBe("42501");
+
+    // Absence proof: no amendment row exists for the attempted reason, even
+    // under the service role.
+    const { data: created, error: reReadError } = await service
+      .from("advising_meeting_amendment")
+      .select("amendment_id")
+      .eq("reason", reason);
+    expect(reReadError).toBeNull();
+    expect(created ?? [], "no amendment row may exist for the denied insert").toHaveLength(0);
   });
 });
 
@@ -1337,6 +1809,281 @@ describe("no-advisor authenticated user CRUD denial matrix on every operational 
   });
 });
 
+describe("advisor.role display vocabulary and role-write guard (migration 20261001000001)", () => {
+  it("stores only the exact display values Admin/Advisor in every advisor row", async () => {
+    const { data, error } = await selfClient.from("advisor").select("advisor_id, role");
+    expect(error, "active staff advisor role read").toBeNull();
+    expect((data ?? []).length, "active staff reads every advisor row").toBeGreaterThan(0);
+    const roles = new Set((data ?? []).map((row: { role: string }) => row.role));
+    for (const role of roles) {
+      expect(["Admin", "Advisor"], `stored display role ${role}`).toContain(role);
+    }
+    // The admin-display fixture row carries the trusted Admin projection.
+    const { data: displayRow } = await service
+      .from("advisor")
+      .select("role")
+      .eq("advisor_id", adminDisplayId)
+      .maybeSingle();
+    expect(displayRow?.role, "admin-display fixture role").toBe("Admin");
+  });
+
+  it("lets the trusted service_role set the Admin display role through the provisioning path", async () => {
+    const email = syntheticEmail("provisioned-admin-role");
+    const { data: inserted, error: insertError } = await service
+      .from("advisor")
+      .insert({ advisor_name: syntheticName("provisioned-admin-role"), email, is_active: true })
+      .select("advisor_id")
+      .single();
+    expect(insertError, "provisioned advisor insert").toBeNull();
+
+    const { data: updated, error: updateError } = await service
+      .from("advisor")
+      .update({ role: "Admin" })
+      .eq("advisor_id", inserted!.advisor_id)
+      .select("advisor_id, role, auth_user_id")
+      .single();
+    expect(updateError, "trusted role=Admin update").toBeNull();
+    expect(updated?.role, "trusted role update stored value").toBe("Admin");
+    // The one-time bind is untouched: an unbound row stays unbound.
+    expect(updated?.auth_user_id, "role update must never touch the bind").toBeNull();
+  });
+
+  it("lets a trusted no-op restatement of the current display role pass through; browser sessions have no direct role path (migration 20261015000001)", async () => {
+    // The browser session's direct advisor UPDATE is revoked: the display role
+    // is written only through the trusted atomic role RPC / lifecycle RPC. The
+    // role-write guard still lets a NO-OP restatement through (trusted path),
+    // exactly as the pre-revocation shape did.
+    const { data: denied, error: deniedError } = await selfClient
+      .from("advisor")
+      .update({ role: "Advisor" })
+      .eq("advisor_id", fixtures.advisorSelfId)
+      .select("advisor_id");
+    expect(deniedError, "browser session direct advisor UPDATE is revoked").not.toBeNull();
+    expect(deniedError?.code).toBe("42501");
+    expect(denied ?? []).toHaveLength(0);
+
+    const { data, error } = await service
+      .from("advisor")
+      .update({ role: "Advisor" })
+      .eq("advisor_id", fixtures.advisorSelfId)
+      .select("advisor_id");
+    expect(error, "trusted no-op role restatement must pass through").toBeNull();
+    expect(data ?? [], "trusted no-op role restatement affects one row").toHaveLength(1);
+  });
+
+  it("denies an active advisor elevating their OWN role to Admin (42501, row unchanged)", async () => {
+    await assertMutationBlocked(selfClient, "advisor", "advisor_id", fixtures.advisorSelfId, {
+      role: "Admin",
+    });
+  });
+
+  it("denies an active advisor changing a PEER's role to Admin (42501, row unchanged)", async () => {
+    await assertMutationBlocked(selfClient, "advisor", "advisor_id", fixtures.advisorOtherId, {
+      role: "Admin",
+    });
+  });
+
+  it("lets an active advisor update their OWN bound row's allowed profile fields (protected self-service writer, review remediation)", async () => {
+    // Migration 20261015000001 replaces the revoked self-scoped table UPDATE
+    // with the expected-version self-service writer
+    // (`update_my_advisor_profile`): the active, pre-bound advisor updates ONLY
+    // their own `advisor_name`, while role/is_active/auth_user_id stay
+    // protected on the same row. The fresh seed row starts at version 1.
+    const renamed = syntheticName("advisor-self-renamed");
+    const { data: result, error } = await selfClient.rpc("update_my_advisor_profile", {
+      p_expected_version: 1,
+      p_advisor_name: renamed,
+    });
+    expect(error, "own-profile write must succeed through the protected writer").toBeNull();
+    expect(result, "self-service writer must return the updated row").toHaveLength(1);
+
+    const row = await readRow("advisor", "advisor_id", fixtures.advisorSelfId);
+    expect(row?.advisor_name, "own advisor_name updated").toBe(renamed);
+    // The protected display role, lifecycle state, and binding are untouched.
+    expect(row?.role, "own display role unchanged").toBe("Advisor");
+    expect(row?.is_active, "own lifecycle state unchanged").toBe(true);
+    expect(row?.auth_user_id, "own binding unchanged").toBe(selfUserId);
+  });
+
+  it("denies the admin-display advisor (no claim) changing a peer's role to Admin (42501, row unchanged)", async () => {
+    // The Admin display projection grants no role-management authority: even
+    // the trusted display value is rejected for a non-trusted session.
+    await assertMutationBlocked(adminDisplayClient, "advisor", "advisor_id", fixtures.advisorOtherId, {
+      role: "Admin",
+    });
+  });
+});
+
+describe("Advisor cannot promote, self-activate, or provision (display role is never authority)", () => {
+  it("denies an active advisor INSERTing an advisor row already displaying Admin (provisioning, 42501, no row created)", async () => {
+    const email = syntheticEmail("advisor-provision-denied");
+    const { data, error } = await selfClient
+      .from("advisor")
+      .insert({
+        advisor_name: syntheticName("advisor-provision-denied"),
+        email,
+        is_active: true,
+        role: "Admin",
+      })
+      .select("advisor_id");
+    expect(data ?? [], "a denied Admin-role INSERT must not return a row").toHaveLength(0);
+    expect(error, "Admin-role advisor INSERT must be denied").not.toBeNull();
+    expect(error?.code, "Admin-role advisor INSERT denial code").toBe("42501");
+
+    // Absence proof: no row was created for the attempted email.
+    const { data: remaining } = await service.from("advisor").select("advisor_id").eq("email", email);
+    expect(remaining ?? [], "no advisor row may exist for the denied Admin-role INSERT").toHaveLength(0);
+  });
+
+  it("denies a pre-bound inactive advisor self-activation and role elevation on their own row", async () => {
+    // The pre-bound inactive advisor has NO UPDATE path (not active staff), so
+    // the lifecycle-guard / role-guard denials close the residual paths.
+    await assertMutationBlocked(inactiveClient, "advisor", "advisor_id", fixtures.advisorInactiveId, {
+      is_active: true,
+    });
+    await assertMutationBlocked(inactiveClient, "advisor", "advisor_id", fixtures.advisorInactiveId, {
+      role: "Admin",
+    });
+  });
+
+  it("keeps the Admin-display advisor within ordinary staff powers and denies every Admin-only action", async () => {
+    // Display role 'Admin' + no claim: normal staff read, but no lifecycle
+    // authority, no role writes, and no direct lifecycle-field writes.
+    const { data: students, error: readError } = await adminDisplayClient.from("student").select("student_id");
+    expect(readError, "admin-display advisor student read").toBeNull();
+    expect((students ?? []).length, "admin-display advisor is ordinary active staff").toBeGreaterThan(0);
+
+    const { data: transitionData, error: transitionError } = await adminDisplayClient.rpc(
+      "lifecycle_transition",
+      {
+        p_entity: "student",
+        p_action: "archive",
+        p_entity_id: fixtures.studentId,
+        // A non-blank reason AND a non-null expected version are supplied so
+        // the denial is the missing-admin claim (42501), never the
+        // required-reason/version gate (22023).
+        p_reason: "no-claim denial",
+        p_expected_version: 1,
+      }
+    );
+    expect(transitionData, "no-claim lifecycle transition must return no row").toBeNull();
+    expect(transitionError, "no-claim lifecycle transition must be denied").not.toBeNull();
+    expect(transitionError?.code, "no-claim lifecycle transition denial code").toBe("42501");
+
+    await assertMutationBlocked(adminDisplayClient, "student", "student_id", fixtures.studentId, {
+      archived_at: "2026-01-01T00:00:00.000Z",
+    });
+  });
+});
+
+describe("immutable meeting/amendment direct mutation is denied for BOTH display roles (migration 20261001000001)", () => {
+  it.each(["Advisor display role", "Admin display role"] as const)(
+    "denies direct advising_meeting UPDATE and DELETE for the %s",
+    async (label) => {
+      const client = label === "Admin display role" ? adminDisplayClient : selfClient;
+      await assertMutationBlocked(client, "advising_meeting", "meeting_id", fixtures.meetingId, {
+        meeting_mode: "In-Person",
+      });
+      await assertDeleteBlocked(client, "advising_meeting", "meeting_id", fixtures.meetingId);
+    }
+  );
+
+  it.each(["Advisor display role", "Admin display role"] as const)(
+    "denies direct advising_meeting_amendment UPDATE and DELETE for the %s",
+    async (label) => {
+      // Seed a real amendment as an active advisor (append-only INSERT path).
+      const { data: seeded, error: seedError } = await selfClient
+        .from("advising_meeting_amendment")
+        .insert({
+          meeting_id: fixtures.meetingId,
+          reason: syntheticName("role-immutability-amendment"),
+          details: "Immutable amendment used as the direct-write denial target.",
+        })
+        .select("amendment_id")
+        .single();
+      expect(seedError, "amendment INSERT for the denial target").toBeNull();
+
+      const client = label === "Admin display role" ? adminDisplayClient : selfClient;
+      const { data: updated, error: updateError } = await client
+        .from("advising_meeting_amendment")
+        .update({ details: "This update must not apply." })
+        .eq("amendment_id", seeded!.amendment_id)
+        .select("amendment_id");
+      expect(updated ?? [], `${label} amendment UPDATE affected rows`).toHaveLength(0);
+      expect(updateError, `${label} amendment UPDATE must be denied`).not.toBeNull();
+      expect(updateError?.code, `${label} amendment UPDATE denial code`).toBe("42501");
+
+      const { data: deleted, error: deleteError } = await client
+        .from("advising_meeting_amendment")
+        .delete()
+        .eq("amendment_id", seeded!.amendment_id);
+      expect(deleted ?? [], `${label} amendment DELETE affected rows`).toHaveLength(0);
+      expect(deleteError, `${label} amendment DELETE must be denied`).not.toBeNull();
+      expect(deleteError?.code, `${label} amendment DELETE denial code`).toBe("42501");
+
+      // The immutable amendment row still exists under the service role.
+      const { data: stillThere } = await service
+        .from("advising_meeting_amendment")
+        .select("amendment_id")
+        .eq("amendment_id", seeded!.amendment_id)
+        .maybeSingle();
+      expect(stillThere, "immutable amendment row preserved").not.toBeNull();
+    }
+  );
+});
+
+describe("deactivated advisor loses operational data while historical advisor-linked records stay readable (migration 20261001000001)", () => {
+  it("keeps the deactivated advisor's historical meeting readable by OTHER active staff but hides it from the deactivated advisor", async () => {
+    // Historical advisor-linked data: a meeting conducted by the pre-bound
+    // INACTIVE (deactivated) advisor, seeded through the trusted path.
+    const { data: historical, error: seedError } = await service
+      .from("advising_meeting")
+      .insert({
+        student_id: fixtures.studentId,
+        advisor_id: fixtures.advisorInactiveId,
+        meeting_date: "2026-08-15",
+        meeting_mode: "Virtual",
+        notes: "Historical meeting conducted by a now-deactivated advisor.",
+      })
+      .select("meeting_id")
+      .single();
+    expect(seedError, "historical advisor-linked meeting seed").toBeNull();
+    const meetingId = historical!.meeting_id as number;
+
+    // Operational denial: the deactivated advisor cannot read operational data.
+    await assertReadBlocked(inactiveClient, "student", "student_id", fixtures.studentId);
+
+    // Staff historical view: OTHER active staff still read the meeting that
+    // references the deactivated advisor, and attribution is intact.
+    const { data: visible, error: readError } = await selfClient
+      .from("advising_meeting")
+      .select("meeting_id, advisor_id")
+      .eq("meeting_id", meetingId)
+      .maybeSingle();
+    expect(readError, "active-staff historical meeting read").toBeNull();
+    expect(visible, "historical meeting readable through the staff view").not.toBeNull();
+    expect(visible?.advisor_id, "historical advisor attribution intact").toBe(fixtures.advisorInactiveId);
+
+    // The deactivated advisor's own session is NOT active staff: the meeting is
+    // hidden from them (zero rows), while the real row still exists (R4).
+    const { data: hidden, error: hiddenError } = await inactiveClient
+      .from("advising_meeting")
+      .select("meeting_id")
+      .eq("meeting_id", meetingId);
+    if (hiddenError) {
+      expect(hiddenError.code, "deactivated advisor historical read error code").toBe("42501");
+    } else {
+      expect(hidden ?? [], "deactivated advisor must read zero historical meetings").toHaveLength(0);
+    }
+    const { data: real } = await service
+      .from("advising_meeting")
+      .select("meeting_id")
+      .eq("meeting_id", meetingId)
+      .maybeSingle();
+    expect(real, "the hidden historical meeting must still exist (real-row proof)").not.toBeNull();
+  });
+});
+
 describe("anon (unauthenticated) role is denied on every table", () => {
   // One real seeded row per table so denials target real data (R4). Resolved
   // lazily: `fixtures` is only populated in beforeAll.
@@ -1380,5 +2127,12 @@ describe("anon (unauthenticated) role is denied on every table", () => {
       .eq(ID_COLUMN[table], realIds()[table])
       .maybeSingle();
     expect(stillThere).not.toBeNull();
+  });
+
+  it("anon cannot EXECUTE the is_effective_admin predicate", async () => {
+    const { data, error } = await anon.rpc("is_effective_admin");
+    expect(data, "anon is_effective_admin must yield no data").toBeNull();
+    expect(error, "anon is_effective_admin must be denied").not.toBeNull();
+    expect(error?.code, "anon is_effective_admin denial code").toBe("42501");
   });
 });

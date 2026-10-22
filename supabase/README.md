@@ -3,11 +3,15 @@
 ## Prerequisites
 
 1. Create a Supabase account at [supabase.com](https://supabase.com)
-2. Create a new project in Supabase
+2. Create a new project in Supabase (only needed to run the hosted app)
 3. Note your project's:
    - Project URL (Settings → API → Project URL)
    - Anon/Public Key (Settings → API → Project API keys → anon public)
    - Project ID (Settings → General → Reference ID)
+
+> Local development and the full test suite use a **Docker-local Supabase
+> instance** (see [Local workflow](#local-workflow-docker-recommended)) and
+> need no hosted project.
 
 ## Step 1: Configure Environment Variables
 
@@ -18,16 +22,50 @@ NEXT_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 ```
 
+1. For **trusted advisor provisioning** (the admin pre-binding path below),
+   `.env.local` also needs two **server-only** variables:
+
+```env
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
+```
+
+> ⚠️ `SUPABASE_SERVICE_ROLE_KEY` is the service-role secret. It must **never**
+> be prefixed with `NEXT_PUBLIC_`, committed, or exposed to the browser or
+> client-side code. It is consumed only by server code
+> (`lib/provisioning/*`, via `createProvisioningClient`) and is never logged.
+> Missing `SUPABASE_URL` or `SUPABASE_SERVICE_ROLE_KEY` makes provisioning fail
+> fast server-side with a configuration error.
+
+#### Local mapping from `pnpm exec supabase status -o env`
+
+For the Docker-local workflow (recommended), the runtime values come from the
+local stack. After `pnpm exec supabase start` and
+`pnpm exec supabase db reset --no-seed`, run `pnpm exec supabase status -o env`
+and copy the values into `.env.local` **by hand — never print, paste, or commit
+them**:
+
+| `supabase status -o env` output | App variable |
+| --- | --- |
+| `API_URL` | `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_URL` |
+| `ANON_KEY` | `NEXT_PUBLIC_SUPABASE_ANON_KEY` |
+| `SERVICE_ROLE_KEY` | `SUPABASE_SERVICE_ROLE_KEY` |
+
+`APP_URL=http://localhost:3000` (server-side, for auth redirects/recovery
+links) is also required and does not come from `supabase status -o env`.
+
 1. Restart your development server after updating environment variables.
 
 ## Step 2: Apply Database Schema
 
-> ⚠️ **Production freeze (2026-09-25):** these steps describe a fresh-project
-> setup. Do **not** apply the repository migrations to the hosted production
-> database while provenance is unresolved — production is the physical-schema
-> authority, its migration ledger records only
-> `20260924065221_advisor_self_activation_lockdown`, and the deployed schema
-> materially differs from this repository chain. See
+> ⚠️ **Production freeze (2026-09-25):** these steps describe a
+> fresh/disposable setup only. Do **not** apply the repository migrations to
+> the hosted **production** database while provenance is unresolved —
+> production is the physical-schema authority, its migration ledger records
+> only `20260924065221_advisor_self_activation_lockdown`, and the deployed
+> schema materially differs from this repository chain (which tracks **thirty-eight**
+> forward-only migrations ending with
+> `20261024000001_dated_attendance_award_year.sql`). See
 > [SCHEMA.md — Migration deployment freeze](./SCHEMA.md#migration-deployment-freeze)
 > and the approval-gated
 > [reconciliation runbook](../aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
@@ -40,8 +78,11 @@ to match `public.advisor.email`.
 
 - An administrator provisions each advisor **before first sign-in** using the
   server-only provisioning module (`lib/provisioning/*`, executed server-side
-  with `SUPABASE_SERVICE_ROLE_KEY`). That key is a secret: it must never be
-  committed, placed in `.env.local`, sent to the browser, or logged.
+  with `SUPABASE_SERVICE_ROLE_KEY`). That key is a secret: for local
+  development it may exist only in an uncommitted, server-side `.env.local`;
+  it must never be committed, logged, prefixed with `NEXT_PUBLIC_`, or sent to
+  the browser. Hosted environments keep it in a server-side secret store, never
+  in client or shared configuration.
 - The module creates/invites the auth account via the Supabase Admin API
   (`inviteUserByEmail` or `createUser`), captures the returned `data.user.id`,
   and conditionally binds that exact UUID to the chosen `public.advisor` row
@@ -53,14 +94,78 @@ to match `public.advisor.email`.
   cleared afterwards. There is no `link_current_advisor` RPC, no email
   self-link, and no self-service fallback — an unbound, email-matched account
   reads zero advisor rows by design.
-- Provisioning is sequenced **after** the complete migration chain: apply all
-  six migrations through `20260318000001_advisor_self_activation_lockdown.sql`
-  first — that final migration removes the remaining email self-link write path
-  and installs the one-time-bind guard under which the trusted `service_role`
-  bind is written. Never provision or pre-bind an advisor before the lockdown
-  migration is applied.
+- Provisioning is sequenced **after** the complete migration chain: apply the
+  full chain through `20261024000001_dated_attendance_award_year.sql` first —
+  the lockdown migration (`20260318000001_advisor_self_activation_lockdown.sql`)
+  removes the remaining email self-link write path and installs the
+  one-time-bind guard under which the trusted `service_role` bind is written.
+  Never provision or pre-bind an advisor before the lockdown migration is
+  applied.
 
-### Option A: Using Supabase Dashboard (Recommended for first-time setup)
+### Bootstrap the first effective Admin (trusted operator, out of band)
+
+There is **no public bootstrap endpoint** and **no self-service path** to
+create the first effective Admin: the protected provisioning API (`/api/advisors`)
+is effective-Admin-only, so a fresh project has no way to create its own first
+Admin through the application. The first effective Admin is bootstrapped **out
+of band** by a trusted FGCU IT operator using the **service role / Supabase
+Admin API** — never a public endpoint, and never with service credentials
+exposed, committed, or logged.
+
+Steps (after the complete migration chain through
+`20261024000001_dated_attendance_award_year.sql` is applied):
+
+1. Confirm the confirmed FGCU advisor email is present on an **active**
+   `public.advisor` row (`is_active = true`).
+2. Via the Supabase Admin API (service-role client), create the Auth user for
+   that email with `app_metadata: { ocf_admin: true }` and capture the returned
+   `user.id`. (`app_metadata.ocf_admin` is the authoritative, immutable
+   effective-Admin claim; `public.is_ocf_admin()` requires a JSON **boolean**
+   `true`.)
+3. From the trusted `service_role`/DBA session, **pre-bind** that exact UUID to
+   the advisor row's `auth_user_id` (one-time bind — the row must be unbound
+   `auth_user_id IS NULL` — and never rebound, replaced, or cleared) and set
+   the matching `Admin` display role.
+4. Verify the first Admin can sign in: the pre-bound UUID resolves the active
+   advisor row, `is_active` is `true`, and the strict-boolean `ocf_admin`
+   claim grants effective admin (`public.is_effective_admin()`).
+
+After the first effective Admin exists, **regular protected provisioning
+applies**: create/invite and bind every subsequent advisor through the
+server-only provisioning module and the effective-Admin-only `/api/advisors`
+endpoints. Bootstrap credentials are a one-time trusted-operator operation and
+are never a part of the running application.
+
+### Local workflow (Docker) — recommended
+
+This is the supported local development/testing workflow. It applies the full
+**thirty-eight-migration** chain to a disposable Docker-local instance and requires
+no hosted project:
+
+```bash
+# Start the local stack (first run pulls Docker images)
+pnpm exec supabase start
+
+# Apply the full migration chain to a fresh local database (no seed)
+pnpm exec supabase db reset --no-seed
+
+# Capture the local runtime URLs/keys (used by tests and db:types)
+pnpm exec supabase status -o env
+
+# Stop the stack when finished
+pnpm exec supabase stop --no-backup
+```
+
+`supabase db reset` applies every file in `supabase/migrations/` in order,
+ending with `20261024000001_dated_attendance_award_year.sql`. The contract and
+E2E suites run the same chain automatically against a throwaway isolated
+instance (`scripts/test-support/supabase-isolation.mjs`) and never touch the
+repository's own `supabase/` project.
+
+### Option A: Using Supabase Dashboard (fresh, disposable hosted project only)
+
+> ⛔ These steps target a **fresh hosted project**, never production. Run the
+> SQL in order and respect the auth-chain ordering.
 
 1. Log in to your Supabase project dashboard
 2. Navigate to **SQL Editor** in the left sidebar
@@ -74,47 +179,98 @@ to match `public.advisor.email`.
 10. Repeat steps 3–6 for `supabase/migrations/20260317000003_advisor_auth.sql` — adds advisor auth columns and helper function
 11. Backfill confirmed FGCU emails into `public.advisor.email` for any existing advisor rows before finalizing advisor auth on a populated database
 12. Repeat steps 3–6 for `supabase/migrations/20260317000004_active_advisor_rls.sql` — removes anon access and enables authenticated active-advisor policies
-13. **Required final step:** repeat steps 3–6 for `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` — removes the email self-link escalation path, adds the one-time-bind guard and the active-staff-only update policy. It must run **after** `20260317000004_active_advisor_rls.sql`; the migration chain is not complete without it.
-14. **Only after the complete migration chain is applied (through step 13):** provision each advisor via the admin pre-binding path (see [Advisor identity binding](#advisor-identity-binding-admin-pre-binding-not-email-self-link) above) — never create auth users to "self-link" by email
-15. Verify the first active advisor can sign in — the pre-bound `auth_user_id` resolves their advisor row, and `is_active` is `true`
+13. **Required auth-chain step:** repeat steps 3–6 for `supabase/migrations/20260318000001_advisor_self_activation_lockdown.sql` — removes the email self-link escalation path, adds the one-time-bind guard and the active-staff-only update policy. It must run **after** `20260317000004_active_advisor_rls.sql`; the auth chain is not complete without it.
+14. Repeat steps 3–6 for `supabase/migrations/20260929000001_advising_application_link.sql` — forward-only, additive: adds the nullable `application.application_year` cycle, the nullable `advising_meeting.application_id` advising↔application link (with direct and composite same-student FKs), the database-authored `created_at`/`created_by_advisor_id` creation metadata and hardened trigger, and advising indexes. Historic NULL values are preserved.
+15. Repeat steps 3–6 for `supabase/migrations/20260930000002_advising_application_fk_indexes.sql` — adds the reverse composite-FK index on `(application_id, student_id)` and the creator index on `created_by_advisor_id`.
+16. Repeat steps 3–6 for `supabase/migrations/20260930000003_advising_meeting_append_only.sql` — enforces database RLS append-only history: active advisors can `SELECT` and `INSERT` advising meetings, while `UPDATE` and `DELETE` are denied without an admin bypass.
+17. Repeat steps 3–6 for `supabase/migrations/20260930000004_advising_meeting_amendments.sql` — append-only correction records for advising meetings (SELECT/INSERT only, database-authored creator/timestamp, trim-aware non-empty `reason`/`details` CHECKs).
+18. Repeat steps 3–6 for `supabase/migrations/20260930000005_entity_lifecycle_archiving.sql` — non-destructive lifecycle: `student.archived_at` / `fellowship.archived_at`, admin-only `lifecycle_transition` RPC, `is_ocf_admin()`, direct-write guards; `advisor.is_active` stays the sole advisor lifecycle field.
+19. Repeat steps 3–6 for `supabase/migrations/20260930000006_core_history_delete_lockdown.sql` — revokes authenticated DELETE on `advisor`/`student`/`fellowship`/`application` (grant + RLS); authenticated DELETE retained only on `fellowship_thursday`/`scholarship_history`.
+20. Repeat steps 3–6 for `supabase/migrations/20260930000007_lifecycle_review_remediation.sql` — lifecycle RPC requires a current ACTIVE bound advisor; archive-parent child boundary rejects new child records referencing archived students/fellowships.
+21. Repeat steps 3–6 for `supabase/migrations/20261001000001_explicit_admin_advisor_permissions.sql` — normalizes `advisor.role` to exactly `Admin`/`Advisor`, hardens `is_ocf_admin()` to a strict JSON-boolean claim, adds `is_effective_admin()`, denies direct authenticated role writes.
+22. Repeat steps 3–6 for `supabase/migrations/20261002000001_advisor_self_service_role_reconciliation.sql` — self-scoped `advisor_update_own_profile` UPDATE only, no authenticated advisor-row creation, display role reconciled to the Auth claim.
+23. Repeat steps 3–6 for `supabase/migrations/20261003000001_advisor_role_change_lock.sql`, `20261004000001_advisor_role_fenced_write.sql`, `20261005000001_advisor_role_fenced_read.sql`, and `20261006000001_advisor_role_display_reconcile.sql` — server-only per-advisor role-change lease + fenced write/read (legacy primitives retained).
+24. Repeat steps 3–6 for `supabase/migrations/20261007000001_atomic_advisor_role_change.sql` — `set_advisor_role` (service-role-only SECURITY DEFINER RPC) updates the Auth claim and the display role in one transaction.
+25. Repeat steps 3–6 for `supabase/migrations/20261008000001_historical_integrity_remediation.sql` — makes `fellowship_thursday`/`scholarship_history` append-only base records plus their amendment tables and effective views, expands the application pipeline to nine database-enforced stages with the stage/flag and `application_year` checks, and requires a conducting `advisor_id` on new authenticated advising meetings while preserving legacy `NULL` rows.
+26. Repeat steps 3–6 for `supabase/migrations/20261009000001_scholarship_void_serialization.sql` — serializes concurrent scholarship amendments for one award by taking an exclusive lock on the parent `scholarship_history` row before the terminal-`Void` `EXISTS` guard (the loser re-evaluates against the committed state and is rejected) and adds a partial unique index enforcing at most one `Void` per award; the append-only tables, trigger grants, RLS, and effective views are otherwise unchanged.
+27. Repeat steps 3–6 for `supabase/migrations/20261010000001_security_invoker_list_views.sql` — one read-only, explicit-column, RLS-preserving `security_invoker` view per operational list (no Auth binding fields, no row multiplication).
+28. Repeat steps 3–6 for `supabase/migrations/20261011000001_scholarship_history_operational_summary.sql` — the `security_invoker` aggregate returning exact non-void scholarship totals without shipping rows to the client.
+29. Repeat steps 3–6 for `supabase/migrations/20261012000001_immutable_audit.sql` — the immutable, database-authored `public.audit_event` read model plus the internal after-insert/update trigger on `student`/`fellowship`/`application` (no baseline rows, no product-role writer).
+30. Repeat steps 3–6 for `supabase/migrations/20261013000001_advisor_admin_immutable_history.sql` — extends `audit_event` to `advisor`/administrator operations with a strict allowlist, trusted human attribution, required role/lifecycle reasons, audited `provision_advisor`, and the durable concurrency-safe last-active-bound-Admin invariant.
+31. Repeat steps 3–6 for `supabase/migrations/20261014000001_advisor_admin_profile_name.sql` — the authenticated-only, effective-Admin peer display-name RPC `update_advisor_profile_name` (actor from `auth.uid()`, no email, no reason, one attributed audit event).
+32. Repeat steps 3–6 for `supabase/migrations/20261015000001_protected_current_state_writers.sql` — adds `row_version`/`updated_at` to the four current-state tables and replaces direct authenticated `UPDATE` with the expected-version writer RPCs (`update_student_profile`, `update_fellowship`, `update_application`, `update_my_advisor_profile`, and versioned `lifecycle_transition`/`set_advisor_role`/`update_advisor_profile_name`); stale versions raise `PT409` before any change.
+33. Repeat steps 3–6 for `supabase/migrations/20261015000002_historical_audit_activity.sql` — audits historical base/amendment inserts (`created` / `correction_added` / `voided`) and adds the explicit-column `security_invoker` `public.audit_activity` read view.
+34. Repeat steps 3–6 for `supabase/migrations/20261016000001_insert_metadata_and_positive_version.sql` — makes `row_version` (`= 1`) and `updated_at` (`= now()`) database-authored on every INSERT (overriding any supplied value) and requires every expected version to be a positive integer (`>= 1`; NULL/0/negative raise `22023`).
+35. Repeat steps 3–6 for `supabase/migrations/20261017000001_revoke_advising_meeting_truncate.sql` — revokes `TRUNCATE` on `advising_meeting`/`advising_meeting_amendment` from `PUBLIC`/`anon`/`authenticated`, closing the destructive `TRUNCATE` bypass on the append-only advising history (the trusted `service_role` grant is untouched; no SELECT/INSERT, RLS, trigger, or data change).
+36. Repeat steps 3–6 for `supabase/migrations/20261018000001_lock_application_relink_parents.sql` — `public.update_application` locks the prospective parent row `FOR UPDATE` and reads `archived_at` under that lock before the ACTIVE-parent check (only when an actual parent re-link changes the reference), so a concurrent `lifecycle_transition` parent archive serializes with the re-link and a re-link can never commit pointing at a parent archived at commit time (fixed, deadlock-free lock order; only the parent-validation block changes).
+37. Repeat steps 3–6 for `supabase/migrations/20261019000001_final_immutable_history_remediation.sql` — introduces the `audit_event_subject` relationship read model (immutable `subject`/`previous`/`current` links with active-advisor `SELECT`-only RLS and a `(subject_type, subject_id, audit_id DESC)` lookup index), the deterministic `private.audit_subject_label` resolver, and the transaction-local, `service_role`/DBA-only `public.begin_legacy_baseline_import` helper for trusted `baseline_captured`/`migration` provenance. No legacy rows are fabricated or backfilled (their former relationships/labels are unknown), and there is no down migration.
+38. Repeat steps 3–6 for `supabase/migrations/20261020000001_complete_immutable_history_context.sql` — completes the immutable audit relationship context with an event-only, `ON CONFLICT DO NOTHING` idempotent backfill of `audit_event_subject` from immutable event payloads, deterministic label provenance, semantic subject capture for application re-links and Scholarship History amendments, removal of only the provably obsolete superseded-helper (20261019000001) rows, shared trusted baseline-session revalidation (`private.assert_trusted_baseline_session`), and the relationship-extended `security_invoker` `public.audit_activity` view (one row per `audit_event`). `public.audit_event` remains immutable, and there is no down migration.
+39. Repeat steps 3–6 for `supabase/migrations/20261021000001_audit_presentation_projection.sql` — appends bounded safe scalars to the `security_invoker` `audit_activity` view (paired endpoint ids, per-field Fellowship Thursday predecessor/current/amended values, the exact Scholarship Void reason, and immutable parent advising-meeting `meeting_date`/`application_id`/`advisor_id`); still one row per `audit_event`, no write path changed.
+40. Repeat steps 3–6 for `supabase/migrations/20261022000001_audit_activity_browser_safe.sql` — drops the raw payload columns (`old_values`/`new_values`/`changes`) from `audit_activity` (drop/recreate, same leading columns, `security_invoker` preserved), so an authenticated browser client cannot select raw audit JSON through the projection.
+41. Repeat steps 3–6 for `supabase/migrations/20261023000001_audit_event_raw_payload_boundary.sql` — revokes `authenticated` table-level `SELECT` on `public.audit_event` and grants column-level `SELECT` on exactly the non-raw columns (the raw payload columns are explicitly revoked), so the raw audit JSON is unreadable to every client role and is fetched only by server-only service-role code. `audit_event` RLS, `audit_event_subject` ACL/RLS, every write path, and `service_role` are unchanged, and there is no down migration.
+42. Repeat steps 3–6 for `supabase/migrations/20261024000001_dated_attendance_award_year.sql` — **final migration**: adds nullable `fellowship_thursday.event_date date` and `scholarship_history.award_year integer` (null-tolerant CHECK 1000–9999) with no default, so every pre-existing row keeps a truthful NULL. Authenticated-insert guards require each new operational record to supply its identifier (`42501` when omitted, trusted no-JWT service/import/seed inserts excepted); the identifiers are appended to the effective/list views and the base insert's immutable `created` audit event. No legacy date or year is inferred or backfilled, corrections cannot change either value, and there is no down migration.
+43. **Only after the complete migration chain is applied (through step 42):** provision each advisor via the admin pre-binding path (see [Advisor identity binding](#advisor-identity-binding-admin-pre-binding-not-email-self-link) above) — never create auth users to "self-link" by email. Use the protected `/api/advisors` endpoints (effective-Admin only). Because those endpoints require an existing effective Admin, **first** bootstrap the first effective Admin out of band (see [Bootstrap the first effective Admin](#bootstrap-the-first-effective-admin-trusted-operator-out-of-band)), then provision every other advisor normally.
+44. Verify the first active advisor (the bootstrapped Admin) can sign in — the pre-bound `auth_user_id` resolves their advisor row, `is_active` is `true`, and the strict-boolean `ocf_admin` claim grants effective admin.
 
-Migrations `20260305000001_allow_anon_read.sql` and `20260305000002_allow_anon_write.sql` are temporary bootstrap steps. After the full chain ending with `20260318000001_advisor_self_activation_lockdown.sql`, bootstrap anon access is no longer the intended steady state. Operational access comes only from authenticated active advisors, and `advisor.auth_user_id` binding is admin-only (see the identity-binding subsection above).
+Migrations `20260305000001_allow_anon_read.sql` and
+`20260305000002_allow_anon_write.sql` are temporary bootstrap steps. After the
+full chain ending with `20261024000001_dated_attendance_award_year.sql`,
+bootstrap anon access is no longer the intended steady state. Operational
+access comes only from authenticated active advisors, `advisor.auth_user_id`
+binding is admin-only, and history is append-only (base records and amendments
+are SELECT/INSERT-only).
 
-### Option B: Using Supabase CLI (disposable local instances only)
+### Option B: Supabase CLI against a hosted project (fresh/disposable only)
+
+> ⛔ `supabase link` + `supabase db push` must **not** be run against the
+> hosted **production** project. The production migration ledger records only
+> `20260924065221_advisor_self_activation_lockdown`, while this repository
+> tracks thirty-eight migrations ending with
+> `20261024000001_dated_attendance_award_year.sql`, and the deployed schema
+> differs materially. Generic `db push`, historical replay, and
+> migration-history repair against production are prohibited until a separately
+> approved reconciliation exists. See the
+> [reconciliation runbook](../aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
+
+For a fresh, disposable hosted project only, the CLI can apply the chain:
 
 ```bash
-# Link to your project (one time)
+# Link to your fresh project (one time)
 npx supabase link --project-ref <your-project-id>
 
-# Push all migrations to your Supabase project
+# Push all migrations to the fresh project
 npx supabase db push
 ```
 
-> ⚠️ `supabase link` + `supabase db push` must **not** be run against the
-> hosted production project. The production migration ledger records only
-> `20260924065221_advisor_self_activation_lockdown`, while this repository
-> tracks six migrations and the deployed schema differs materially. Generic
-> `db push`, historical replay, and migration-history repair against production
-> are prohibited until a separately approved reconciliation exists. See the
-> [reconciliation runbook](../aidlc-docs/changes/2026-09-25-schema-provenance-reconciliation/runbook.md).
+The local Docker workflow above (`supabase start` + `supabase db reset`) is the
+preferred path for development and testing; the CLI push path exists for
+provisioning a fresh hosted project.
 
 ## Step 3: Generate TypeScript Types
 
+> The repository migration chain now contains **thirty-eight** migrations and ends
+> with `20261024000001_dated_attendance_award_year.sql`.
+
 After applying the schema, generate TypeScript types for type-safe database access:
 
-### Method 1: Using Project ID (Recommended)
+### Method 1: Local instance (Recommended)
+
+With the Docker-local instance running:
 
 ```bash
 pnpm run db:types
 ```
 
-Or manually:
+This runs `supabase gen types --local > types/database.ts` and needs no project
+ID.
+
+### Method 2: Hosted project (project ID)
 
 ```bash
 npx supabase gen types typescript --project-id <your-project-id> > types/database.ts
 ```
 
-### Method 2: Using Database URL
+### Method 3: Using Database URL
 
 If you prefer to use a direct database connection:
 
@@ -136,19 +292,21 @@ This will verify:
 
 - Environment variables are set correctly
 - Connection to Supabase is successful
-- Database tables are accessible
+- Core database tables are accessible
 
 ## Step 5: Add Sample Data (Optional)
 
 To add sample data for testing:
 
-1. Navigate to **Table Editor** in Supabase dashboard
+1. Navigate to **Table Editor** in Supabase dashboard (or use the Docker-local instance)
 2. Select a table (e.g., `student`)
 3. Click **Insert row** → **Insert manually**
 4. Fill in the required fields
 5. Click **Save**
 
-Or create a seed script for automated sample data insertion.
+Or create a seed script for automated sample data insertion. (The repository
+intentionally ships no `seed.sql`; contract/E2E lanes create their own
+synthetic fixtures.)
 
 ## Database Schema
 
@@ -160,12 +318,45 @@ See [SCHEMA.md](./SCHEMA.md) for detailed documentation about:
 - Row Level Security policies
 - Sample queries
 
+### Historical integrity invariant and entity categories
+
+The database enforces one durable invariant: **no normal application access may
+change business history without an atomic, immutable audit record.** A
+meaningful change to a current-state business entity must run through that
+entity's database-owned versioned writer and commit exactly one immutable,
+database-authored `audit_event` in the same transaction; `audit_event` cannot be
+directly changed, deleted, or truncated by a normal product role; corrections to
+historical records are append-only amendments.
+
+| Category | Tables | Rule |
+| --- | --- | --- |
+| Current-state / audited | `student`, `advisor`, `fellowship`, `application` | Mutable only through the expected-`row_version` database writer; each meaningful mutation writes exactly one `audit_event`; direct authenticated `UPDATE` is revoked. |
+| Immutable base | `advising_meeting`, `fellowship_thursday`, `scholarship_history` | `SELECT`/`INSERT` only for normal roles; rows are never updated or deleted (audited `created`). |
+| Append-only amendment | `advising_meeting_amendment`, `fellowship_thursday_amendment`, `scholarship_history_amendment` | Appended corrections (`correction_added`; a Scholarship `Void` is `voided`); effective-value views apply corrections without rewriting base facts. |
+
+New operational records in the **immutable base** tables must identify their
+history: a Fellowship Thursday attendance record requires its weekly calendar
+`event_date`, and a Scholarship History award requires its four-digit `award_year`
+(1000–9999). The requirement is enforced at the database boundary by
+authenticated-insert guards; genuinely unknown legacy rows keep a truthful `NULL`,
+and no date or year is ever inferred or backfilled (trusted no-JWT
+import/seed inserts may retain `NULL`).
+
+The product `Admin` role is **not** a PostgreSQL superuser; the immutable Auth
+`app_metadata.ocf_admin = true` claim plus an active, pre-bound advisor is the
+only effective-admin authority. A `service_role`/DBA session is a separate
+technical trust boundary reserved for trusted provisioning, first-Admin
+bootstrap, and synthetic fixtures — never a normal application path. See
+[SCHEMA.md](./SCHEMA.md) and
+[`docs/schema-reference.md`](../docs/schema-reference.md) for details.
+
 ## Troubleshooting
 
 ### Types generation fails
 
-1. Ensure your project is deployed and schema is applied
-2. Verify your project ID is correct: `npx supabase projects list`
+1. For `pnpm run db:types`, ensure the Docker-local instance is running
+   (`pnpm exec supabase start`) and the schema is applied
+2. For a hosted project, verify your project ID is correct: `npx supabase projects list`
 3. Make sure you're logged in: `npx supabase login`
 
 ### Connection issues
@@ -193,6 +384,14 @@ If you're getting permission errors:
    by design
 5. For a new advisor, complete the admin pre-binding/invite path (see the
    identity-binding subsection above) before asking them to sign in
+6. Confirm the complete chain through
+   `20261024000001_dated_attendance_award_year.sql` was applied before
+   any advisor was provisioned
+7. A fresh project has **no effective Admin** until the first effective Admin
+   is bootstrapped out of band via the service role / Supabase Admin API (see
+   [Bootstrap the first effective Admin](#bootstrap-the-first-effective-admin-trusted-operator-out-of-band));
+   the protected `/api/advisors` provisioning paths are effective-Admin-only by
+   design and cannot create the first Admin
 
 ## Next Steps
 
@@ -204,10 +403,39 @@ If you're getting permission errors:
 6. ✅ Backfill confirmed advisor emails in `public.advisor.email`
 7. ✅ Apply active-advisor RLS migration (`20260317000004_active_advisor_rls.sql`)
 8. ✅ Apply advisor self-activation lockdown migration (`20260318000001_advisor_self_activation_lockdown.sql`)
-9. ✅ Provision each advisor via the admin pre-binding path (invite/create the auth account and bind its UUID to the unbound `advisor` row **before first sign-in**; one-time bind, no email self-link) — done only after the full migration chain (items 2–8) is applied
-10. ✅ Verify the first active advisor can sign in (pre-bound `auth_user_id` resolves the advisor row; `is_active = true`)
-11. ✅ Generate TypeScript types
-12. ✅ Verify connection
+9. ✅ Apply advising↔application link migration (`20260929000001_advising_application_link.sql`)
+10. ✅ Apply advising/application FK indexes (`20260930000002_advising_application_fk_indexes.sql`)
+11. ✅ Apply append-only advising history (`20260930000003_advising_meeting_append_only.sql`)
+12. ✅ Apply append-only advising amendments (`20260930000004_advising_meeting_amendments.sql`)
+13. ✅ Apply entity lifecycle archiving (`20260930000005_entity_lifecycle_archiving.sql`)
+14. ✅ Apply core history DELETE lockdown (`20260930000006_core_history_delete_lockdown.sql`)
+15. ✅ Apply lifecycle review remediation (`20260930000007_lifecycle_review_remediation.sql`)
+16. ✅ Apply explicit Admin/Advisor permissions (`20261001000001_explicit_admin_advisor_permissions.sql`)
+17. ✅ Apply advisor self-service role reconciliation (`20261002000001_advisor_self_service_role_reconciliation.sql`)
+18. ✅ Apply role-change lease/fencing migrations (`20261003000001`–`20261006000001`)
+19. ✅ Apply atomic role change migration (`20261007000001_atomic_advisor_role_change.sql`)
+20. ✅ Apply historical integrity remediation migration (`20261008000001_historical_integrity_remediation.sql`)
+21. ✅ Apply scholarship terminal-Void serialization migration (`20261009000001_scholarship_void_serialization.sql`)
+22. ✅ Apply read-only list views migration (`20261010000001_security_invoker_list_views.sql`)
+23. ✅ Apply scholarship operational summary migration (`20261011000001_scholarship_history_operational_summary.sql`)
+24. ✅ Apply immutable audit trail migration (`20261012000001_immutable_audit.sql`)
+25. ✅ Apply advisor/admin immutable history migration (`20261013000001_advisor_admin_immutable_history.sql`)
+26. ✅ Apply effective-Admin peer display-name RPC migration (`20261014000001_advisor_admin_profile_name.sql`)
+27. ✅ Apply protected current-state writers migration (`20261015000001_protected_current_state_writers.sql`)
+28. ✅ Apply historical audit + activity read model migration (`20261015000002_historical_audit_activity.sql`)
+29. ✅ Apply insert metadata + positive expected-version migration (`20261016000001_insert_metadata_and_positive_version.sql`)
+30. ✅ Apply advising-history TRUNCATE-revoke migration (`20261017000001_revoke_advising_meeting_truncate.sql`)
+31. ✅ Apply application re-link parent-locking migration (`20261018000001_lock_application_relink_parents.sql`)
+32. ✅ Apply final immutable-history remediation migration (`20261019000001_final_immutable_history_remediation.sql`) — `audit_event_subject` relationship read model, deterministic subject labels, and the trusted `begin_legacy_baseline_import` helper
+33. ✅ Apply complete immutable-history context migration (`20261020000001_complete_immutable_history_context.sql`)
+34. ✅ Apply audit presentation projection migration (`20261021000001_audit_presentation_projection.sql`) — bounded safe `audit_activity` scalars
+35. ✅ Apply browser-safe activity projection migration (`20261022000001_audit_activity_browser_safe.sql`) — raw payload columns dropped from `audit_activity`
+36. ✅ Apply raw audit payload boundary migration (`20261023000001_audit_event_raw_payload_boundary.sql`) — raw audit JSON unreadable to client roles
+37. ✅ Apply dated attendance + award-year migration (`20261024000001_dated_attendance_award_year.sql`) — **final migration**; nullable `fellowship_thursday.event_date`/`scholarship_history.award_year` (legacy NULL preserved), authenticated-insert guards require the identifier for new operational records
+38. ✅ Provision each advisor via the admin pre-binding path (invite/create the auth account and bind its UUID to the unbound `advisor` row **before first sign-in**; one-time bind, no email self-link) — done only after the full migration chain (items 2–37) is applied
+39. ✅ Verify the first active advisor can sign in (pre-bound `auth_user_id` resolves the advisor row; `is_active = true`)
+40. ✅ Generate TypeScript types
+41. ✅ Verify connection
 
 ## Auth and Account Notes
 
@@ -215,6 +443,16 @@ If you're getting permission errors:
 - Advisor identity is resolved by `auth_user_id` only (never by an email match);
   the session never self-links, so an advisor row must be pre-bound before
   first sign-in.
+- Effective administration is the immutable Auth claim
+  `app_metadata.ocf_admin = true` plus an active, pre-bound advisor
+  (`public.is_effective_admin()`), mirrored in `lib/auth/session.ts`; the
+  mutable `advisor.role` display column is never authorization.
+- The **first effective Admin** is bootstrapped out of band by a trusted
+  operator via the service role / Supabase Admin API (`app_metadata.ocf_admin
+  = true` + a pre-bound active advisor row); there is **no public bootstrap
+  endpoint**, and the service-role key is never exposed, committed, or logged.
+  After the first Admin exists, all subsequent advisors are provisioned
+  through the protected `/api/advisors` (effective-Admin-only) workflow.
 - The account page lives at `/dashboard/account` and allows advisors to update `advisor_name`, request an email change, and change their password.
 - Email updates should keep Supabase Auth and `public.advisor.email` synchronized.
 - Password recovery uses `supabase.auth.resetPasswordForEmail(...)` and redirects back to `/reset-password`.
@@ -222,7 +460,7 @@ If you're getting permission errors:
 ## Useful Commands
 
 ```bash
-# Generate types
+# Generate types (local instance must be running)
 pnpm run db:types
 
 # Test connection
@@ -232,10 +470,19 @@ pnpm run test:connection
 pnpm dev
 
 # Run Supabase locally (requires Docker)
-npx supabase start
+pnpm exec supabase start
+
+# Apply the full migration chain to a fresh local database
+pnpm exec supabase db reset --no-seed
+
+# Capture local runtime env (URLs/keys)
+pnpm exec supabase status -o env
 
 # View local Supabase logs
-npx supabase logs
+pnpm exec supabase logs
+
+# Stop local Supabase
+pnpm exec supabase stop --no-backup
 ```
 
 ## Resources

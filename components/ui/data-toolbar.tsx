@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
 import { AppCard } from "@/components/ui/app-card";
-import { cn } from "@/lib/utils/cn";
 
 interface DataToolbarProps {
   leading?: ReactNode;

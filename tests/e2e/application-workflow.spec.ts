@@ -6,8 +6,14 @@
  * selectors (#full_name / #email / #us_citizen / "Create Student") and advances
  * a seeded application through a pipeline stage via the edit dialog's
  * #app-stage select, verifying the advance persists across a reload.
+ *
+ * Fixture cleanup note: applications are historical records and the UI exposes
+ * NO Delete control (the entity-lifecycle-archiving change removed it), so the
+ * one test that creates an application cleans it up through the service role —
+ * never through a destructive UI path.
  */
 import { test, expect, type Page } from "@playwright/test";
+import { createClient } from "@supabase/supabase-js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -24,12 +30,28 @@ function requireEnv(name: string): string {
 const ACTIVE_EMAIL = requireEnv("E2E_ACTIVE_EMAIL");
 const ACTIVE_PASSWORD = requireEnv("E2E_ACTIVE_PASSWORD");
 const STUDENT_NAME = requireEnv("E2E_STUDENT_NAME");
+const STUDENT_TWO_NAME = requireEnv("E2E_STUDENT_TWO_NAME");
+const FELLOWSHIP_TWO_NAME = requireEnv("E2E_FELLOWSHIP_TWO_NAME");
+const CYCLE_YEAR_OLD = requireEnv("E2E_CYCLE_YEAR_OLD");
+const CYCLE_YEAR_NEW = requireEnv("E2E_CYCLE_YEAR_NEW");
 
 let counter = 0;
 
 function uniqueName(prefix: string): string {
   counter += 1;
   return `${prefix} ${Date.now()}-${counter}`;
+}
+
+/**
+ * Service-role client for test-support fixture cleanup only (never the browser
+ * under test). Used to remove rows the UI is deliberately forbidden to delete.
+ */
+function createServiceClient() {
+  const apiUrl = requireEnv("SUPABASE_URL");
+  const serviceRoleKey = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(apiUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
 }
 
 async function signInAsActive(page: Page): Promise<void> {
@@ -127,5 +149,146 @@ test.describe("application workflow", () => {
     const revertedRowAfterReload = page.locator("table tbody tr", { hasText: STUDENT_NAME });
     await expect(revertedRowAfterReload).toContainText("Submitted");
     await expect(revertedRowAfterReload.getByText("Yes", { exact: true })).toHaveCount(0);
+  });
+
+  test("the stage selector offers Did Not Submit and Withdrawn and each terminal stage persists with cleared flags", async ({ page }) => {
+    await signInAsActive(page);
+
+    await page.goto("/applications");
+    const seededRow = page.locator("table tbody tr", { hasText: STUDENT_NAME });
+    await expect(seededRow).toContainText("Submitted");
+
+    // Both non-finalist terminal stages are offered by the stage select, and
+    // each persists server-side with neither boolean flag set.
+    const setStage = async (stage: string): Promise<void> => {
+      await page
+        .locator("table tbody tr", { hasText: STUDENT_NAME })
+        .getByTitle("Edit application")
+        .click();
+      await page.locator("#app-stage").click();
+      await expect(page.getByRole("option", { name: "Did Not Submit", exact: true })).toBeVisible();
+      await expect(page.getByRole("option", { name: "Withdrawn", exact: true })).toBeVisible();
+      // The radix listbox is scroll-bounded (max-h-56), so the lower terminal
+      // options sit outside the clickable viewport and a pointer click times
+      // out. Focus the exact option through the DOM (no viewport-bound click),
+      // then commit it with Enter — the same user-visible selection.
+      const option = page.getByRole("option", { name: stage, exact: true });
+      await option.focus();
+      await page.keyboard.press("Enter");
+      await page.getByRole("dialog").getByRole("button", { name: "Save Changes" }).click();
+      await expect(page.locator("table tbody tr", { hasText: STUDENT_NAME })).toContainText(stage);
+    };
+
+    await setStage("Did Not Submit");
+    await expect(
+      page
+        .locator("table tbody tr", { hasText: STUDENT_NAME })
+        .getByText("Yes", { exact: true }),
+    ).toHaveCount(0);
+    await page.reload();
+    await expect(page.locator("table tbody tr", { hasText: STUDENT_NAME })).toContainText(
+      "Did Not Submit",
+    );
+
+    await setStage("Withdrawn");
+    await expect(
+      page
+        .locator("table tbody tr", { hasText: STUDENT_NAME })
+        .getByText("Yes", { exact: true }),
+    ).toHaveCount(0);
+    await page.reload();
+    await expect(page.locator("table tbody tr", { hasText: STUDENT_NAME })).toContainText(
+      "Withdrawn",
+    );
+
+    // Restore the seed stage so the reports spec's exact stage counts stay
+    // deterministic in either lane order.
+    await setStage("Submitted");
+  });
+
+  test("the seeded same-fellowship pair renders distinct cycle labels across different years", async ({ page }) => {
+    await signInAsActive(page);
+
+    // The seed creates TWO applications for the second student on the SAME
+    // fellowship (E2E_FELLOWSHIP_TWO_NAME) with EXPLICIT different cycles
+    // (CYCLE_YEAR_OLD / CYCLE_YEAR_NEW). They must render as two distinct
+    // "{fellowship} — {year}" labels — never collapse into one bare name.
+    const oldLabel = `${FELLOWSHIP_TWO_NAME} — ${CYCLE_YEAR_OLD}`;
+    const newLabel = `${FELLOWSHIP_TWO_NAME} — ${CYCLE_YEAR_NEW}`;
+    expect(oldLabel).not.toBe(newLabel);
+
+    await page.goto("/applications");
+
+    const oldRow = page.locator("table tbody tr", { hasText: oldLabel });
+    const newRow = page.locator("table tbody tr", { hasText: newLabel });
+    await expect(oldRow).toBeVisible();
+    await expect(newRow).toBeVisible();
+
+    // Exactly one row per cycle label, and both belong to the second student.
+    await expect(page.locator("table tbody tr", { hasText: FELLOWSHIP_TWO_NAME })).toHaveCount(2);
+    await expect(oldRow).toContainText(STUDENT_TWO_NAME);
+    await expect(newRow).toContainText(STUDENT_TWO_NAME);
+  });
+
+  test("an advisor can create an application with an explicit application year and the cycle label persists across a reload", async ({ page }) => {
+    await signInAsActive(page);
+
+    const createdYear = "2024";
+    const createdLabel = `${FELLOWSHIP_TWO_NAME} — ${createdYear}`;
+    // A unique destination marker lets the service role find exactly the row
+    // this test created (the seed never uses it) for safe fixture cleanup.
+    const destinationCountry = `E2E cycle ${Date.now()}`;
+
+    await page.goto("/applications");
+    await page.getByRole("button", { name: "New Application" }).click();
+
+    // The creation selectors are lazily bounded to the open dialog and
+    // filtered by a shared search field: type at least two characters, then
+    // choose the bounded option. The single search filters both lists, so it
+    // is retargeted between the student and fellowship choices.
+    await page.getByLabel("Search students and fellowships").fill(STUDENT_TWO_NAME);
+    await page.locator("#app-student").click();
+    await page.getByRole("option", { name: STUDENT_TWO_NAME, exact: true }).click();
+    await page.getByLabel("Search students and fellowships").fill(FELLOWSHIP_TWO_NAME);
+    await page.locator("#app-fellowship").click();
+    await page.getByRole("option", { name: FELLOWSHIP_TWO_NAME, exact: true }).click();
+    await page.locator("#app-year").fill(createdYear);
+    await page.locator("#app-country").fill(destinationCountry);
+
+    await page.getByRole("dialog").getByRole("button", { name: "Create Application" }).click();
+
+    // The new row renders the cycle-aware label (fellowship + year).
+    const row = page.locator("table tbody tr", { hasText: createdLabel });
+    await expect(row).toBeVisible();
+    await expect(row).toContainText(STUDENT_TWO_NAME);
+
+    // Reload → the explicit application year persists server-side.
+    await page.reload();
+    const rowAfterReload = page.locator("table tbody tr", { hasText: createdLabel });
+    await expect(rowAfterReload).toBeVisible();
+
+    // Clean up the created application so the reports spec's exact totals keep
+    // deriving from the seed export alone. Applications are historical records:
+    // the UI deliberately exposes NO Delete control (entity-lifecycle-archiving
+    // removes it), so cleanup goes through the service role — the same
+    // test-support path the operations spec uses.
+    const service = createServiceClient();
+    const { data: createdApp, error: findError } = await service
+      .from("application")
+      .select("application_id")
+      .eq("destination_country", destinationCountry)
+      .maybeSingle();
+    if (findError) throw new Error(`find created application for cleanup: ${findError.message}`);
+    expect(createdApp, "the created application must exist for cleanup").not.toBeNull();
+
+    const { error: deleteError } = await service
+      .from("application")
+      .delete()
+      .eq("application_id", createdApp!.application_id);
+    if (deleteError) throw new Error(`cleanup created application: ${deleteError.message}`);
+
+    // The UI row is gone after a reload (server loader no longer returns it).
+    await page.reload();
+    await expect(page.locator("table tbody tr", { hasText: createdLabel })).toHaveCount(0);
   });
 });

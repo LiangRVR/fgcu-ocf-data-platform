@@ -4,10 +4,11 @@ import {
   type Stage,
   deriveFlags,
   validateConsistency,
+  formatApplicationLabel,
 } from "@/lib/applications/pipeline";
 
 describe("STAGES", () => {
-  it("exposes the seven schema stages in order", () => {
+  it("exposes the nine schema stages in order", () => {
     expect(STAGES).toEqual([
       "Started",
       "Submitted",
@@ -15,13 +16,15 @@ describe("STAGES", () => {
       "Semi-Finalist",
       "Finalist",
       "Awarded",
+      "Did Not Submit",
       "Rejected",
+      "Withdrawn",
     ]);
   });
 
   it("is a readonly tuple matching the Stage type", () => {
     const first: Stage = STAGES[0];
-    expect(STAGES.length).toBe(7);
+    expect(STAGES.length).toBe(9);
     expect(first).toBe("Started");
   });
 });
@@ -31,10 +34,12 @@ describe("deriveFlags", () => {
     ["Started", { is_semi_finalist: false, is_finalist: false }],
     ["Submitted", { is_semi_finalist: false, is_finalist: false }],
     ["Under Review", { is_semi_finalist: false, is_finalist: false }],
+    ["Did Not Submit", { is_semi_finalist: false, is_finalist: false }],
     ["Semi-Finalist", { is_semi_finalist: true, is_finalist: false }],
     ["Finalist", { is_semi_finalist: true, is_finalist: true }],
     ["Awarded", { is_semi_finalist: true, is_finalist: true }],
     ["Rejected", { is_semi_finalist: false, is_finalist: false }],
+    ["Withdrawn", { is_semi_finalist: false, is_finalist: false }],
   ];
 
   it.each(cases)("derives consistent flags for stage %s", (stage, expected) => {
@@ -47,7 +52,9 @@ describe("validateConsistency", () => {
     expect(validateConsistency("Started", false, false)).toBeNull();
     expect(validateConsistency("Submitted", false, false)).toBeNull();
     expect(validateConsistency("Under Review", false, false)).toBeNull();
+    expect(validateConsistency("Did Not Submit", false, false)).toBeNull();
     expect(validateConsistency("Rejected", false, false)).toBeNull();
+    expect(validateConsistency("Withdrawn", false, false)).toBeNull();
     expect(validateConsistency("Semi-Finalist", true, false)).toBeNull();
     expect(validateConsistency("Finalist", true, true)).toBeNull();
     expect(validateConsistency("Awarded", true, true)).toBeNull();
@@ -95,7 +102,7 @@ describe("validateConsistency", () => {
     );
   });
 
-  it.each(["Started", "Submitted", "Under Review", "Rejected"] as const)(
+  it.each(["Started", "Submitted", "Under Review", "Did Not Submit", "Rejected", "Withdrawn"] as const)(
     "rejects an early stage (%s) marked as a finalist",
     (stage) => {
       expect(validateConsistency(stage, true, true)).toBe(
@@ -104,7 +111,7 @@ describe("validateConsistency", () => {
     }
   );
 
-  it.each(["Started", "Submitted", "Under Review", "Rejected"] as const)(
+  it.each(["Started", "Submitted", "Under Review", "Did Not Submit", "Rejected", "Withdrawn"] as const)(
     "rejects an early stage (%s) marked as a semi-finalist without finalist",
     (stage) => {
       expect(validateConsistency(stage, true, false)).toBe(
@@ -145,5 +152,51 @@ describe("validateConsistency", () => {
     expect(validateConsistency("Awarded", true, false)).toBe(
       'Stage is "Awarded" but the Finalist flag is not checked.'
     );
+  });
+});
+
+describe("formatApplicationLabel", () => {
+  it("renders a cycle-aware label for a known fellowship and year", () => {
+    expect(formatApplicationLabel("Fulbright", 2026)).toBe("Fulbright — 2026");
+  });
+
+  it("renders DISTINCT labels for the same fellowship across different cycle years", () => {
+    // The core same-fellowship-different-cycles requirement: two applications
+    // for one fellowship must never collapse into one label.
+    const oldCycle = formatApplicationLabel("Fulbright", 2025);
+    const newCycle = formatApplicationLabel("Fulbright", 2026);
+    expect(oldCycle).toBe("Fulbright — 2025");
+    expect(newCycle).toBe("Fulbright — 2026");
+    expect(oldCycle).not.toBe(newCycle);
+  });
+
+  it("accepts a string year and formats it identically to a numeric year", () => {
+    expect(formatApplicationLabel("Fulbright", "2026")).toBe("Fulbright — 2026");
+    expect(formatApplicationLabel("Fulbright", "2026")).toBe(
+      formatApplicationLabel("Fulbright", 2026)
+    );
+  });
+
+  it("never guesses a legacy null year: renders 'year unknown'", () => {
+    // Historic rows keep application_year NULL; the label must stay truthful.
+    expect(formatApplicationLabel("Fulbright", null)).toBe("Fulbright — year unknown");
+    expect(formatApplicationLabel("Fulbright", undefined)).toBe("Fulbright — year unknown");
+  });
+
+  it("renders 'Unknown fellowship — <year>' when only the year is known", () => {
+    expect(formatApplicationLabel(null, 2026)).toBe("Unknown fellowship — 2026");
+    expect(formatApplicationLabel(undefined, 2026)).toBe("Unknown fellowship — 2026");
+  });
+
+  it("renders 'Unknown application' when neither fellowship nor year is known", () => {
+    expect(formatApplicationLabel(null, null)).toBe("Unknown application");
+    expect(formatApplicationLabel(undefined, undefined)).toBe("Unknown application");
+    expect(formatApplicationLabel("", "")).toBe("Unknown application");
+  });
+
+  it("treats a falsy year (0) as unknown rather than rendering '— 0'", () => {
+    // A SMALLINT cycle of 0 is not a meaningful cycle; the label must fall back
+    // to the unknown-year wording instead of printing a misleading "— 0".
+    expect(formatApplicationLabel("Fulbright", 0)).toBe("Fulbright — year unknown");
   });
 });

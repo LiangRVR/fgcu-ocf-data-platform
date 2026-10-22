@@ -4,6 +4,7 @@ import { DetailSection } from "@/components/ui/detail-section";
 import { EmptyState } from "@/components/ui/empty-state";
 import { EntityHeader } from "@/components/ui/entity-header";
 import { MetricBadge } from "@/components/ui/metric-badge";
+import { LifecycleBadge, LifecycleAction } from "@/components/lifecycle";
 import {
   ArrowLeft,
   CalendarDays,
@@ -13,11 +14,36 @@ import {
 import Link from "next/link";
 import { createServerClient } from "@/lib/supabase/server";
 import type { Database } from "@/types/database";
+import { formatApplicationLabel } from "@/lib/applications/pipeline";
+import { getSessionUser, isOcfAdmin } from "@/lib/auth/session";
+import { EntityHistory } from "@/components/history/audit-history";
+import { ENTITY_HISTORY_PAGE_SIZE, getEntityHistoryPage } from "@/lib/audit/read";
 
 type Advisor = Database["public"]["Tables"]["advisor"]["Row"];
 type AdvisingMeeting = Database["public"]["Tables"]["advising_meeting"]["Row"] & {
   student: { student_id: number; full_name: string } | null;
+  recorded_by: { advisor_name: string } | null;
+  application_id: number | null;
+  application: {
+    application_id: number;
+    application_year: number | null;
+    fellowship_id: number;
+    fellowship: { fellowship_name: string } | null;
+  } | null;
 };
+
+function formatRecordedAt(createdAt: string | null | undefined): string {
+  if (!createdAt) return "date unavailable";
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return "date unavailable";
+  return date.toLocaleString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
 
 interface AdvisorDetailPageProps {
   params: Promise<{ id: string }>;
@@ -43,7 +69,7 @@ async function getMeetings(advisorId: number): Promise<AdvisingMeeting[]> {
   try {
     const { data, error } = await supabase
       .from("advising_meeting")
-      .select("*, student(student_id, full_name)")
+      .select("*, student(student_id, full_name), recorded_by:advisor!advising_meeting_created_by_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))")
       .eq("advisor_id", advisorId)
       .order("meeting_date", { ascending: false });
     if (error) return [];
@@ -61,9 +87,10 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
     notFound();
   }
 
-  const [advisor, meetings] = await Promise.all([
+  const [advisor, meetings, entityHistory] = await Promise.all([
     getAdvisor(advisorId),
     getMeetings(advisorId),
+    getEntityHistoryPage("advisor", advisorId),
   ]);
 
   if (!advisor) {
@@ -74,20 +101,37 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
   const uniqueStudentIds = new Set(meetings.map((m) => m.student_id));
   const uniqueStudentCount = uniqueStudentIds.size;
 
+  // Advisor lifecycle gating: only trusted OCF administrators (the
+  // immutable Auth app_metadata.ocf_admin claim) may deactivate or
+  // reactivate another advisor. Self-deactivation is rejected at the
+  // database boundary by the lifecycle RPC's self-deactivation guard.
+  const sessionUser = await getSessionUser();
+  const canManageAdvisorLifecycle = isOcfAdmin(sessionUser);
+
   return (
     <>
+      <EntityHistory items={entityHistory.items} hasMore={entityHistory.hasMore} nextCursor={entityHistory.nextCursor} highWatermark={entityHistory.highWatermark} pageSize={ENTITY_HISTORY_PAGE_SIZE} query={{ kind: "entity", entityType: "advisor", entityId: advisorId }} title="Advisor change history" />
       <EntityHeader
         kicker="Advisor Record"
         title={advisor.advisor_name}
         description={`Advisor ID ${advisor.advisor_id}${advisor.email ? ` • ${advisor.email}` : ""}`}
         badges={
           <>
-            <MetricBadge tone={advisor.is_active ? "green" : "red"}>{advisor.is_active ? "Active" : "Inactive"}</MetricBadge>
+            <LifecycleBadge kind="advisor" isActive={advisor.is_active} />
             <MetricBadge tone="slate">{advisor.role}</MetricBadge>
           </>
         }
         actions={
           <>
+            {canManageAdvisorLifecycle ? (
+              <LifecycleAction
+                entity="advisor"
+                entityId={advisor.advisor_id}
+                entityLabel={advisor.advisor_name}
+                action={advisor.is_active ? "deactivate" : "reactivate"}
+                variant={advisor.is_active ? "outline" : "default"}
+              />
+            ) : null}
             <Link href={`/advising?add=1&advisor_id=${advisor.advisor_id}`}>
               <Button size="sm">
                 <CalendarPlus className="mr-2 h-4 w-4" />
@@ -162,6 +206,14 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
                         {meeting.no_show ? "No-Show" : "Attended"}
                       </MetricBadge>
                     </div>
+                    <div className="mt-2 text-sm text-slate-600">
+                      {meeting.application_id == null
+                        ? "General Advising"
+                        : formatApplicationLabel(
+                            meeting.application?.fellowship?.fellowship_name,
+                            meeting.application?.application_year
+                          )}
+                    </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <MetricBadge tone={meeting.meeting_mode === "Virtual" ? "blue" : "slate"}>
                         {meeting.meeting_mode}
@@ -174,6 +226,9 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
                         })}
                       </MetricBadge>
                     </div>
+                    <p className="mt-3 text-xs text-slate-400">
+                      Recorded by {meeting.recorded_by?.advisor_name ?? "Unknown (legacy record)"} · Recorded {formatRecordedAt(meeting.created_at)}
+                    </p>
                     <p className="mt-3 text-sm leading-6 text-slate-500">
                       {meeting.notes || "No notes recorded yet."}
                     </p>
@@ -195,6 +250,9 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
                       Mode
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                      Context
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
                       Attended
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
@@ -214,15 +272,29 @@ export default async function AdvisorDetailPage({ params }: AdvisorDetailPagePro
                         </Link>
                       </td>
                       <td className="px-4 py-3 text-slate-600">
-                        {new Date(meeting.meeting_date + "T00:00:00").toLocaleDateString(
-                          "en-US",
-                          { year: "numeric", month: "short", day: "numeric" }
-                        )}
+                        <div>
+                          {new Date(meeting.meeting_date + "T00:00:00").toLocaleDateString(
+                            "en-US",
+                            { year: "numeric", month: "short", day: "numeric" }
+                          )}
+                        </div>
+                        <div className="mt-1 text-xs text-slate-400">
+                          Recorded by {meeting.recorded_by?.advisor_name ?? "Unknown (legacy record)"}
+                          <span className="block">Recorded {formatRecordedAt(meeting.created_at)}</span>
+                        </div>
                       </td>
                       <td className="px-4 py-3">
                         <MetricBadge tone={meeting.meeting_mode === "Virtual" ? "blue" : "slate"}>
                           {meeting.meeting_mode}
                         </MetricBadge>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-600">
+                        {meeting.application_id == null
+                          ? "General Advising"
+                          : formatApplicationLabel(
+                              meeting.application?.fellowship?.fellowship_name,
+                              meeting.application?.application_year
+                            )}
                       </td>
                       <td className="px-4 py-3">
                         {meeting.no_show ? (

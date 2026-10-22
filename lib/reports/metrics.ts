@@ -1,5 +1,7 @@
 // ── constants ─────────────────────────────────────────────────────────────────
 
+import { formatApplicationLabel } from "@/lib/applications/pipeline";
+
 export const STAGE_ORDER = [
   "Started",
   "Submitted",
@@ -7,7 +9,9 @@ export const STAGE_ORDER = [
   "Semi-Finalist",
   "Finalist",
   "Awarded",
+  "Did Not Submit",
   "Rejected",
+  "Withdrawn",
 ] as const;
 
 export const CLASS_ORDER = [
@@ -19,11 +23,15 @@ export const CLASS_ORDER = [
   "Doctoral",
 ] as const;
 
+/** Explicit label for advising meetings with no linked application. */
+export const GENERAL_ADVISING_LABEL = "General Advising" as const;
+
 // ── row types (Supabase select payloads) ──────────────────────────────────────
 
 export type ReportApplicationRow = {
   student_id: number;
   fellowship_id: number;
+  application_year?: number | null;
   stage_of_application: string;
   is_finalist: boolean;
   is_semi_finalist: boolean;
@@ -37,6 +45,16 @@ export type ReportMeetingRow = {
   no_show: boolean;
   meeting_date: string;
   advisor: { advisor_name: string } | null;
+  application_id: number | null;
+  application: ReportLinkedApplication | null;
+};
+
+/** Joined `application` relation for an advising meeting (application → fellowship). */
+export type ReportLinkedApplication = {
+  application_id: number;
+  fellowship_id: number;
+  application_year?: number | null;
+  fellowship: { fellowship_name: string } | null;
 };
 
 export type ReportStudentRow = {
@@ -46,9 +64,38 @@ export type ReportStudentRow = {
   class_standing: string | null;
 };
 
+/**
+ * One Fellowship Thursday record for reporting, sourced from the shared
+ * `effective_fellowship_thursday` SECURITY INVOKER view — never from raw base
+ * rows plus correction rows (corrections must never inflate attendance
+ * counts). `attended`/`source_info` are the deterministic effective values
+ * (newest applicable amendment per field, ordered by created_at/amendment_id).
+ * The optional `base_*` / `has_amendments` columns let callers surface the
+ * original record and its audit state.
+ */
 export type ReportFellowshipThursdayRow = {
   student_id: number;
   attended: boolean;
+  base_attended?: boolean;
+  source_info?: string | null;
+  base_source_info?: string | null;
+  has_amendments?: boolean;
+};
+
+/**
+ * One Scholarship History award for operational reads, sourced from the shared
+ * `effective_scholarship_history` SECURITY INVOKER view. Voids remain auditable
+ * in history but are excluded from operational award counts (`is_voided`).
+ */
+export type ReportScholarshipHistoryRow = {
+  history_id: number;
+  student_id: number;
+  fellowship_id: number;
+  base_fellowship_id?: number;
+  has_correction?: boolean;
+  is_voided?: boolean;
+  voided_at?: string | null;
+  voided_by_advisor_id?: number | null;
 };
 
 // ── result types ──────────────────────────────────────────────────────────────
@@ -63,13 +110,31 @@ export type FellowshipSummary = {
   awarded: number;
 };
 export type ClassStandingCount = { standing: string; count: number };
-export type AdvisorActivityRow = { id: number | null; name: string; total: number; noShows: number };
+export type AdvisorActivityRow = {
+  id: number | null;
+  name: string;
+  total: number;
+  noShows: number;
+  students: number;
+};
+export type StudentSessionsRow = { student_id: number; full_name: string; sessions: number };
+export type StudentApplicationSessionsRow = {
+  student_id: number;
+  full_name: string;
+  application_id: number | null;
+  label: string;
+  sessions: number;
+};
+export type FellowshipSessionsRow = { fellowship_id: number; label: string; sessions: number };
 export type MonthTrendRow = { month: string; total: number; noShows: number };
 export type ReportMetrics = {
   applicationsByStage: StageCount[];
   fellowshipsByFinalists: FellowshipSummary[];
   byClassStanding: ClassStandingCount[];
   advisorActivity: AdvisorActivityRow[];
+  advisingSessionsByStudent: StudentSessionsRow[];
+  advisingSessionsByStudentApplication: StudentApplicationSessionsRow[];
+  advisingSessionsByFellowship: FellowshipSessionsRow[];
   noShowTrend: MonthTrendRow[];
   advisingNoApplication: ReportStudentRow[];
   ftThenApplied: ReportStudentRow[];
@@ -99,6 +164,21 @@ export type ReportMetrics = {
  *   to the top 15; missing fellowship relations fall back to "Fellowship {id}".
  * - Advisors are keyed by advisor id (null -> "none") and sorted by meeting
  *   count descending; missing advisor relations fall back to "Unassigned".
+ *   Each row also carries the count of unique students advised.
+ * - Advising sessions by student group every meeting (General Advising and
+ *   application-linked) and are sorted by session count descending, then
+ *   student id ascending; missing student relations fall back to "Student {id}".
+ * - Advising sessions by student & application group meetings by student and
+ *   nullable application link. NULL `application_id` is explicitly labeled
+ *   "General Advising"; a non-NULL `application_id` whose relation is missing
+ *   keeps a safe "Application {id}" label and is never collapsed into General
+ *   Advising. Rows are sorted by student id ascending, then sessions descending.
+ * - Advising sessions by fellowship count only application-linked meetings
+ *   (non-NULL `application_id` with a joined application) and group by
+ *   fellowship, combining every application cycle into a single total; NULL
+ *   links and missing relations contribute to no fellowship. A missing
+ *   fellowship relation falls back to "Fellowship {id}". Rows are sorted by
+ *   sessions descending, then label ascending.
  * - The no-show trend takes the last six *observed* months (sorted ascending,
  *   then `slice(-6)`), NOT a calendar window.
  */
@@ -122,22 +202,25 @@ export function computeReportMetrics(
     }
   }
 
-  // ── Report 2: Finalists & Awarded by Fellowship ───────────────────────────
+  // ── Report 2: Finalists & Awarded by Fellowship + Application Year ────────
+  // Group by fellowship AND application year so cycles are never merged.
   const fellowshipMap = new Map<
-    number,
-    { name: string; total: number; semiFinalists: number; finalists: number; awarded: number }
+    string,
+    { id: number; name: string; total: number; semiFinalists: number; finalists: number; awarded: number }
   >();
   for (const a of applications) {
-    const name = a.fellowship?.fellowship_name ?? `Fellowship ${a.fellowship_id}`;
-    const rec = fellowshipMap.get(a.fellowship_id) ?? { name, total: 0, semiFinalists: 0, finalists: 0, awarded: 0 };
+    const baseName = a.fellowship?.fellowship_name ?? `Fellowship ${a.fellowship_id}`;
+    const year = a.application_year ?? null;
+    const key = `${a.fellowship_id}:${year ?? "unknown"}`;
+    const name = formatApplicationLabel(baseName, year);
+    const rec = fellowshipMap.get(key) ?? { id: a.fellowship_id, name, total: 0, semiFinalists: 0, finalists: 0, awarded: 0 };
     rec.total += 1;
     if (a.is_semi_finalist || a.stage_of_application === "Semi-Finalist") rec.semiFinalists += 1;
     if (a.is_finalist || a.stage_of_application === "Finalist") rec.finalists += 1;
     if (a.stage_of_application === "Awarded") rec.awarded += 1;
-    fellowshipMap.set(a.fellowship_id, rec);
+    fellowshipMap.set(key, rec);
   }
-  const fellowshipsByFinalists: FellowshipSummary[] = [...fellowshipMap.entries()]
-    .map(([id, v]) => ({ id, ...v }))
+  const fellowshipsByFinalists: FellowshipSummary[] = [...fellowshipMap.values()]
     .sort((a, b) => b.finalists - a.finalists || b.awarded - a.awarded)
     .slice(0, 15);
 
@@ -155,16 +238,93 @@ export function computeReportMetrics(
   }
 
   // ── Report 4: Advising Meetings by Advisor ────────────────────────────────
-  const advisorMap = new Map<string, { id: number | null; name: string; total: number; noShows: number }>();
+  const advisorMap = new Map<
+    string,
+    { id: number | null; name: string; total: number; noShows: number; students: Set<number> }
+  >();
   for (const m of meetings) {
     const name = m.advisor?.advisor_name ?? "Unassigned";
     const key = String(m.advisor_id ?? "none");
-    const rec = advisorMap.get(key) ?? { id: m.advisor_id ?? null, name, total: 0, noShows: 0 };
+    const rec = advisorMap.get(key) ?? {
+      id: m.advisor_id ?? null,
+      name,
+      total: 0,
+      noShows: 0,
+      students: new Set<number>(),
+    };
     rec.total += 1;
     if (m.no_show) rec.noShows += 1;
+    rec.students.add(m.student_id);
     advisorMap.set(key, rec);
   }
-  const advisorActivity: AdvisorActivityRow[] = [...advisorMap.values()].sort((a, b) => b.total - a.total);
+  const advisorActivity: AdvisorActivityRow[] = [...advisorMap.values()]
+    .map(({ students, ...rec }) => ({ ...rec, students: students.size }))
+    .sort((a, b) => b.total - a.total);
+
+  // ── Advising Sessions by Student (lifetime, General + linked) ─────────────
+  const studentNameMap = new Map(students.map((s) => [s.student_id, s.full_name]));
+  const studentSessionsMap = new Map<number, number>();
+  for (const m of meetings) {
+    studentSessionsMap.set(m.student_id, (studentSessionsMap.get(m.student_id) ?? 0) + 1);
+  }
+  const advisingSessionsByStudent: StudentSessionsRow[] = [...studentSessionsMap.entries()]
+    .map(([student_id, sessions]) => ({
+      student_id,
+      full_name: studentNameMap.get(student_id) ?? `Student ${student_id}`,
+      sessions,
+    }))
+    .sort((a, b) => b.sessions - a.sessions || a.student_id - b.student_id);
+
+  // ── Advising Sessions by Student & Application/Fellowship ────────────────
+  // NULL application_id is explicitly General Advising. A non-NULL
+  // application_id whose joined relation is missing keeps a safe
+  // "Application {id}" label and is never collapsed into General Advising.
+  const studentApplicationMap = new Map<string, StudentApplicationSessionsRow>();
+  for (const m of meetings) {
+    const applicationId = m.application_id ?? null;
+    const label =
+      applicationId === null
+        ? GENERAL_ADVISING_LABEL
+        : m.application
+          ? formatApplicationLabel(m.application.fellowship?.fellowship_name ?? null, m.application.application_year)
+          : `Application ${applicationId}`;
+    const key = `${m.student_id}|${applicationId === null ? "general" : applicationId}`;
+    const rec = studentApplicationMap.get(key) ?? {
+      student_id: m.student_id,
+      full_name: studentNameMap.get(m.student_id) ?? `Student ${m.student_id}`,
+      application_id: applicationId,
+      label,
+      sessions: 0,
+    };
+    rec.sessions += 1;
+    studentApplicationMap.set(key, rec);
+  }
+  const advisingSessionsByStudentApplication: StudentApplicationSessionsRow[] = [
+    ...studentApplicationMap.values(),
+  ].sort((a, b) => a.student_id - b.student_id || b.sessions - a.sessions);
+
+  // ── Advising Sessions by Fellowship (application-linked only) ────────────
+  // Only meetings with a non-NULL application_id AND a joined application
+  // contribute; General Advising and missing relations are excluded from every
+  // fellowship bucket. All application cycles for one fellowship combine into a
+  // single total (by fellowship), and a missing fellowship relation falls back
+  // to the existing safe "Fellowship {id}" label.
+  const fellowshipSessionsMap = new Map<number, FellowshipSessionsRow>();
+  for (const m of meetings) {
+    if (m.application_id === null || m.application === null) continue;
+    const linked = m.application;
+    const label = linked.fellowship?.fellowship_name ?? `Fellowship ${linked.fellowship_id}`;
+    const rec = fellowshipSessionsMap.get(linked.fellowship_id) ?? {
+      fellowship_id: linked.fellowship_id,
+      label,
+      sessions: 0,
+    };
+    rec.sessions += 1;
+    fellowshipSessionsMap.set(linked.fellowship_id, rec);
+  }
+  const advisingSessionsByFellowship: FellowshipSessionsRow[] = [...fellowshipSessionsMap.values()].sort(
+    (a, b) => b.sessions - a.sessions || a.label.localeCompare(b.label),
+  );
 
   // ── Report 5: No-Show Trend (last 6 observed months) ─────────────────────
   const monthMap = new Map<string, { total: number; noShows: number }>();
@@ -201,6 +361,9 @@ export function computeReportMetrics(
     fellowshipsByFinalists,
     byClassStanding,
     advisorActivity,
+    advisingSessionsByStudent,
+    advisingSessionsByStudentApplication,
+    advisingSessionsByFellowship,
     noShowTrend,
     advisingNoApplication,
     ftThenApplied,

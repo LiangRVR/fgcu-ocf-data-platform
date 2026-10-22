@@ -40,6 +40,7 @@ import {
 import type { Advisor } from "@/lib/auth/session";
 import { supabaseBrowserClient } from "@/lib/supabase/client";
 import { formatDate } from "@/lib/utils/format";
+import { formatApplicationLabel } from "@/lib/applications/pipeline";
 import {
   passwordUpdateSchema,
   profileUpdateSchema,
@@ -52,12 +53,19 @@ export interface AccountMeetingRecord {
   no_show: boolean;
   notes: string | null;
   student_id: number;
+  application_id: number | null;
   student: {
     student_id: number;
     full_name: string;
     email: string;
     major: string | null;
     class_standing: string | null;
+  } | null;
+  application: {
+    application_id: number;
+    application_year: number | null;
+    fellowship_id: number;
+    fellowship: { fellowship_name: string } | null;
   } | null;
 }
 
@@ -89,7 +97,6 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
   const router = useRouter();
   const [profileForm, setProfileForm] = useState({
     advisorName: advisor.advisor_name,
-    email: advisor.email ?? "",
   });
   const [profileErrors, setProfileErrors] = useState<Record<string, string>>({});
   const [isSavingProfile, setIsSavingProfile] = useState(false);
@@ -194,7 +201,11 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
 
   async function handleProfileSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const parsed = profileUpdateSchema.safeParse(profileForm);
+    const parsed = profileUpdateSchema.safeParse({
+      ...profileForm,
+      expectedVersion: advisor.row_version,
+      email: advisor.email ?? "",
+    });
 
     if (!parsed.success) {
       const nextErrors = Object.fromEntries(
@@ -208,24 +219,16 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
     setIsSavingProfile(true);
 
     try {
-      const emailChanged = (advisor.email ?? "").toLowerCase() !== parsed.data.email;
-
-      if (emailChanged) {
-        const { error } = await supabaseBrowserClient.auth.updateUser({
-          email: parsed.data.email,
-        });
-
-        if (error) {
-          throw new Error(error.message);
-        }
-      }
-
       const response = await fetch("/api/account/profile", {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(parsed.data),
+        body: JSON.stringify({
+          advisorName: parsed.data.advisorName,
+          expectedVersion: parsed.data.expectedVersion,
+          email: advisor.email ?? "",
+        }),
       });
 
       const payload = (await response.json().catch(() => null)) as
@@ -237,9 +240,7 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
       }
 
       toast.success("Account updated", {
-        description: emailChanged
-          ? "Your profile is saved. Check your email inboxes for any confirmation steps."
-          : "Your account profile has been updated.",
+        description: "Your account profile has been updated.",
       });
 
       router.refresh();
@@ -360,7 +361,7 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
               <AppCardHeader>
                 <AppCardTitle>Update your profile</AppCardTitle>
                 <AppCardDescription>
-                  You can change your display name and email here. Role and active status stay admin-controlled.
+                  You can change your display name here. Email changes require account administration; role and active status stay admin-controlled.
                 </AppCardDescription>
               </AppCardHeader>
               <AppCardContent>
@@ -391,21 +392,13 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
                       id="email"
                       type="email"
                       className="pl-9"
-                      value={profileForm.email}
-                      onChange={(event) =>
-                        setProfileForm((current) => ({
-                          ...current,
-                          email: event.target.value,
-                        }))
-                      }
-                      aria-invalid={!!profileErrors.email}
+                      value={advisor.email ?? ""}
+                      readOnly
+                      aria-describedby="email-help"
                     />
                   </div>
-                  {profileErrors.email && (
-                    <p className="text-xs text-destructive">{profileErrors.email}</p>
-                  )}
-                  <p className="text-xs text-muted-foreground">
-                    Changing your email may require confirmation in both your current and new inboxes, depending on Supabase settings.
+                  <p id="email-help" className="text-xs text-muted-foreground">
+                    Email changes require account administration. Contact an administrator for help.
                   </p>
                 </div>
 
@@ -650,6 +643,14 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
                           {meeting.no_show ? "No-show" : "Attended"}
                         </MetricBadge>
                       </div>
+                      <div className="mt-2 text-sm text-slate-600">
+                        {meeting.application_id == null
+                          ? "General Advising"
+                          : formatApplicationLabel(
+                              meeting.application?.fellowship?.fellowship_name,
+                              meeting.application?.application_year
+                            )}
+                      </div>
                       <div className="mt-3 flex flex-wrap gap-2">
                         <MetricBadge tone={meeting.meeting_mode === "Virtual" ? "blue" : "slate"}>
                           {meeting.meeting_mode}
@@ -667,6 +668,7 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
                         <th className="px-4 py-3 text-left font-medium text-slate-600">Student</th>
                         <th className="px-4 py-3 text-left font-medium text-slate-600">Date</th>
                         <th className="px-4 py-3 text-left font-medium text-slate-600">Mode</th>
+                        <th className="px-4 py-3 text-left font-medium text-slate-600">Context</th>
                         <th className="px-4 py-3 text-left font-medium text-slate-600">Status</th>
                         <th className="px-4 py-3 text-left font-medium text-slate-600">Notes</th>
                       </tr>
@@ -685,6 +687,14 @@ export function AccountPage({ advisor, initialMeetings, initialStudents }: Accou
                           </td>
                           <td className="px-4 py-3 align-top text-slate-700">{formatDate(meeting.meeting_date)}</td>
                           <td className="px-4 py-3 align-top text-slate-700">{meeting.meeting_mode}</td>
+                          <td className="px-4 py-3 align-top text-slate-700">
+                            {meeting.application_id == null
+                              ? "General Advising"
+                              : formatApplicationLabel(
+                                  meeting.application?.fellowship?.fellowship_name,
+                                  meeting.application?.application_year
+                                )}
+                          </td>
                           <td className="px-4 py-3 align-top">
                             <MetricBadge tone={meeting.no_show ? "red" : "green"}>
                               {meeting.no_show ? "No-show" : "Attended"}

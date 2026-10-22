@@ -22,7 +22,14 @@ export type {
   ProvisionFailure,
   ProvisionFailureCode,
   ProvisionResult,
+  ProvisionRoleSuccess,
   ProvisionSuccess,
+  RoleAwareProvisionInput,
+  SetAdvisorRoleInput,
+  SetRoleFailure,
+  SetRoleFailureCode,
+  SetRoleResult,
+  SetRoleSuccess,
 } from "./advisor";
 
 /** Thrown when server configuration for provisioning is incomplete. */

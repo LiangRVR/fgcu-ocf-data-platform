@@ -402,11 +402,17 @@ export function runTrackedSubprocess(
 }
 
 /**
- * Stop the isolated instance (no backup) with full teardown containment as a
- * TRACKED ASYNCHRONOUS child (see `runTrackedSubprocess`):
+ * Stop ONLY the isolated instance with full teardown containment as a TRACKED
+ * ASYNCHRONOUS child (see `runTrackedSubprocess`):
+ *   - the stop is scoped to the isolated project THROUGH THE `--workdir`
+ *     argument (the isolated workdir's `config.toml` carries the lane's unique
+ *     `project_id`), with `--no-backup --yes`:
+ *     `supabase stop --no-backup --yes --workdir <isolated>`. The repository's
+ *     own project is never the workdir, so it can never be stopped; no global
+ *     flag is ever emitted;
  *   - the child is registered in the process registry, so a process-level
- *     SIGINT/SIGTERM (and the lane `finally` teardown) terminates it — a hung
- *     `supabase stop` cannot block signal handling;
+ *     signal (and the lane teardown) terminates it — a hung `supabase stop`
+ *     cannot block signal handling;
  *   - a hard deadline (`timeoutMs`, default 120s) fires SIGTERM and escalates
  *     to SIGKILL after `killGraceMs` — a hung or SIGTERM-ignoring teardown is
  *     never left hanging;
@@ -417,13 +423,18 @@ export function runTrackedSubprocess(
  *     scrubbed through `redactSensitiveOutput` before they can be printed or
  *     written to any artifact.
  *
- * Returns `{ status, output, timedOut }` where `output` is the already-redacted
- * captured output (empty when the command produced nothing).
+ * Returns `{ status, output, timedOut, confirmed }` where `output` is the
+ * already-redacted captured output (empty when the command produced nothing)
+ * and `confirmed` is true only for a clean, non-timed-out exit.
  */
-export async function stopIsolatedSupabase(supabaseBin, workdir, { env, runtime, timeoutMs = 120_000, killGraceMs = 3_000 } = {}) {
+export async function stopIsolatedSupabase(
+  supabaseBin,
+  workdir,
+  { env, runtime, timeoutMs = 120_000, killGraceMs = 3_000 } = {}
+) {
   const result = await runTrackedSubprocess(
     supabaseBin,
-    supabaseArgs("stop", ["--no-backup"], workdir),
+    supabaseArgs("stop", ["--no-backup", "--yes"], workdir),
     { env, runtime, timeoutMs, killGraceMs }
   );
   return {
@@ -433,6 +444,7 @@ export async function stopIsolatedSupabase(supabaseBin, workdir, { env, runtime,
       { runtime }
     ),
     timedOut: result.timedOut,
+    confirmed: result.status === 0 && !result.timedOut,
   };
 }
 
@@ -472,6 +484,310 @@ export async function completeRetryableTeardown({ lane, stop, removeWorkdir, onE
       onError?.(caught);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Scoped project identity + label-only Docker fallback reaper
+// ---------------------------------------------------------------------------
+
+/** The repository's own Supabase project id — never a lane cleanup target. */
+export const REPOSITORY_PROJECT_ID = "fgcu-ocf-data-platform";
+
+/**
+ * The Docker label the Supabase CLI stamps on every resource it owns. Every
+ * scoped list/remove the fallback reaper issues filters on THIS label, so it
+ * can only ever touch resources the CLI created (and only the lane's own
+ * unique project value).
+ */
+export const SUPABASE_PROJECT_LABEL = "com.supabase.cli.project";
+
+/** Docker resource kinds the scoped reaper is permitted to list and remove. */
+const DOCKER_RESOURCE_KINDS = ["container", "network", "volume"];
+
+/**
+ * Validate a lane-generated project id before it can scope any cleanup
+ * command. Rejects empty/whitespace ids, the repository's own project id, and
+ * the CLI's default project id, so a global or repository-scoped operation can
+ * never be issued. Returns the id for chaining.
+ */
+export function assertSafeProjectId(
+  projectId,
+  { repositoryProjectId = REPOSITORY_PROJECT_ID } = {}
+) {
+  if (typeof projectId !== "string" || projectId.trim() === "") {
+    throw new Error("Refusing scoped cleanup: empty project id.");
+  }
+  if (projectId === repositoryProjectId) {
+    throw new Error(
+      `Refusing scoped cleanup: "${projectId}" is the repository project id.`
+    );
+  }
+  if (projectId === "supabase") {
+    throw new Error('Refusing scoped cleanup: "supabase" is the CLI default project id.');
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(projectId)) {
+    throw new Error(
+      `Refusing scoped cleanup: project id "${projectId}" contains unsafe characters.`
+    );
+  }
+  return projectId;
+}
+
+/** True when the id is a valid lane-scoped cleanup target (non-throwing probe). */
+export function isSafeProjectId(projectId, options) {
+  try {
+    assertSafeProjectId(projectId, options);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build the scoped `docker … ls` argument vector for one resource kind. The
+ * ONLY filter is the lane's own `com.supabase.cli.project` label value; no
+ * global/unfiltered listing is possible.
+ */
+export function dockerScopedListArgs(kind, projectId) {
+  assertSafeProjectId(projectId);
+  const filter = `label=${SUPABASE_PROJECT_LABEL}=${projectId}`;
+  switch (kind) {
+    case "container":
+      return ["ps", "-aq", "--filter", filter];
+    case "network":
+      return ["network", "ls", "-q", "--filter", filter];
+    case "volume":
+      return ["volume", "ls", "-q", "--filter", filter];
+    default:
+      throw new Error(`Unknown Docker resource kind: ${kind}`);
+  }
+}
+
+/**
+ * Build the scoped `docker … rm` argument vector for the EXACT ids a scoped
+ * list command returned. Refuses an empty id list, so an unfiltered/global
+ * remove can never be issued.
+ */
+export function dockerScopedRemoveArgs(kind, ids) {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw new Error("Refusing unfiltered Docker remove: no scoped ids supplied.");
+  }
+  switch (kind) {
+    case "container":
+      return ["rm", "-f", ...ids];
+    case "network":
+      return ["network", "rm", ...ids];
+    case "volume":
+      return ["volume", "rm", ...ids];
+    default:
+      throw new Error(`Unknown Docker resource kind: ${kind}`);
+  }
+}
+
+/** Split `docker … ls -q` output into trimmed, non-empty ids. */
+export function parseDockerIds(stdout) {
+  return String(stdout ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Label-scoped Docker fallback reaper. Lists ONLY resources carrying the lane's
+ * own `com.supabase.cli.project` label and removes ONLY the ids those scoped
+ * list commands returned. It never performs a global Docker cleanup and never
+ * issues an unfiltered remove; an empty/unfiltered remove is rejected at the
+ * argument-builder level.
+ *
+ * `run(cmd, args)` must return `{ status, stdout, stderr }` (sync or async).
+ * Returns `{ confirmed, removed, errors }`: `confirmed` is true only when every
+ * scoped list AND removal succeeded (or there was nothing to remove).
+ */
+export async function reapScopedDockerResources({
+  projectId,
+  run,
+  repositoryProjectId = REPOSITORY_PROJECT_ID,
+  log = () => {},
+  warn = () => {},
+} = {}) {
+  assertSafeProjectId(projectId, { repositoryProjectId });
+  if (typeof run !== "function") {
+    throw new Error("reapScopedDockerResources requires a run function.");
+  }
+  const removed = { containers: 0, networks: 0, volumes: 0 };
+  const errors = [];
+  let confirmed = true;
+
+  for (const kind of DOCKER_RESOURCE_KINDS) {
+    let listed;
+    try {
+      listed = await run("docker", dockerScopedListArgs(kind, projectId));
+    } catch (caught) {
+      errors.push(`${kind} list failed: ${caught.message}`);
+      confirmed = false;
+      continue;
+    }
+    if (listed?.status !== 0) {
+      errors.push(`${kind} list exited with code ${listed?.status}`);
+      confirmed = false;
+      continue;
+    }
+    const ids = parseDockerIds(listed.stdout);
+    if (ids.length === 0) continue;
+    let remove;
+    try {
+      remove = await run("docker", dockerScopedRemoveArgs(kind, ids));
+    } catch (caught) {
+      errors.push(`${kind} remove failed: ${caught.message}`);
+      confirmed = false;
+      continue;
+    }
+    if (remove?.status !== 0) {
+      errors.push(`${kind} remove exited with code ${remove?.status}`);
+      confirmed = false;
+      continue;
+    }
+    if (kind === "container") removed.containers += ids.length;
+    if (kind === "network") removed.networks += ids.length;
+    if (kind === "volume") removed.volumes += ids.length;
+  }
+
+  if (confirmed) {
+    log(`Scoped Docker cleanup confirmed for project ${projectId}.`);
+  } else {
+    warn(`Scoped Docker cleanup could not be confirmed for project ${projectId}.`);
+  }
+  return { confirmed, removed, errors };
+}
+
+/**
+ * Project-specific recovery text for a lane whose cleanup could not be
+ * confirmed. Deliberately names ONLY the workdir-scoped stop (via the isolated
+ * `--workdir`, whose config carries the lane's unique project id) and the
+ * exact resource label — never a global cleanup command.
+ */
+export function laneRecoverySummary(projectId, lane) {
+  const workdir = lane?.workdir ?? "<isolated-workdir>";
+  return (
+    `supabase stop --no-backup --yes --workdir ${workdir} ` +
+    `(or remove only resources labelled ${SUPABASE_PROJECT_LABEL}=${projectId})`
+  );
+}
+
+/**
+ * Build a MEMOIZED, idempotent, scoped lane teardown.
+ *
+ * `stop(lane)` attempts the normal workdir-scoped `supabase stop --no-backup
+ * --yes` (scoped to the isolated workdir, whose config carries the lane's
+ * unique project id) and returns `{ confirmed }` (or `true`). `reap(lane)` is
+ * the injected, label-filtered Docker reaper and runs ONLY when the normal
+ * stop cannot be confirmed. `removeWorkdir(lane)` runs ONLY after cleanup is
+ * confirmed: when cleanup cannot be confirmed the workdir is RETAINED and the
+ * project-specific recovery summary is logged, so recovery is deterministic.
+ *
+ * Memoization is keyed on the lane object, so repeated calls for the SAME lane
+ * (signal handler, `finally`, retry path) run once, while a fresh lane from a
+ * later attempt gets its own teardown.
+ */
+export function createScopedLaneTeardown({
+  stop,
+  reap,
+  removeWorkdir,
+  recovery = laneRecoverySummary,
+  log = () => {},
+  warn = () => {},
+} = {}) {
+  const runs = new WeakMap();
+  return function teardownLane(lane) {
+    if (!lane) return Promise.resolve({ confirmed: true, skipped: true });
+    let promise = runs.get(lane);
+    if (!promise) {
+      promise = runScopedTeardown(lane, { stop, reap, removeWorkdir, recovery, log, warn });
+      runs.set(lane, promise);
+    }
+    return promise;
+  };
+}
+
+async function runScopedTeardown(lane, { stop, reap, removeWorkdir, recovery, log, warn }) {
+  const projectId = lane.projectId;
+  let confirmed = false;
+
+  if (stop) {
+    try {
+      const result = await stop(lane);
+      confirmed = result === true || result?.confirmed === true;
+    } catch (caught) {
+      warn(`Normal scoped stop failed: ${caught.message}`);
+    }
+  }
+
+  if (!confirmed && reap) {
+    try {
+      const result = await reap(lane);
+      confirmed = result === true || result?.confirmed === true;
+    } catch (caught) {
+      warn(`Scoped Docker fallback reaper failed: ${caught.message}`);
+    }
+  }
+
+  if (confirmed) {
+    if (removeWorkdir) {
+      try {
+        removeWorkdir(lane);
+      } catch (caught) {
+        warn(`Could not remove isolated workdir: ${caught.message}`);
+      }
+    }
+    return { confirmed: true, projectId, workdir: lane.workdir };
+  }
+
+  const command = recovery(projectId, lane);
+  warn(
+    `Cleanup could not be confirmed for project ${projectId}; ` +
+      `retaining workdir ${lane.workdir} for recovery.`
+  );
+  warn(`Recovery: ${command}`);
+  return { confirmed: false, projectId, workdir: lane.workdir, command };
+}
+
+/**
+ * Install ONE-TIME signal handlers (SIGINT/SIGTERM/SIGHUP by default) that
+ * terminate spawned lane children and then AWAIT the shared teardown promise
+ * before exiting. Every signal is handled exactly once: the first signal runs
+ * the teardown and exits; any later signal is ignored (no double teardown, no
+ * re-entrant exit). Returns a disposer that removes the handlers (used by
+ * tests).
+ */
+export function installSignalTeardown({
+  terminate,
+  teardown,
+  signals = ["SIGINT", "SIGTERM", "SIGHUP"],
+  exitCode = 130,
+  error = () => {},
+} = {}) {
+  let handling = false;
+  const handlers = new Map();
+  const dispose = () => {
+    for (const [signal, handler] of handlers) process.removeListener(signal, handler);
+    handlers.clear();
+  };
+  for (const signal of signals) {
+    const handler = () => {
+      if (handling) return;
+      handling = true;
+      error(`\nReceived ${signal}; terminating spawned children, then running teardown before exit.`);
+      Promise.resolve()
+        .then(() => terminate?.())
+        .catch(() => {})
+        .then(() => teardown?.())
+        .catch(() => {})
+        .then(() => process.exit(exitCode));
+    };
+    handlers.set(signal, handler);
+    process.on(signal, handler);
+  }
+  return dispose;
 }
 
 // ---------------------------------------------------------------------------
@@ -1037,7 +1353,7 @@ export function sanitizeEnv(base = process.env) {
  *     signal or the timeout, or could not be spawned (`error` then carries the
  *     spawn error / `ETIMEDOUT`).
  */
-export function runProbe(cmd, args = [], { env, cwd, timeoutMs = 15_000, captureOutput = false } = {}) {
+export function runProbe(cmd, args = [], { env, cwd, timeoutMs = 15_000 } = {}) {
   const result = spawnSync(cmd, args, {
     cwd,
     encoding: "utf8",
@@ -1364,7 +1680,7 @@ function redactStreaming(text, { runtime, inSecretRow = false } = {}) {
   // Pre-runtime CLI `Label: value` pretty lines carry the same secrets as
   // `KEY="value"` lines; the label is preserved for diagnostics, the value is
   // masked (works even when `runtime` is empty because the capture failed).
-  out = out.replace(PRETTY_SECRET_RE, (whole, indent, label, sep, value) => {
+  out = out.replace(PRETTY_SECRET_RE, (whole, indent, label, sep) => {
     if (!PRETTY_SECRET_LABELS.has(label.trim().toLowerCase())) return whole;
     return `${indent}${label}:${sep}${REDACTED}`;
   });

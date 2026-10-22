@@ -13,6 +13,7 @@ import { StatCard } from "@/components/ui/stat-card";
 import { createServerClient } from "@/lib/supabase/server";
 import {
   computeReportMetrics,
+  GENERAL_ADVISING_LABEL,
   type ReportApplicationRow,
   type ReportFellowshipThursdayRow,
   type ReportMeetingRow,
@@ -69,6 +70,31 @@ function formatMonth(yyyyMM: string): string {
 }
 
 // ── data fetching ─────────────────────────────────────────────────────────────
+//
+// FULL-DATASET GUARD — Reports must never consume a paginated list page.
+//
+// Every query in `getReportsData` intentionally reads the COMPLETE authorized
+// source set for its own aggregation:
+//   * no `.range(...)`, no `.limit(...)`, and no `page`/`pageSize` state;
+//   * no `count: "exact"` list contract — the metrics are computed in
+//     `computeReportMetrics` from whole arrays, then rendered directly;
+//   * no import or reuse of a list loader, `lib/utils/pagination`, or the
+//     shared pagination component.
+//
+// RLS still scopes every row to the authenticated session (via the cookie-
+// backed server client), so "complete" means complete within the caller's
+// authorization — never an unauthenticated or service-role read. Making report
+// input depend on a list page would silently produce page-dependent,
+// incomplete totals; `tests/unit/app/(dashboard)/reports/page.test.ts` asserts
+// the no-range/no-limit query shape and full-dataset completeness beyond a
+// page size so a regression fails the unit lane.
+//
+// PERFORMANCE FOLLOW-UP (deliberately deferred, see
+// `aidlc-docs/project/architecture.md`): if profiling later shows report
+// transfer is a concern, introduce small `security_invoker` database
+// aggregates incrementally with parity tests against the existing pure metric
+// oracle in `lib/reports/metrics.ts`. Never paginate report inputs, and never
+// introduce a service-role report path or materialized view.
 
 type ReportsDataResult =
   | { ok: true; metrics: ReportMetrics }
@@ -80,6 +106,7 @@ export async function getReportsData(): Promise<ReportsDataResult> {
     // construction/request-context error also yields { ok: false } so the page
     // renders the explicit unavailable state.
     const supabase = createServerClient();
+    // Full authorized source sets: no `.range`/`.limit`/count is applied here.
     const [
       applicationsRes,
       meetingsRes,
@@ -88,15 +115,18 @@ export async function getReportsData(): Promise<ReportsDataResult> {
     ] = await Promise.all([
       supabase
         .from("application")
-        .select("student_id, fellowship_id, stage_of_application, is_finalist, is_semi_finalist, student(full_name, major, class_standing), fellowship(fellowship_name)"),
+        .select("student_id, fellowship_id, application_year, stage_of_application, is_finalist, is_semi_finalist, student(full_name, major, class_standing), fellowship(fellowship_name)"),
       supabase
         .from("advising_meeting")
-        .select("student_id, advisor_id, no_show, meeting_date, advisor(advisor_name)"),
+        .select("student_id, application_id, advisor_id, no_show, meeting_date, advisor!advising_meeting_advisor_id_fkey(advisor_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))"),
       supabase
         .from("student")
         .select("student_id, full_name, major, class_standing"),
+      // Operational Fellowship Thursday reads MUST consume the shared
+      // effective view: a correction must change the operational attendance
+      // totals and correction rows must never inflate the counts.
       supabase
-        .from("fellowship_thursday")
+        .from("effective_fellowship_thursday")
         .select("student_id, attended"),
     ]);
 
@@ -280,10 +310,10 @@ export default async function ReportsPage() {
         <Card className="border-gray-200 shadow-sm">
           <CardHeader className="pb-3">
             <CardTitle className="text-base font-semibold text-slate-900">
-              Finalists &amp; Awarded Students by Fellowship
+              Finalists &amp; Awarded Students by Fellowship &amp; Application Cycle
             </CardTitle>
             <AppCardDescription>
-              How far applicants advance for each fellowship
+              How far applicants advance for each fellowship and application cycle
             </AppCardDescription>
           </CardHeader>
           <CardContent>
@@ -293,7 +323,7 @@ export default async function ReportsPage() {
               <>
                 <div className="space-y-3 md:hidden">
                   {data.fellowshipsByFinalists.map(({ id, name, total, semiFinalists, finalists, awarded }) => (
-                    <div key={id} className="rounded-2xl border border-border/70 bg-surface-subtle/70 p-4">
+                    <div key={`${id}:${name}`} className="rounded-2xl border border-border/70 bg-surface-subtle/70 p-4">
                       <div className="flex items-start justify-between gap-3">
                         <Link
                           href={`/fellowships/${id}`}
@@ -329,7 +359,7 @@ export default async function ReportsPage() {
                   </thead>
                   <tbody>
                     {data.fellowshipsByFinalists.map(({ id, name, total, semiFinalists, finalists, awarded }) => (
-                      <tr key={id} className="border-b border-gray-50 last:border-0">
+                      <tr key={`${id}:${name}`} className="border-b border-gray-50 last:border-0">
                         <td className="py-2">
                           <Link
                             href={`/fellowships/${id}`}
@@ -395,7 +425,7 @@ export default async function ReportsPage() {
             ) : (
               <>
                 <div className="space-y-3 md:hidden">
-                  {data.advisorActivity.map(({ id, name, total, noShows }) => {
+                  {data.advisorActivity.map(({ id, name, total, noShows, students }) => {
                     const attended = total - noShows;
                     const rate = total > 0 ? Math.round((noShows / total) * 100) : 0;
 
@@ -416,6 +446,7 @@ export default async function ReportsPage() {
                         </div>
                         <div className="mt-3 flex flex-wrap gap-2">
                           <MetricBadge tone="green">{attended} attended</MetricBadge>
+                          <MetricBadge tone="blue">{students} unique students</MetricBadge>
                           <MetricBadge tone={noShows > 0 ? "red" : "slate"}>{noShows} no-shows</MetricBadge>
                           <MetricBadge tone={rate >= 30 ? "red" : "slate"}>{total > 0 ? `${rate}% rate` : "No rate yet"}</MetricBadge>
                         </div>
@@ -430,13 +461,14 @@ export default async function ReportsPage() {
                     <tr className="border-b border-gray-100">
                       <th className="pb-2 text-left font-medium text-slate-500">Advisor</th>
                       <th className="pb-2 text-center font-medium text-slate-500">Meetings</th>
+                      <th className="hidden pb-2 text-center font-medium text-slate-500 sm:table-cell">Unique Students</th>
                       <th className="hidden pb-2 text-center font-medium text-slate-500 sm:table-cell">Attended</th>
                       <th className="pb-2 text-center font-medium text-slate-500">No-Shows</th>
                       <th className="hidden pb-2 text-right font-medium text-slate-500 sm:table-cell">No-Show Rate</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {data.advisorActivity.map(({ id, name, total, noShows }) => {
+                    {data.advisorActivity.map(({ id, name, total, noShows, students }) => {
                       const attended = total - noShows;
                       const rate     = total > 0 ? Math.round((noShows / total) * 100) : 0;
                       return (
@@ -454,6 +486,7 @@ export default async function ReportsPage() {
                             )}
                           </td>
                           <td className="py-2 text-center font-medium text-slate-700">{total}</td>
+                          <td className="hidden py-2 text-center text-slate-500 sm:table-cell">{students}</td>
                           <td className="hidden py-2 text-center text-slate-500 sm:table-cell">{attended}</td>
                           <td className="py-2 text-center">
                             {noShows > 0 ? (
@@ -476,6 +509,62 @@ export default async function ReportsPage() {
                 </table>
                 </div>
               </>
+            )}
+          </CardContent>
+        </Card>
+
+        <div className="grid gap-6 lg:grid-cols-2">
+          <Card className="border-gray-200 shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-semibold text-slate-900">Advising Sessions by Student</CardTitle>
+              <AppCardDescription>Recorded advising sessions for each student</AppCardDescription>
+            </CardHeader>
+            <CardContent>
+              {data.advisingSessionsByStudent.length === 0 ? <p className="text-sm text-slate-400">No advising data yet.</p> : (
+                <ul className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                  {data.advisingSessionsByStudent.map(({ student_id, full_name, sessions }) => (
+                    <li key={student_id} className="flex items-center justify-between gap-3 text-sm">
+                      <Link href={`/students/${student_id}`} className="min-w-0 truncate text-slate-700 hover:text-[#006747] hover:underline">{full_name}</Link>
+                      <MetricBadge tone="slate" className="shrink-0">{sessions} sessions</MetricBadge>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-gray-200 shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-semibold text-slate-900">Advising Sessions by Student and Application/Fellowship</CardTitle>
+              <AppCardDescription>Student sessions grouped by application link; unlinked meetings are General Advising</AppCardDescription>
+            </CardHeader>
+            <CardContent>
+              {data.advisingSessionsByStudentApplication.length === 0 ? <p className="text-sm text-slate-400">No advising data yet.</p> : (
+                <ul className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                  {data.advisingSessionsByStudentApplication.map(({ student_id, full_name, application_id, label, sessions }) => (
+                    <li key={`${student_id}:${application_id ?? "general"}`} className="flex items-start justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2 text-sm">
+                      <div className="min-w-0"><Link href={`/students/${student_id}`} className="block truncate font-medium text-slate-700 hover:text-[#006747] hover:underline">{full_name}</Link><span className="text-xs text-slate-500">{application_id == null ? GENERAL_ADVISING_LABEL : label}</span></div>
+                      <MetricBadge tone="slate" className="shrink-0">{sessions} sessions</MetricBadge>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        <Card className="border-gray-200 shadow-sm">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base font-semibold text-slate-900">Advising Sessions by Fellowship</CardTitle>
+            <AppCardDescription>Sessions linked to an application for each fellowship; General Advising is excluded</AppCardDescription>
+          </CardHeader>
+          <CardContent>
+            {data.advisingSessionsByFellowship.length === 0 ? <p className="text-sm text-slate-400">No fellowship-linked advising data yet.</p> : (
+              <ul className="grid gap-2 sm:grid-cols-2">
+                {data.advisingSessionsByFellowship.map(({ fellowship_id, label, sessions }) => (
+                  <li key={fellowship_id} className="flex items-center justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2 text-sm"><span className="min-w-0 truncate text-slate-700">{label}</span><MetricBadge tone="slate" className="shrink-0">{sessions} sessions</MetricBadge></li>
+                ))}
+              </ul>
             )}
           </CardContent>
         </Card>

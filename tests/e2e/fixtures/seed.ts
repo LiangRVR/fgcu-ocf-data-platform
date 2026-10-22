@@ -3,7 +3,12 @@
  *
  * Seeds the E2E lane's Docker-local Supabase instance with:
  *   - two advisor AUTH users (active + inactive), each linked to a
- *     public.advisor row via auth_user_id;
+ *     public.advisor row via auth_user_id. The ACTIVE advisor carries the
+ *     immutable Auth `app_metadata.ocf_admin = true` claim: the E2E lane's
+ *     operator is a trusted OCF administrator, which is what lets the
+ *     lifecycle UI flows (Archive/Restore Student & Fellowship) exercise the
+ *     admin-only `lifecycle_transition` RPC end-to-end through the browser.
+ *     The INACTIVE advisor carries no claim and stays a plain non-admin;
  *   - one non-advisor AUTH user with NO public.advisor row, used by
  *     tests/e2e/auth.spec.ts to assert the `/login?reason=unauthorized`
  *     outcome (a signed-in session that cannot resolve to an advisor);
@@ -33,6 +38,20 @@ import { createClient } from "@supabase/supabase-js";
 const LOOPBACK_URL = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/;
 
 const RUN_TOKEN = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+/**
+ * Explicit application-cycle years used by every seeded application. The
+ * advising↔application link feature makes the cycle a first-class label, so
+ * fixtures never leave it implicit:
+ *   - CURRENT_CYCLE (2026) is the cycle for the seeded student's application
+ *     and for one of the second student's same-fellowship applications;
+ *   - PRIOR_CYCLE (2025) forms the other half of that same-fellowship pair and
+ *     the second student's awarded cycle.
+ * Both are exported to the E2E lane so specs assert labels derived from the
+ * seed rather than hand-written literals.
+ */
+const CURRENT_CYCLE = 2026;
+const PRIOR_CYCLE = 2025;
 // Deterministic for the disposable local lane, but assembled at runtime so the
 // complete password never exists as a committed credential-shaped literal.
 const PASSWORD = ["E2e", "Local", "Pass", "!", "2026"].join("");
@@ -95,11 +114,12 @@ async function main(): Promise<void> {
    */
   const nonAdvisorEmail = "e2e-non-advisor@example.com";
 
-  const createAuthUser = async (email: string) => {
+  const createAuthUser = async (email: string, appMetadata?: Record<string, unknown>) => {
     const { data, error } = await service.auth.admin.createUser({
       email,
       password: PASSWORD,
       email_confirm: true,
+      ...(appMetadata ? { app_metadata: appMetadata } : {}),
     });
     if (error) {
       throw new Error(`createUser(${email}): ${error.message}`);
@@ -110,8 +130,13 @@ async function main(): Promise<void> {
     return data.user;
   };
 
+  // The ACTIVE advisor is the lane's trusted OCF administrator (Auth
+  // app_metadata.ocf_admin=true): the lifecycle_transition RPC — and therefore
+  // the Archive/Restore UI flows — requires that immutable claim. The INACTIVE
+  // advisor is a plain non-admin so the auth gate / lifecycle-denial surfaces
+  // stay truthful.
   const [activeUser, inactiveUser] = await Promise.all([
-    createAuthUser(activeEmail),
+    createAuthUser(activeEmail, { ocf_admin: true }),
     createAuthUser(inactiveEmail),
   ]);
 
@@ -123,6 +148,7 @@ async function main(): Promise<void> {
     email: string,
     authUserId: string,
     isActive: boolean,
+    role: "Admin" | "Advisor",
   ): Promise<number> => {
     const { data, error } = await service
       .from("advisor")
@@ -131,6 +157,7 @@ async function main(): Promise<void> {
         email,
         auth_user_id: authUserId,
         is_active: isActive,
+        role,
       })
       .select("advisor_id")
       .single();
@@ -143,8 +170,12 @@ async function main(): Promise<void> {
   const activeAdvisorName = `E2E Active Advisor ${RUN_TOKEN}`;
   const inactiveAdvisorName = `E2E Inactive Advisor ${RUN_TOKEN}`;
   const [activeAdvisorId, inactiveAdvisorId] = await Promise.all([
-    insertAdvisor(activeAdvisorName, activeEmail, activeUser.id, true),
-    insertAdvisor(inactiveAdvisorName, inactiveEmail, inactiveUser.id, false),
+    // The ACTIVE advisor carries the ocf_admin=true claim: the persisted
+    // display role is reconciled to Admin (the same claim/role alignment the
+    // reconciliation migration enforces). The INACTIVE advisor has no claim
+    // and displays the safe Advisor role.
+    insertAdvisor(activeAdvisorName, activeEmail, activeUser.id, true, "Admin"),
+    insertAdvisor(inactiveAdvisorName, inactiveEmail, inactiveUser.id, false, "Advisor"),
   ]);
 
   // ── OCF fixtures ─────────────────────────────────────────────────────────
@@ -207,11 +238,14 @@ async function main(): Promise<void> {
   // local stage/flag invariant
   // (scripts/test-support/invariant-application-stage-flag.sql, applied by the
   // E2E lane after the production-equivalent migration chain):
-  // Submitted is an early stage and must carry neither flag.
+  // Submitted is an early stage and must carry neither flag. The cycle is
+  // explicit (CURRENT_CYCLE) so the seeded student's application label renders
+  // "E2E Fellowship <token> — 2026" instead of a legacy "year unknown".
   const { error: appError } = await service.from("application").insert({
     student_id: studentId,
     fellowship_id: fellowshipId,
     destination_country: "Testland",
+    application_year: CURRENT_CYCLE,
     stage_of_application: "Submitted",
     is_semi_finalist: false,
     is_finalist: false,
@@ -258,16 +292,39 @@ async function main(): Promise<void> {
   }
 
   // A second application on the second fellowship for dashboard variety.
-  // "Started" is an early stage: no flags.
+  // "Started" is an early stage: no flags. Explicit CURRENT_CYCLE so it forms
+  // one half of the seeded same-fellowship different-cycle pair on
+  // `secondFellowshipId` (the PRIOR_CYCLE row below is the other half).
   const { error: appTwoError } = await service.from("application").insert({
     student_id: secondStudentId,
     fellowship_id: secondFellowshipId,
+    application_year: CURRENT_CYCLE,
     stage_of_application: "Started",
     is_semi_finalist: false,
     is_finalist: false,
   });
   if (appTwoError) {
     throw new Error(`insert application two: ${appTwoError.message}`);
+  }
+
+  // The other half of the same-fellowship different-cycle pair: the second
+  // student has TWO application cycles on `secondFellowshipId` (PRIOR_CYCLE
+  // here, CURRENT_CYCLE above). This is what proves "same fellowship, different
+  // years" renders as distinct "{fellowship} — {year}" labels everywhere —
+  // the applications table, the student detail surface, and the advising
+  // dialog's student-scoped application options. "Submitted" is an early
+  // stage: no flags.
+  const { error: pairAppError } = await service.from("application").insert({
+    student_id: secondStudentId,
+    fellowship_id: secondFellowshipId,
+    destination_country: "Cycleland",
+    application_year: PRIOR_CYCLE,
+    stage_of_application: "Submitted",
+    is_semi_finalist: false,
+    is_finalist: false,
+  });
+  if (pairAppError) {
+    throw new Error(`insert same-fellowship pair application: ${pairAppError.message}`);
   }
 
   // The NONZERO awarded case: the second student's active application on the
@@ -281,6 +338,7 @@ async function main(): Promise<void> {
     student_id: secondStudentId,
     fellowship_id: thirdFellowshipId,
     destination_country: "Testland",
+    application_year: PRIOR_CYCLE,
     stage_of_application: "Awarded",
     // "Awarded" implies BOTH flags under the local stage/flag invariant.
     is_semi_finalist: true,
@@ -365,8 +423,18 @@ async function main(): Promise<void> {
         studentName,
         studentEmail,
         studentId,
+        secondStudentName,
+        secondStudentEmail,
+        secondStudentId,
         fellowshipName,
         fellowshipId,
+        secondFellowshipName,
+        secondFellowshipId,
+        // Explicit application-cycle years (single source of truth for the
+        // cycle-aware label assertions in the E2E specs).
+        studentApplicationYear: CURRENT_CYCLE,
+        cycleYearOld: PRIOR_CYCLE,
+        cycleYearNew: CURRENT_CYCLE,
         reportTotals,
       }),
   );

@@ -4,6 +4,7 @@ import { DetailSection } from "@/components/ui/detail-section";
 import { EmptyState } from "@/components/ui/empty-state";
 import { EntityHeader } from "@/components/ui/entity-header";
 import { MetricBadge } from "@/components/ui/metric-badge";
+import { LifecycleBadge, LifecycleAction } from "@/components/lifecycle";
 import {
   ArrowLeft,
   Award,
@@ -11,16 +12,19 @@ import {
   Trophy,
   FilePlus,
   BookOpen,
+  Archive,
 } from "lucide-react";
 import Link from "next/link";
 import { createServerClient } from "@/lib/supabase/server";
 import type { Database } from "@/types/database";
+import { EntityHistory } from "@/components/history/audit-history";
+import { ENTITY_HISTORY_PAGE_SIZE, getEntityHistoryPage } from "@/lib/audit/read";
 
 type Fellowship = Database["public"]["Tables"]["fellowship"]["Row"];
 type Application = Database["public"]["Tables"]["application"]["Row"] & {
   student: { student_id: number; full_name: string } | null;
 };
-type ScholarshipHistory = Database["public"]["Tables"]["scholarship_history"]["Row"] & {
+type ScholarshipHistory = Database["public"]["Views"]["effective_scholarship_history"]["Row"] & {
   student: { student_id: number; full_name: string } | null;
 };
 
@@ -58,15 +62,55 @@ async function getApplications(fellowshipId: number): Promise<Application[]> {
   }
 }
 
-async function getScholarshipHistory(fellowshipId: number): Promise<ScholarshipHistory[]> {
+/**
+ * Fellowship-detail Scholarship History reader.
+ *
+ * Reads the shared `effective_scholarship_history` view so the surface follows
+ * the corrected award program (an award whose program was corrected away from
+ * this fellowship no longer appears here, and one corrected to it does) and so
+ * voided awards are excluded. Student names are resolved with a scoped lookup
+ * because the view carries no PostgREST relationship to `student`.
+ */
+export async function getScholarshipHistory(fellowshipId: number): Promise<ScholarshipHistory[]> {
   const supabase = createServerClient();
   try {
     const { data, error } = await supabase
-      .from("scholarship_history")
-      .select("*, student(student_id, full_name)")
-      .eq("fellowship_id", fellowshipId);
+      .from("effective_scholarship_history")
+      .select("*")
+      .eq("fellowship_id", fellowshipId)
+      .eq("is_voided", false);
     if (error) return [];
-    return (data as ScholarshipHistory[]) || [];
+
+    const records = (data as Database["public"]["Views"]["effective_scholarship_history"]["Row"][]) || [];
+    const studentIds = [
+      ...new Set(
+        records
+          .map((record) => record.student_id)
+          .filter((id): id is number => id !== null),
+      ),
+    ];
+    const nameById = new Map<number, string>();
+    if (studentIds.length > 0) {
+      const { data: students } = await supabase
+        .from("student")
+        .select("student_id, full_name")
+        .in("student_id", studentIds);
+      for (const student of students ?? []) {
+        nameById.set(student.student_id, student.full_name);
+      }
+    }
+
+    return records.map((record) => {
+      const studentName =
+        record.student_id !== null ? nameById.get(record.student_id) : undefined;
+      return {
+        ...record,
+        student:
+          record.student_id !== null && studentName !== undefined
+            ? { student_id: record.student_id, full_name: studentName }
+            : null,
+      };
+    });
   } catch {
     return [];
   }
@@ -101,15 +145,23 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
     notFound();
   }
 
-  const [fellowship, applications, scholarshipHistory] = await Promise.all([
+  const [fellowship, applications, scholarshipHistory, entityHistory] = await Promise.all([
     getFellowship(fellowshipId),
     getApplications(fellowshipId),
     getScholarshipHistory(fellowshipId),
+    getEntityHistoryPage("fellowship", fellowshipId),
   ]);
 
   if (!fellowship) {
     notFound();
   }
+
+  // Lifecycle gate: an archived fellowship blocks new active-workflow
+  // children (new applications, new scholarship history entries). Existing
+  // applications and scholarship history are preserved with their archived
+  // program name intact. Restore is offered as the primary action when the
+  // fellowship is archived.
+  const isArchived = fellowship.archived_at != null;
 
   const finalistCount = applications.filter((a) => a.is_finalist).length;
   const semiFinalistCount = applications.filter((a) => a.is_semi_finalist).length;
@@ -121,14 +173,39 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
         kicker="Program Detail"
         title={fellowship.fellowship_name}
         description={`Fellowship ID ${fellowship.fellowship_id}`}
+        badges={
+          <LifecycleBadge
+            kind="fellowship"
+            archivedAt={fellowship.archived_at}
+            isActive={!isArchived}
+          />
+        }
         actions={
           <>
-            <Link href={`/applications?add=1&fellowship_id=${fellowship.fellowship_id}`}>
-              <Button size="sm">
-                <FilePlus className="mr-2 h-4 w-4" />
-                Add Application
-              </Button>
-            </Link>
+            {isArchived ? (
+              <>
+                <LifecycleAction
+                  entity="fellowship"
+                  entityId={fellowship.fellowship_id}
+                  entityLabel={fellowship.fellowship_name}
+                  action="restore"
+                  variant="default"
+                />
+                <Link href="/fellowships?view=archived">
+                  <Button variant="outline" size="sm">
+                    <Archive className="mr-2 h-4 w-4" />
+                    Archived fellowships
+                  </Button>
+                </Link>
+              </>
+            ) : (
+              <Link href={`/applications?add=1&fellowship_id=${fellowship.fellowship_id}`}>
+                <Button size="sm">
+                  <FilePlus className="mr-2 h-4 w-4" />
+                  Add Application
+                </Button>
+              </Link>
+            )}
             <Link href="/fellowships">
               <Button variant="outline" size="sm">
                 <ArrowLeft className="mr-2 h-4 w-4" />
@@ -155,32 +232,46 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
       />
 
       <div className="space-y-6">
+        <EntityHistory items={entityHistory.items} hasMore={entityHistory.hasMore} nextCursor={entityHistory.nextCursor} highWatermark={entityHistory.highWatermark} pageSize={ENTITY_HISTORY_PAGE_SIZE} query={{ kind: "entity", entityType: "fellowship", entityId: fellowshipId }} title="Fellowship change history" />
         <DetailSection
           title="Applications"
           description="Current application activity attached to this fellowship."
           icon={<Award className="h-5 w-5" />}
           actions={
-            <Link href={`/applications?add=1&fellowship_id=${fellowship.fellowship_id}`}>
-              <Button size="sm" variant="outline" className="h-8 text-xs">
-              <FilePlus className="mr-2 h-4 w-4" />
-              Add Application
-            </Button>
-          </Link>
+            isArchived ? (
+              <MetricBadge tone="amber" className="gap-1">
+                <Archive className="h-3 w-3" aria-hidden="true" />
+                Archived — view only
+              </MetricBadge>
+            ) : (
+              <Link href={`/applications?add=1&fellowship_id=${fellowship.fellowship_id}`}>
+                <Button size="sm" variant="outline" className="h-8 text-xs">
+                  <FilePlus className="mr-2 h-4 w-4" />
+                  Add Application
+                </Button>
+              </Link>
+            )
           }
         >
             {applications.length === 0 ? (
               <EmptyState
                 icon={Award}
                 title="No applications yet"
-                description="No applications are attached to this fellowship yet."
+                description={
+                  isArchived
+                    ? "No applications on record. The fellowship is archived; new applications are disabled while archived."
+                    : "No applications are attached to this fellowship yet."
+                }
                 compact
                 action={
-                  <Link href={`/applications?add=1&fellowship_id=${fellowship.fellowship_id}`}>
-                    <Button size="sm">
-                      <FilePlus className="mr-2 h-4 w-4" />
-                      Add First Application
-                    </Button>
-                  </Link>
+                  isArchived ? undefined : (
+                    <Link href={`/applications?add=1&fellowship_id=${fellowship.fellowship_id}`}>
+                      <Button size="sm">
+                        <FilePlus className="mr-2 h-4 w-4" />
+                        Add First Application
+                      </Button>
+                    </Link>
+                  )
                 }
               />
             ) : (
@@ -279,12 +370,19 @@ export default async function FellowshipDetailPage({ params }: FellowshipDetailP
           description="Students with recorded prior awards tied to this fellowship."
           icon={<Trophy className="h-5 w-5" />}
           actions={
-            <Link href={`/scholarship-history?add=1&fellowship_id=${fellowship.fellowship_id}`}>
-              <Button size="sm" variant="outline" className="h-8 text-xs">
-                <BookOpen className="mr-1.5 h-3.5 w-3.5" />
-                Add History
-              </Button>
-            </Link>
+            isArchived ? (
+              <MetricBadge tone="amber" className="gap-1">
+                <Archive className="h-3 w-3" aria-hidden="true" />
+                Archived — view only
+              </MetricBadge>
+            ) : (
+              <Link href={`/scholarship-history?add=1&fellowship_id=${fellowship.fellowship_id}`}>
+                <Button size="sm" variant="outline" className="h-8 text-xs">
+                  <BookOpen className="mr-1.5 h-3.5 w-3.5" />
+                  Add History
+                </Button>
+              </Link>
+            )
           }
         >
             {scholarshipHistory.length === 0 ? (

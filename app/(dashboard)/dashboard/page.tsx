@@ -23,6 +23,7 @@ import { PageSection } from "@/components/ui/page-section";
 import { StatCard } from "@/components/ui/stat-card";
 import { createServerClient } from "@/lib/supabase/server";
 import { formatDate } from "@/lib/utils/format";
+import { formatApplicationLabel } from "@/lib/applications/pipeline";
 
 export const metadata: Metadata = { title: "Dashboard" };
 export const dynamic = "force-dynamic";
@@ -89,17 +90,17 @@ async function getDashboardData() {
     supabase.from("student").select("is_ch_student, honors_college, first_gen"),
     supabase
       .from("application")
-      .select("fellowship(fellowship_name)")
+      .select("application_year, fellowship(fellowship_name)")
       .eq("is_finalist", true),
     supabase
       .from("advising_meeting")
-      .select("meeting_id, meeting_date, meeting_mode, no_show, student_id, student(full_name)")
+      .select("meeting_id, meeting_date, meeting_mode, no_show, student_id, application_id, student(full_name), application!advising_meeting_application_id_fkey(application_id, application_year, fellowship_id, fellowship(fellowship_name))")
       .order("meeting_date", { ascending: false })
       .limit(5),
     supabase
       .from("application")
       .select(
-        "application_id, stage_of_application, is_finalist, is_semi_finalist, student_id, fellowship_id, student(full_name), fellowship(fellowship_name)"
+        "application_id, stage_of_application, is_finalist, is_semi_finalist, application_year, student_id, fellowship_id, student(full_name), fellowship(fellowship_name)"
       )
       .order("application_id", { ascending: false })
       .limit(5),
@@ -117,12 +118,15 @@ async function getDashboardData() {
   const honorsCount = flags.filter((s) => s.honors_college).length;
   const firstGenCount = flags.filter((s) => s.first_gen).length;
 
-  // Finalists grouped by fellowship name
+  // Finalists grouped by fellowship + application year so cycles are not merged
+  type FinalistRow = {
+    fellowship: { fellowship_name: string } | null;
+    application_year: number | null;
+  };
   const fbfMap: Record<string, number> = {};
-  for (const row of finalistsByFellowshipRes.data ?? []) {
-    const f = row.fellowship as { fellowship_name: string } | null;
-    const name = f?.fellowship_name ?? "Unknown";
-    fbfMap[name] = (fbfMap[name] ?? 0) + 1;
+  for (const row of (finalistsByFellowshipRes.data ?? []) as FinalistRow[]) {
+    const label = formatApplicationLabel(row.fellowship?.fellowship_name, row.application_year);
+    fbfMap[label] = (fbfMap[label] ?? 0) + 1;
   }
   const finalistsByFellowship = Object.entries(fbfMap).sort(([, a], [, b]) => b - a);
 
@@ -132,7 +136,14 @@ async function getDashboardData() {
     meeting_mode: string;
     no_show: boolean;
     student_id: number;
+    application_id: number | null;
     student: { full_name: string } | null;
+    application: {
+      application_id: number;
+      application_year: number | null;
+      fellowship_id: number;
+      fellowship: { fellowship_name: string } | null;
+    } | null;
   };
 
   type RecentApplication = {
@@ -140,6 +151,7 @@ async function getDashboardData() {
     stage_of_application: string;
     is_finalist: boolean;
     is_semi_finalist: boolean;
+    application_year: number | null;
     student_id: number;
     fellowship_id: number;
     student: { full_name: string } | null;
@@ -505,6 +517,12 @@ export default async function DashboardPage() {
                       </Link>
                       <p className="text-xs text-slate-500">
                         {formatDate(m.meeting_date)} · {m.meeting_mode}
+                        {m.application_id == null
+                          ? " · General Advising"
+                          : ` · ${formatApplicationLabel(
+                              m.application?.fellowship?.fellowship_name,
+                              m.application?.application_year
+                            )}`}
                       </p>
                     </div>
                     {m.no_show && (
@@ -544,7 +562,7 @@ export default async function DashboardPage() {
                         href={`/fellowships/${a.fellowship_id}`}
                         className="truncate text-xs text-slate-500 hover:text-[#006747] hover:underline"
                       >
-                        {a.fellowship?.fellowship_name ?? "Unknown Fellowship"}
+                        {formatApplicationLabel(a.fellowship?.fellowship_name, a.application_year)}
                       </Link>
                     </div>
                     <div className="ml-2 flex shrink-0 flex-col items-end gap-1">
