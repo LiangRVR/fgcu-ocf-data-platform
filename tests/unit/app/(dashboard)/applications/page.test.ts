@@ -28,7 +28,12 @@ import ApplicationsPage, {
   normalizeFellowshipIdFilter,
   normalizeCountryFilter,
   normalizeSearchTerm,
+  dynamic,
 } from "@/app/(dashboard)/applications/page";
+
+it("marks the post-write applications list route dynamic", () => {
+  expect(dynamic).toBe("force-dynamic");
+});
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

@@ -7,11 +7,43 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  getNewYorkMonthRange,
+  percentageOf,
   isValidNewYorkDate,
   newYorkLocalMidnightInstant,
   newYorkNextLocalMidnightInstant,
   resolveNewYorkDateRange,
 } from "@/lib/utils/new-york-date";
+
+describe("getNewYorkMonthRange", () => {
+  it("uses the OCF month rather than the server/UTC month at a boundary", () => {
+    // Still October 31 in New York, already November 1 in UTC.
+    expect(getNewYorkMonthRange(new Date("2026-11-01T03:30:00.000Z"))).toMatchObject({
+      start: "2026-10-01",
+      endExclusive: "2026-11-01",
+      label: "October 2026",
+    });
+  });
+
+  it("rolls December into the following year", () => {
+    expect(getNewYorkMonthRange(new Date("2026-12-15T12:00:00.000Z"))).toMatchObject({
+      start: "2026-12-01",
+      endExclusive: "2027-01-01",
+    });
+  });
+});
+
+describe("percentageOf", () => {
+  it.each([
+    [0, 0, 0],
+    [3, 0, 0],
+    [3, 3, 100],
+    [4, 1, 25],
+    [3, 12, 100],
+  ])("handles total=%i portion=%i", (total, portion, expected) => {
+    expect(percentageOf(total, portion)).toBe(expected);
+  });
+});
 
 describe("isValidNewYorkDate", () => {
   it("accepts strict Gregorian dates including leap days", () => {

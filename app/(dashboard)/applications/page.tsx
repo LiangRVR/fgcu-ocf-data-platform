@@ -24,6 +24,10 @@ import { STAGES } from "@/lib/applications/pipeline";
 
 export const metadata: Metadata = { title: "Applications" };
 
+// This authenticated, server-authoritative list is refreshed immediately after
+// browser-side writes. It must not serve a cached RSC payload for the same URL.
+export const dynamic = "force-dynamic";
+
 /** Schema stage allowlist. Only these values may reach a PostgREST predicate. */
 const STAGE_ALLOWLIST: ReadonlySet<string> = new Set(STAGES);
 

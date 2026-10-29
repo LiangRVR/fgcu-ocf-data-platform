@@ -15,6 +15,10 @@ import { resolvePagination, totalPages } from "@/lib/utils/pagination";
 
 export const metadata: Metadata = { title: "Advising" };
 
+// This authenticated, server-authoritative list is refreshed immediately after
+// browser-side inserts and append-only corrections.
+export const dynamic = "force-dynamic";
+
 interface Props {
   searchParams: Promise<{
     add?: string;

@@ -124,7 +124,11 @@ vi.mock("@/components/advising/advising-table", async () => {
 
 // ── Functions under test ────────────────────────────────────────────────────
 
-import AdvisingPage from "@/app/(dashboard)/advising/page";
+import AdvisingPage, { dynamic } from "@/app/(dashboard)/advising/page";
+
+it("marks the post-write advising list route dynamic", () => {
+  expect(dynamic).toBe("force-dynamic");
+});
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

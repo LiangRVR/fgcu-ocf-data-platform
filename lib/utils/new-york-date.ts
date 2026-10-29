@@ -19,6 +19,42 @@ const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 const NEW_YORK = "America/New_York";
 
+export interface NewYorkMonthRange {
+  /** OCF calendar-date lower bound, inclusive. */
+  start: string;
+  /** First day of the following OCF month, exclusive. */
+  endExclusive: string;
+  /** Human-facing OCF reporting label. */
+  label: string;
+}
+
+/**
+ * Derive an OCF reporting month without depending on the server's local zone.
+ * Meeting dates are date-only values, so callers use the returned calendar
+ * bounds directly rather than converting them through UTC instants.
+ */
+export function getNewYorkMonthRange(now: Date = new Date()): NewYorkMonthRange {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: NEW_YORK,
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(now);
+  const year = Number(parts.find((part) => part.type === "year")?.value);
+  const month = Number(parts.find((part) => part.type === "month")?.value);
+  const next = new Date(Date.UTC(year, month, 1));
+  return {
+    start: `${year}-${String(month).padStart(2, "0")}-01`,
+    endExclusive: `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, "0")}-01`,
+    label: new Intl.DateTimeFormat("en-US", { timeZone: NEW_YORK, month: "long", year: "numeric" }).format(now),
+  };
+}
+
+/** Safe percentage for two counts drawn from the same reporting period. */
+export function percentageOf(total: number, portion: number): number {
+  if (!Number.isFinite(total) || !Number.isFinite(portion) || total <= 0 || portion <= 0) return 0;
+  return Math.min(100, Math.round((portion / total) * 100));
+}
+
 /** Strict Gregorian calendar-date validation (`YYYY-MM-DD`). */
 export function isValidNewYorkDate(value: string): boolean {
   const match = DATE_PATTERN.exec(value);

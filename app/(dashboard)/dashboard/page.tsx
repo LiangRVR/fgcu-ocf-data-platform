@@ -22,6 +22,7 @@ import { MetricBadge } from "@/components/ui/metric-badge";
 import { PageSection } from "@/components/ui/page-section";
 import { StatCard } from "@/components/ui/stat-card";
 import { createServerClient } from "@/lib/supabase/server";
+import { getNewYorkMonthRange, percentageOf } from "@/lib/utils/new-york-date";
 import { formatDate } from "@/lib/utils/format";
 import { formatApplicationLabel } from "@/lib/applications/pipeline";
 
@@ -47,8 +48,7 @@ function countBy<T extends object>(
 async function getDashboardData() {
   const supabase = createServerClient();
 
-  const now = new Date();
-  const startOfMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+  const reportingMonth = getNewYorkMonthRange();
 
   try {
     const [
@@ -80,11 +80,14 @@ async function getDashboardData() {
     supabase
       .from("advising_meeting")
       .select("meeting_id", { count: "exact", head: true })
-      .gte("meeting_date", startOfMonth),
+      .gte("meeting_date", reportingMonth.start)
+      .lt("meeting_date", reportingMonth.endExclusive),
     supabase
       .from("advising_meeting")
       .select("meeting_id", { count: "exact", head: true })
-      .eq("no_show", true),
+      .eq("no_show", true)
+      .gte("meeting_date", reportingMonth.start)
+      .lt("meeting_date", reportingMonth.endExclusive),
     supabase.from("application").select("stage_of_application"),
     supabase.from("student").select("class_standing"),
     supabase.from("student").select("is_ch_student, honors_college, first_gen"),
@@ -167,7 +170,7 @@ async function getDashboardData() {
         finalists: finalistsRes.count ?? 0,
         semiFinalists: semiFinalistsRes.count ?? 0,
         meetingsThisMonth: meetingsThisMonthRes.count ?? 0,
-        noShows: noShowsRes.count ?? 0,
+        noShowsThisMonth: noShowsRes.count ?? 0,
         chStudents: chCount,
         honorsStudents: honorsCount,
         firstGenStudents: firstGenCount,
@@ -256,8 +259,7 @@ function DistributionList({
 export default async function DashboardPage() {
   const result = await getDashboardData();
 
-  const now = new Date();
-  const monthLabel = now.toLocaleString("en-US", { month: "long", year: "numeric" });
+  const monthLabel = getNewYorkMonthRange().label;
 
   if (result.error) {
     return (
@@ -280,7 +282,7 @@ export default async function DashboardPage() {
   const startedApplications = distributions.appsByStage.find(([label]) => label === "Started")?.[1] ?? 0;
   const underReviewApplications = distributions.appsByStage.find(([label]) => label === "Under Review")?.[1] ?? 0;
   const finalistRate = stats.totalApplications > 0 ? Math.round((stats.finalists / stats.totalApplications) * 100) : 0;
-  const noShowRate = stats.meetingsThisMonth > 0 ? Math.round((stats.noShows / stats.meetingsThisMonth) * 100) : 0;
+  const noShowRate = percentageOf(stats.meetingsThisMonth, stats.noShowsThisMonth);
 
   return (
     <>
@@ -318,7 +320,7 @@ export default async function DashboardPage() {
             </div>
             <div className="rounded-2xl border border-border/70 bg-surface-subtle p-4">
               <p className="text-xs uppercase tracking-[0.18em] text-slate-400">No-show pressure</p>
-              <p className="mt-2 text-3xl font-semibold text-slate-950">{stats.noShows}</p>
+              <p className="mt-2 text-3xl font-semibold text-slate-950">{stats.noShowsThisMonth}</p>
               <p className="mt-1 text-xs text-slate-500">{noShowRate}% of meetings recorded this month were no-shows</p>
             </div>
           </div>
@@ -364,7 +366,7 @@ export default async function DashboardPage() {
           icon={CalendarCheck}
           tone="green"
           href="/advising"
-          trend={`${stats.noShows} no-shows recorded`}
+            trend={`${stats.noShowsThisMonth} no-shows this month`}
         />
         </div>
       </PageSection>
@@ -397,15 +399,15 @@ export default async function DashboardPage() {
             href: "/students?flag=first_gen",
           },
           {
-            label: "Advising No-Shows",
-            count: stats.noShows,
+            label: "Advising No-Shows This Month",
+            count: stats.noShowsThisMonth,
             icon: XCircle,
             tone: "rose",
             href: "/advising?no_show=yes",
           },
         ].map(({ label, count, icon: Icon, tone, href }) => {
           const pct =
-            label !== "Advising No-Shows" && stats.totalStudentsForFlags > 0
+              label !== "Advising No-Shows This Month" && stats.totalStudentsForFlags > 0
               ? Math.round((count / stats.totalStudentsForFlags) * 100)
               : null;
           return (
@@ -413,7 +415,7 @@ export default async function DashboardPage() {
               key={label}
               title={label}
               value={`${count.toLocaleString()}${pct !== null ? ` · ${pct}%` : ""}`}
-              description={pct !== null ? "Share of tracked students" : "Recorded across advising history"}
+              description={pct !== null ? "Share of tracked students" : `${monthLabel} only`}
               icon={Icon}
               tone={tone as "blue" | "amber" | "violet" | "rose"}
               href={href}
@@ -463,8 +465,8 @@ export default async function DashboardPage() {
                   tone: "blue" as const,
                 },
                 {
-                  label: "Advising no-shows",
-                  value: stats.noShows,
+                  label: "Advising no-shows this month",
+                  value: stats.noShowsThisMonth,
                   href: "/advising?no_show=yes",
                   tone: "red" as const,
                 },
