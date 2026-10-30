@@ -17,17 +17,24 @@
  *                                                         suppressed: only a
  *                                                         lifecycle summary is
  *                                                         logged on success and
- *                                                         a safe FIXED summary
+ *                                                         a safe fixed summary
  *                                                         (exit code + attempt
- *                                                         metadata, never the
- *                                                         captured output) on
+ *                                                         metadata) plus a
+ *                                                         bounded, REDACTED
+ *                                                         diagnostic excerpt on
  *                                                         failure, so the local
  *                                                         credentials the CLI
  *                                                         prints as a table
  *                                                         (Publishable/Secret/
  *                                                         Access Key/Secret
  *                                                         Key rows) are never
- *                                                         emitted.
+ *                                                         emitted. Recognized
+ *                                                         transient
+ *                                                         registry/image-pull
+ *                                                         failures retry the
+ *                                                         bounded whole lane
+ *                                                         after full isolated
+ *                                                         teardown.
  *   4. `supabase status -o env --workdir <isolated>`    – capture the runtime
  *                                                         local env (URL, anon
  *                                                         key, service-role
@@ -73,9 +80,11 @@ import path from "node:path";
 import {
   assertLoopbackRuntime,
   captureRuntimeEnv,
+  confirmTeardownBeforeRetry,
   createScopedLaneTeardown,
   installSignalTeardown,
   isPortConflictOutput,
+  isTransientRegistryStartFailure,
   killChildGracefully,
   pipeRedacted,
   prepareIsolatedSupabase,
@@ -384,10 +393,10 @@ async function runLane(attempt) {
 
   // ---- Start the isolated Docker-local Supabase ---------------------------
   // `supabase start` runs QUIET: its stdout/stderr is captured but NEVER
-  // surfaced. Arbitrary CLI diagnostics can contain credentials, so on failure
-  // only a safe fixed summary plus exit/attempt metadata is logged — the
-  // captured output is used strictly internally for port-conflict
-  // classification and bounded whole-lane retry.
+  // streamed raw. On failure only a safe fixed summary plus exit/attempt
+  // metadata and a bounded, redacted diagnostic excerpt is logged. The
+  // captured output is used strictly internally for port-conflict and
+  // transient registry/image-pull classification and bounded whole-lane retry.
   log("Starting isolated Docker-local Supabase...");
   const start = await runChild(
     "pnpm",
@@ -395,23 +404,44 @@ async function runLane(attempt) {
     { env: sanitizedEnv, timeoutMs: START_TIMEOUT_MS, captureOutput: true, quiet: true }
   );
   if (start.code !== 0) {
+    // Positive-and-narrow classification: a probed port conflict keeps its
+    // existing fresh-allocation retry, and a recognized transient
+    // registry/image-pull failure retries the whole lane after the SAME
+    // complete isolated teardown. Everything else fails fast — a real Docker,
+    // configuration, or migration defect must never be hidden by a retry.
     const conflict = isPortConflictOutput(start.output);
-    if (conflict && attempt < MAX_LANE_ATTEMPTS) {
-      warn(startFailureSummary({ exitCode: start.code, attempt, maxAttempts: MAX_LANE_ATTEMPTS, retryable: true, output: start.output }));
+    const transientRegistry = !conflict && isTransientRegistryStartFailure(start.output);
+    let reason;
+    if (conflict) reason = "port conflict";
+    else if (transientRegistry) reason = "transient registry/image pull failure";
+    if ((conflict || transientRegistry) && attempt < MAX_LANE_ATTEMPTS) {
       // The full async teardown (stop + scoped reaper + workdir removal) MUST
       // complete before the next attempt may begin — a retry can never start
       // against a still-running previous stack, and the memoized teardown
       // operates on the stable `isolated` lane snapshot. A workdir whose
-      // cleanup could not be confirmed is retained for recovery.
-      await teardownIsolated(isolated);
+      // cleanup could not be confirmed is retained for recovery, and the lane
+      // MUST NOT retry unless teardown explicitly confirms cleanup.
+      const gate = await confirmTeardownBeforeRetry(() => teardownIsolated(isolated));
+      if (!gate.retryable) {
+        error(startFailureSummary({ exitCode: start.code, attempt, maxAttempts: MAX_LANE_ATTEMPTS, reason, output: start.output }));
+        error("Environment blocker: the isolated Supabase teardown after the failed start was not confirmed; refusing to retry against a possibly live stack.");
+        error("Clean up the retained isolated workdir/resources listed above, then re-run.");
+        return { code: start.code };
+      }
+      warn(startFailureSummary({ exitCode: start.code, attempt, maxAttempts: MAX_LANE_ATTEMPTS, retryable: true, reason, output: start.output }));
       return { retryable: true };
     }
     if (conflict) {
-      error(startFailureSummary({ exitCode: start.code, attempt, maxAttempts: MAX_LANE_ATTEMPTS, output: start.output }));
+      error(startFailureSummary({ exitCode: start.code, attempt, maxAttempts: MAX_LANE_ATTEMPTS, reason, output: start.output }));
       error("Environment blocker: `supabase start` kept failing on port conflicts after all bounded whole-lane retries.");
+    } else if (transientRegistry) {
+      error(startFailureSummary({ exitCode: start.code, attempt, maxAttempts: MAX_LANE_ATTEMPTS, reason, output: start.output }));
+      error("Environment blocker: `supabase start` kept failing on transient Docker registry/image-pull errors after all bounded whole-lane retries.");
+      error("Ensure the Docker daemon is running and the registry is reachable, then re-run.");
+      error("The lane does NOT use a hosted/shared database as a substitute.");
     } else {
       error(startFailureSummary({ exitCode: start.code, attempt, maxAttempts: MAX_LANE_ATTEMPTS, output: start.output }));
-      error("Environment blocker: `supabase start` failed (Docker images could not be provisioned/started).");
+      error("Environment blocker: `supabase start` failed (unknown Docker/CLI/configuration error; not retried).");
       error("Ensure Docker is running and the Supabase images can be pulled (network access).");
       error("The lane does NOT use a hosted/shared database as a substitute.");
     }
@@ -545,9 +575,10 @@ async function main() {
     log("If the pull fails, the lane reports the environment blocker — it never falls back to a hosted database.");
   }
 
-  // Bounded whole-lane retry: port conflicts on `supabase start` tear down the
-  // isolated stack and retry with a fresh port allocation; every other failure
-  // is reported as the blocker it is.
+  // Bounded whole-lane retry: port conflicts and recognized transient
+  // registry/image-pull failures on `supabase start` tear down the isolated
+  // stack and retry with a fresh workdir/project/port allocation; every other
+  // failure is reported as the blocker it is.
   sanitizedLaneEnv = sanitizeEnv(process.env);
   for (let attempt = 1; attempt <= MAX_LANE_ATTEMPTS; attempt += 1) {
     const outcome = await runLane(attempt);

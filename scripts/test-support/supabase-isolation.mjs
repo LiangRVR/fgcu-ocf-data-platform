@@ -46,10 +46,22 @@
  *   - `assertLoopbackRuntime` refuses to run against anything that is not a
  *     loopback URL, so hosted/shared databases are impossible by construction.
  *   - `startFailureSummary` is the ONLY surfacing path for a failed/retried
- *     `supabase start`: a fixed summary plus exit/attempt metadata. The
- *     captured CLI output stays strictly internal (port-conflict
- *     classification and bounded retry) and is never printed — fail-closed,
- *     because arbitrary CLI diagnostics can contain credentials.
+ *     `supabase start`: a fixed summary plus exit/attempt metadata and a
+ *     bounded, redacted diagnostic excerpt. The captured CLI output is never
+ *     printed raw — fail-closed, because arbitrary CLI diagnostics can contain
+ *     credentials.
+ *   - `isTransientRegistryStartFailure` is a narrowly positive, locality-bound
+ *     classifier: true only when a SINGLE line shows BOTH a registry/image-pull
+ *     context AND a transient network transport error. Unrelated pull text plus
+ *     a later generic connection/timeout error, unknown failures, and
+ *     configuration-shaped failures stay fail-fast.
+ *   - `confirmTeardownBeforeRetry` gates a whole-lane retry on an explicitly
+ *     confirmed isolated teardown; missing/false confirmation or a thrown
+ *     teardown fails closed.
+ *   - `startFailureDiagnosticExcerpt` redacts captured startup output with the
+ *     shared redactor before bounding it by line and character count, so CI can
+ *     distinguish image-pull/Docker/CLI failures without exposing ephemeral
+ *     credentials.
  *
  * Ports and processes:
  *   - `findFreePorts`/`isPortFree` probe loopback ports (the latter for
@@ -153,25 +165,121 @@ export function isPortConflictOutput(text) {
 }
 
 /**
- * Build the ONLY diagnostic text emitted when `supabase start` fails (or is
- * retried): a fixed summary plus exit/attempt metadata. The captured
- * stdout/stderr is NEVER surfaced — arbitrary CLI diagnostics can contain
- * credentials, so it stays strictly internal for port-conflict classification
- * and bounded whole-lane retry. `output` is accepted (and deliberately
- * dropped) so the fail-closed contract is explicit at every call site and
- * provably testable: nothing the CLI wrote can reach a log or artifact.
+ * Registry/image-pull CONTEXT: output that comes from resolving or pulling a
+ * Docker image (or a build step that pulls one). Context alone is not enough to
+ * retry — see `isTransientRegistryStartFailure`.
  */
-export function startFailureSummary({ exitCode, attempt, maxAttempts, retryable = false, output }) {
-  // Fail-closed: the captured process output must never be emitted. It is
-  // referenced solely so the contract is enforced at the call site (the
-  // runner passes the captured result) and is excluded from the return value
-  // by construction.
-  void output;
-  const meta = `attempt ${attempt}/${maxAttempts}, exit code ${exitCode}`;
-  if (retryable) {
-    return `\`supabase start\` failed on ${meta}; retrying the whole lane with a fresh port allocation.`;
+const REGISTRY_PULL_CONTEXT_RE =
+  /(?:failed to (?:pull|resolve|copy|register layer|extract layer|download image)|pull(?:ing)? (?:the )?(?:image|images|manifest)|pull rate limit|toomanyrequests|docker\.io\/v2|registry(?:-1)?\.docker\.io|error response from daemon:\s*get\s+["']?https?:\/\/[^\s"']*(?:registry|docker))/i;
+
+/**
+ * Transient NETWORK/TRANSPORT errors Docker and registries report during a
+ * pull (timeouts, DNS failures, resets, rate limits, 5xx responses). Only
+ * consulted when `REGISTRY_PULL_CONTEXT_RE` also matched, so a database or
+ * configuration failure that happens to mention a timeout is not retried.
+ */
+const TRANSIENT_REGISTRY_NETWORK_RE =
+  /(?:tls handshake timeout|i\/o timeout|net\/http:.*timeout|connection (?:reset|refused|timed out|closed|aborted)|temporary failure in name resolution|no such host|server misbehaving|unexpected eof|context deadline exceeded|network is unreachable|host is unreachable|request timed out|proxyconnect tcp|toomanyrequests|too many requests|\b(?:429|502|503|504)\b|bad gateway|gateway timeout|service unavailable|(?:read|write|dial) tcp[^\n]*(?:timeout|refused|no route))/i;
+
+/**
+ * True ONLY for a transient registry/image-pull failure of `supabase start`.
+ *
+ * Positive-and-narrow by construction: a SINGLE line must contain BOTH a
+ * registry/image-pull context AND a transient transport error. The locality
+ * requirement is deliberate: a pull-progress line followed much later by an
+ * unrelated "connection refused"/"timeout" must not turn into a retry. Pull
+ * failures that are deterministic (missing manifest, denied access, a bad tag)
+ * and non-registry failures (Docker daemon down, port conflicts, invalid
+ * config) return false so the lanes fail fast instead of retrying a real
+ * defect.
+ */
+export function isTransientRegistryStartFailure(text) {
+  if (typeof text !== "string" || text.trim() === "") return false;
+  return text
+    .split(/\r?\n/)
+    .some(
+      (line) => REGISTRY_PULL_CONTEXT_RE.test(line) && TRANSIENT_REGISTRY_NETWORK_RE.test(line)
+    );
+}
+
+/** Default bound for the redacted diagnostic excerpt surfaced on failure. */
+const START_DIAGNOSTIC_MAX_CHARS = 1_200;
+const START_DIAGNOSTIC_MAX_LINES = 12;
+const START_DIAGNOSTIC_TRUNCATION_MARKER = "[...truncated...]";
+
+/**
+ * Build a credential-safe, bounded diagnostic excerpt from failed
+ * `supabase start` output.
+ *
+ * - Redaction runs FIRST (through the shared `redactSensitiveOutput` rules), so
+ *   a key/token cannot survive truncation as a partial value.
+ * - Only the LAST `maxLines` lines are kept (Docker prints the decisive error
+ *   after its progress noise), then the text is capped at `maxChars`
+ *   characters.
+ * - The result is never longer than `maxChars`; a marker says when the excerpt
+ *   was truncated. Empty/non-string input returns `""`.
+ */
+export function startFailureDiagnosticExcerpt(
+  output,
+  { maxChars = START_DIAGNOSTIC_MAX_CHARS, maxLines = START_DIAGNOSTIC_MAX_LINES, runtime } = {}
+) {
+  if (typeof output !== "string" || output.trim() === "") return "";
+  const charLimit =
+    Number.isFinite(maxChars) && maxChars > 0
+      ? Math.floor(maxChars)
+      : START_DIAGNOSTIC_MAX_CHARS;
+  const lineLimit =
+    Number.isFinite(maxLines) && maxLines > 0
+      ? Math.floor(maxLines)
+      : START_DIAGNOSTIC_MAX_LINES;
+
+  const redacted = redactSensitiveOutput(output, { runtime }).trim();
+  if (redacted === "") return "";
+
+  const lines = redacted.split(/\r?\n/);
+  let truncated = lines.length > lineLimit;
+  const kept = truncated ? lines.slice(-lineLimit) : lines;
+  let text = kept.join("\n");
+  const markerCost = START_DIAGNOSTIC_TRUNCATION_MARKER.length + 1;
+  const room = charLimit > markerCost ? charLimit - markerCost : charLimit;
+  if (text.length > room) {
+    text = text.slice(text.length - room);
+    truncated = true;
   }
-  return `\`supabase start\` failed on ${meta}.`;
+  if (!truncated) return text;
+  const withMarker = `${START_DIAGNOSTIC_TRUNCATION_MARKER}\n${text}`;
+  return withMarker.length <= charLimit
+    ? withMarker
+    : withMarker.slice(withMarker.length - charLimit);
+}
+
+/**
+ * Build the ONLY diagnostic text emitted when `supabase start` fails (or is
+ * retried): a fixed summary plus exit/attempt metadata and a bounded, REDACTED
+ * excerpt of the captured output. The raw captured output is never surfaced —
+ * arbitrary CLI diagnostics can contain credentials — so it is only passed
+ * through `startFailureDiagnosticExcerpt` (shared redactor + length/line
+ * bounds). Unknown failures still expose just enough redacted evidence to make
+ * the failure actionable in CI.
+ */
+export function startFailureSummary({
+  exitCode,
+  attempt,
+  maxAttempts,
+  retryable = false,
+  reason,
+  output,
+  runtime,
+  maxChars,
+  maxLines,
+}) {
+  const meta = `attempt ${attempt}/${maxAttempts}, exit code ${exitCode}`;
+  const cause = reason ? ` (${reason})` : "";
+  const summary = retryable
+    ? `\`supabase start\` failed on ${meta}${cause}; retrying the whole lane with a fresh isolated workdir and port allocation.`
+    : `\`supabase start\` failed on ${meta}${cause}.`;
+  const excerpt = startFailureDiagnosticExcerpt(output, { runtime, maxChars, maxLines });
+  return excerpt ? `${summary}\n${excerpt}` : summary;
 }
 
 // ---------------------------------------------------------------------------
@@ -483,6 +591,28 @@ export async function completeRetryableTeardown({ lane, stop, removeWorkdir, onE
     } catch (caught) {
       onError?.(caught);
     }
+  }
+}
+
+/**
+ * Gate a whole-lane retry on a CONFIRMED isolated teardown.
+ *
+ * `teardown()` is awaited fully (stop + scoped reaper + workdir removal for the
+ * lane). A retry is permitted ONLY when it returns an object with
+ * `confirmed === true`. Undefined/false/missing confirmation AND a thrown
+ * teardown error all fail closed (`retryable: false`), so a lane can never start
+ * a fresh attempt against a stack whose previous cleanup was not proven.
+ */
+export async function confirmTeardownBeforeRetry(teardown) {
+  if (typeof teardown !== "function") {
+    return { retryable: false, confirmed: false, result: undefined };
+  }
+  try {
+    const result = await teardown();
+    const confirmed = result?.confirmed === true;
+    return { retryable: confirmed, confirmed, result };
+  } catch (caught) {
+    return { retryable: false, confirmed: false, result: undefined, error: caught };
   }
 }
 
@@ -1392,8 +1522,10 @@ const JWT_RE = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
  */
 const JWT_FRAGMENT_RE = /\beyJ[A-Za-z0-9_-]{12,}/g;
 
-/** URL userinfo (scheme://user:pass@host) — redact the password portion. */
-const URL_USERINFO_RE = /(postgres(?:ql)?:\/\/[^/@:\s]+):[^/@\s]+@/gi;
+/** URL userinfo (scheme://user:pass@host) — redact the password portion for
+ *  ANY scheme, so registry/CI credentials in a failed pull URL cannot reach a
+ *  diagnostic excerpt. */
+const URL_USERINFO_RE = /([A-Za-z][A-Za-z0-9+.-]*:\/\/[^/@:\s]+):[^/@\s]+@/g;
 
 /** `KEY="value"` (and `export KEY="value"`) lines for credential keys. */
 const ASSIGNMENT_RE = /(^|\s)(export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:"[^"]*"|'[^']*'|\S+)/gm;

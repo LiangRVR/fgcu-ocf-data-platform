@@ -32,9 +32,18 @@
  *     escalates to SIGKILL;
  *   - `isLoopbackHttpUrl`/`isLoopbackDbUrl`/`presenceSummary`/`findFreePorts`
  *     behave as the runners rely on;
- *   - `startFailureSummary` is fail-closed: failed/retried `supabase start`
- *     surfacing emits a fixed summary plus exit/attempt metadata and NEVER the
- *     captured CLI output, even when that output contains credentials.
+ *   - `isTransientRegistryStartFailure` is narrowly positive and locality-bound:
+ *     only a registry/image-pull context combined with a transient network
+ *     transport error ON THE SAME LINE is retryable; deterministic pull errors,
+ *     non-registry failures, and pull text followed by an unrelated transport
+ *     error are not;
+ *   - `confirmTeardownBeforeRetry` permits a retry only after an explicitly
+ *     confirmed isolated teardown (missing/false/throw fails closed);
+ *   - `startFailureDiagnosticExcerpt` redacts captured startup output before
+ *     bounding it by line/character count;
+ *   - `startFailureSummary` surfaces a fixed summary, exit/attempt metadata,
+ *     and only that bounded REDACTED excerpt — never raw captured output, even
+ *     when it contains credentials.
  *   - `stopIsolatedSupabase` runs the `supabase stop` teardown with FULL
  *     containment: hostile inherited credentials (bare and `SUPABASE_*`) are
  *     never passed into the child env, and captured labelled-secret /
@@ -56,6 +65,7 @@ import {
   assertSafeProjectId,
   captureRuntimeEnv,
   completeRetryableTeardown,
+  confirmTeardownBeforeRetry,
   createRedactTransform,
   createScopedLaneTeardown,
   dockerScopedListArgs,
@@ -68,6 +78,7 @@ import {
   isPortConflictOutput,
   isPortFree,
   isSafeProjectId,
+  isTransientRegistryStartFailure,
   killChildGracefully,
   laneRecoverySummary,
   mergeRuntimeMaps,
@@ -83,6 +94,7 @@ import {
   runTeardownSubprocess,
   runTrackedSubprocess,
   sanitizeEnv,
+  startFailureDiagnosticExcerpt,
   startFailureSummary,
   stopIsolatedSupabase,
   terminateAllChildren,
@@ -512,6 +524,14 @@ describe("redactSensitiveOutput", () => {
     );
     expect(redacted).not.toContain("supersecret");
     expect(redacted).toContain("postgresql://postgres:[REDACTED]@127.0.0.1:54322/postgres");
+  });
+
+  it("redacts userinfo credentials from arbitrary URL schemes", () => {
+    const redacted = redactSensitiveOutput(
+      'Get "https://ci-user:registry-sentinel@registry.example.test/v2/": 503 Service Unavailable'
+    );
+    expect(redacted).not.toContain("registry-sentinel");
+    expect(redacted).toContain("https://ci-user:[REDACTED]@registry.example.test/v2/");
   });
 
   it("redacts credential assignments while preserving the key name", () => {
@@ -1137,8 +1157,131 @@ describe("isPortConflictOutput", () => {
   });
 });
 
-describe("startFailureSummary fail-closed start surfacing", () => {
-  it("never includes captured start output, even when it contains credentials", () => {
+describe("isTransientRegistryStartFailure", () => {
+  it("recognizes real transient registry/image-pull failures", () => {
+    expect(
+      isTransientRegistryStartFailure(
+        'failed to solve: failed to resolve source metadata for docker.io/supabase/postgres:15.8.1.085: failed to do request: Head "https://registry-1.docker.io/v2/supabase/postgres/manifests/15.8.1.085": net/http: TLS handshake timeout'
+      )
+    ).toBe(true);
+    expect(
+      isTransientRegistryStartFailure(
+        'Error response from daemon: Get "https://registry-1.docker.io/v2/": net/http: TLS handshake timeout'
+      )
+    ).toBe(true);
+    expect(
+      isTransientRegistryStartFailure(
+        'failed to pull image "supabase/postgres:15.8.1.085": read tcp 10.0.0.1:54321->1.2.3.4:443: read: connection reset by peer'
+      )
+    ).toBe(true);
+    expect(
+      isTransientRegistryStartFailure(
+        "Error response from daemon: toomanyrequests: You have reached your pull rate limit."
+      )
+    ).toBe(true);
+    expect(
+      isTransientRegistryStartFailure(
+        "failed to register layer: unexpected EOF"
+      )
+    ).toBe(true);
+  });
+
+  it("requires registry context and transport error on the SAME line", () => {
+    expect(
+      isTransientRegistryStartFailure(
+        'failed to pull image "supabase/postgres:15.8.1.085": connection refused'
+      )
+    ).toBe(true);
+    expect(
+      isTransientRegistryStartFailure(
+        [
+          "Pulling supabase/postgres:15.8.1.085",
+          "progress: 45%",
+          "database connection refused",
+        ].join("\n")
+      )
+    ).toBe(false);
+    expect(
+      isTransientRegistryStartFailure(
+        [
+          "failed to pull image supabase/postgres:latest",
+          "listen tcp 127.0.0.1:54322: connect: connection refused",
+        ].join("\n")
+      )
+    ).toBe(false);
+  });
+
+  it("rejects deterministic pull failures and non-registry failures", () => {
+    expect(
+      isTransientRegistryStartFailure("failed to pull image supabase/postgres:latest: not found")
+    ).toBe(false);
+    expect(
+      isTransientRegistryStartFailure(
+        "Error response from daemon: pull access denied for supabase/postgres, repository does not exist"
+      )
+    ).toBe(false);
+    expect(
+      isTransientRegistryStartFailure(
+        "failed to resolve source metadata for docker.io/supabase/postgres: manifest unknown"
+      )
+    ).toBe(false);
+    expect(isTransientRegistryStartFailure("Error: Port 54321 is already in use.")).toBe(false);
+    expect(isTransientRegistryStartFailure("Docker daemon is not running")).toBe(false);
+    expect(
+      isTransientRegistryStartFailure(
+        'failed to solve: process "/bin/sh -c apk add curl" did not complete successfully: network is unreachable'
+      )
+    ).toBe(false);
+    expect(isTransientRegistryStartFailure("")).toBe(false);
+    expect(isTransientRegistryStartFailure(null as unknown as string)).toBe(false);
+  });
+});
+
+describe("startFailureDiagnosticExcerpt", () => {
+  it("redacts credentials and labelled secret rows before surfacing anything", () => {
+    const sentinel = "SENTINEL_CREDENTIAL_9f3a7c42";
+    const excerpt = startFailureDiagnosticExcerpt(
+      [
+        "Error response from daemon: Get \"https://registry-1.docker.io/v2/\": net/http: TLS handshake timeout",
+        `SERVICE_ROLE_KEY="${sentinel}"`,
+        `Secret  ${sentinel}`,
+        "Publishable  sb_publishable_local_key_abcdef123456",
+        `DB_URL="postgresql://postgres:${sentinel}@127.0.0.1:54322/postgres"`,
+        'Get "https://ci-user:registry-sentinel@registry.example.test/v2/": 503 Service Unavailable',
+      ].join("\n")
+    );
+    expect(excerpt).toContain("TLS handshake timeout");
+    expect(excerpt).not.toContain(sentinel);
+    expect(excerpt).not.toContain("sb_publishable_local_key_abcdef123456");
+    expect(excerpt).not.toContain("registry-sentinel");
+    expect(excerpt).toContain("[REDACTED]");
+  });
+
+  it("keeps only a bounded tail of lines and marks the truncation", () => {
+    const output = Array.from({ length: 50 }, (_, index) => `pull progress line ${index}`).join("\n");
+    const excerpt = startFailureDiagnosticExcerpt(output, { maxLines: 5, maxChars: 1_000 });
+    expect(excerpt).toContain("[...truncated...]");
+    expect(excerpt).toContain("pull progress line 49");
+    expect(excerpt).not.toContain("pull progress line 0");
+    expect(excerpt.length).toBeLessThanOrEqual(1_000);
+    expect(excerpt.trim().split(/\r?\n/)).toHaveLength(6); // marker + 5 lines
+  });
+
+  it("bounds a long single line by characters", () => {
+    const excerpt = startFailureDiagnosticExcerpt("pull error ".repeat(500), { maxChars: 200 });
+    expect(excerpt.length).toBeLessThanOrEqual(200);
+    expect(excerpt).toContain("[...truncated...]");
+  });
+
+  it("returns an empty string for empty or non-string input", () => {
+    expect(startFailureDiagnosticExcerpt("")).toBe("");
+    expect(startFailureDiagnosticExcerpt("   \n\t")).toBe("");
+    expect(startFailureDiagnosticExcerpt(null as unknown as string)).toBe("");
+  });
+});
+
+describe("startFailureSummary bounded redacted start surfacing", () => {
+  it("surfaces only redacted, bounded evidence and never the captured credentials", () => {
     const sentinel = "SENTINEL_CREDENTIAL_9f3a7c42";
     const output = [
       "Error: docker failed to provision",
@@ -1151,17 +1294,18 @@ describe("startFailureSummary fail-closed start surfacing", () => {
       attempt: 1,
       maxAttempts: 3,
       retryable: true,
+      reason: "transient registry/image pull failure",
       output,
     });
-    // The summary is fixed text + exit/attempt metadata only; the captured
-    // output (raw or redacted) must never be surfaced.
+    // The summary is fixed text + exit/attempt metadata + a REDACTED excerpt;
+    // the captured credential values must never be surfaced.
     expect(retryable).not.toContain(sentinel);
-    expect(retryable).not.toContain("docker failed");
-    expect(retryable).not.toContain("SERVICE_ROLE_KEY");
-    expect(retryable).not.toContain("sb_publishable");
-    expect(retryable).not.toContain("[REDACTED]");
+    expect(retryable).not.toContain("sb_publishable_local_key_abcdef123456");
+    expect(retryable).toContain("[REDACTED]");
+    expect(retryable).toContain("docker failed to provision");
     expect(retryable).toContain("attempt 1/3");
     expect(retryable).toContain("exit code 1");
+    expect(retryable).toContain("transient registry/image pull failure");
     expect(retryable).toContain("retrying");
 
     const final = startFailureSummary({
@@ -1171,22 +1315,33 @@ describe("startFailureSummary fail-closed start surfacing", () => {
       output,
     });
     expect(final).not.toContain(sentinel);
-    expect(final).not.toContain("docker failed");
+    expect(final).toContain("[REDACTED]");
     expect(final).toContain("attempt 3/3");
     expect(final).toContain("exit code 1");
     expect(final).not.toContain("retrying");
   });
 
-  it("emits a fixed non-retryable summary with exit/attempt metadata only", () => {
+  it("emits a fixed non-retryable summary with exit/attempt metadata only when there is no output", () => {
     const summary = startFailureSummary({
       exitCode: 2,
       attempt: 2,
       maxAttempts: 3,
-      output: "some captured diagnostics that must not surface",
     });
-    expect(summary).not.toContain("captured diagnostics");
-    expect(summary).toContain("attempt 2/3");
-    expect(summary).toContain("exit code 2");
+    expect(summary).toBe("`supabase start` failed on attempt 2/3, exit code 2.");
+  });
+
+  it("bounds the surfaced excerpt", () => {
+    const summary = startFailureSummary({
+      exitCode: 1,
+      attempt: 1,
+      maxAttempts: 3,
+      output: Array.from({ length: 200 }, (_, index) => `diagnostic line ${index}`).join("\n"),
+      maxLines: 4,
+      maxChars: 180,
+    });
+    expect(summary).toContain("[...truncated...]");
+    expect(summary).not.toContain("diagnostic line 0");
+    expect(summary.length).toBeLessThanOrEqual(180 + 200);
   });
 });
 
@@ -1913,6 +2068,40 @@ describe("completeRetryableTeardown retry-path sequencing (amendment A3)", () =>
     });
     events.push("attempt-2");
     expect(events).toEqual(["attempt-2"]);
+  });
+});
+
+describe("confirmTeardownBeforeRetry fail-closed retry gate", () => {
+  it("permits a retry ONLY for explicit confirmed=true", async () => {
+    const confirmed = await confirmTeardownBeforeRetry(async () => ({
+      confirmed: true,
+      projectId: "ocf-contract-abcd1234",
+    }));
+    expect(confirmed).toMatchObject({ retryable: true, confirmed: true });
+    expect(confirmed.result).toMatchObject({ projectId: "ocf-contract-abcd1234" });
+
+    for (const result of [
+      undefined,
+      null,
+      false,
+      true,
+      {},
+      { confirmed: false },
+      { confirmed: "true" },
+    ]) {
+      const gate = await confirmTeardownBeforeRetry(async () => result);
+      expect(gate.retryable).toBe(false);
+      expect(gate.confirmed).toBe(false);
+    }
+  });
+
+  it("fails closed when the teardown throws", async () => {
+    const gate = await confirmTeardownBeforeRetry(async () => {
+      throw new Error("scoped stop exploded");
+    });
+    expect(gate.retryable).toBe(false);
+    expect(gate.confirmed).toBe(false);
+    expect(gate.error).toBeInstanceOf(Error);
   });
 });
 

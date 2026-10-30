@@ -151,6 +151,27 @@ export interface RetryableTeardownOptions<T> {
  */
 export function completeRetryableTeardown<T>(options?: RetryableTeardownOptions<T>): Promise<void>;
 
+/** Result of `confirmTeardownBeforeRetry` (fail-closed retry gate). */
+export interface RetryTeardownGate {
+  /** True ONLY when teardown explicitly returned `confirmed: true`. */
+  retryable: boolean;
+  /** The explicit confirmation flag (false for missing/false/thrown teardown). */
+  confirmed: boolean;
+  /** The teardown result (when it returned instead of throwing). */
+  result?: unknown;
+  /** The teardown error (when it threw); never surfaced raw by callers. */
+  error?: unknown;
+}
+
+/**
+ * Await a complete isolated teardown and permit a whole-lane retry ONLY when it
+ * explicitly returns `{ confirmed: true }`. Missing/false confirmation and a
+ * thrown teardown error both fail closed (`retryable: false`).
+ */
+export function confirmTeardownBeforeRetry(
+  teardown: () => unknown
+): Promise<RetryTeardownGate>;
+
 /** Options carrying an alternate repository project id (tests only). */
 export interface ProjectIdOptions {
   repositoryProjectId?: string;
@@ -300,28 +321,63 @@ export function isPortFree(port: number, options?: { host?: string }): Promise<b
 
 export function isPortConflictOutput(text: string): boolean;
 
-/** Options for `startFailureSummary` (fail-closed `supabase start` surfacing). */
-export interface StartFailureSummaryOptions {
-  /** Exit code of the failed `supabase start` (never surfaced, metadata only). */
+/**
+ * True ONLY for a transient registry/image-pull failure of `supabase start`:
+ * a SINGLE line must show BOTH a registry/image-pull context AND a transient
+ * network transport error (timeout, DNS failure, reset, rate limit, 5xx), so
+ * unrelated pull text followed later by a generic transport error does not
+ * trigger a retry. Deterministic pull errors (missing manifest, denied access)
+ * and non-registry failures (Docker daemon down, port conflict, invalid config)
+ * return `false` so callers fail fast.
+ */
+export function isTransientRegistryStartFailure(text: string): boolean;
+
+/** Options for `startFailureDiagnosticExcerpt` (redacted + bounded). */
+export interface StartFailureDiagnosticExcerptOptions {
+  /** Maximum characters in the returned excerpt (default 1200). */
+  maxChars?: number;
+  /** Maximum trailing lines kept before character bounding (default 12). */
+  maxLines?: number;
+  /** Already-captured runtime values to redact (never surfaced elsewhere). */
+  runtime?: Partial<SupabaseRuntime>;
+}
+
+/**
+ * Build a credential-safe, bounded excerpt from failed `supabase start`
+ * output. The output is passed through the shared redactor FIRST, then only the
+ * last `maxLines` lines are kept and the result is capped at `maxChars`
+ * characters. Empty/non-string input returns an empty string.
+ */
+export function startFailureDiagnosticExcerpt(
+  output: string,
+  options?: StartFailureDiagnosticExcerptOptions
+): string;
+
+/** Options for `startFailureSummary` (redacted, bounded start surfacing). */
+export interface StartFailureSummaryOptions extends StartFailureDiagnosticExcerptOptions {
+  /** Exit code of the failed `supabase start` (metadata only). */
   exitCode: number;
   /** Current whole-lane attempt number. */
   attempt: number;
   /** Bounded whole-lane retry budget. */
   maxAttempts: number;
-  /** Whether the lane will retry with a fresh port allocation. */
+  /** Whether the lane will retry with a fresh isolated workdir/port allocation. */
   retryable?: boolean;
+  /** Short cause label appended to the fixed summary (e.g. `port conflict`). */
+  reason?: string;
   /**
-   * Captured `supabase start` stdout/stderr. ACCEPTED AND DELIBERATELY
-   * DROPPED: CLI diagnostics can contain credentials, so the captured output
-   * is never included in the returned summary — it stays strictly internal
-   * for port-conflict classification and bounded retry.
+   * Captured `supabase start` stdout/stderr. NEVER surfaced raw: it is passed
+   * through `startFailureDiagnosticExcerpt` (shared redaction + line/character
+   * bounds) before being appended to the fixed summary.
    */
   output?: string;
 }
 
 /**
  * Build the ONLY diagnostic text emitted for a failed `supabase start`: a
- * fixed summary plus exit/attempt metadata, never the captured output.
+ * fixed summary plus exit/attempt metadata and, when output was captured, a
+ * REDACTED and bounded diagnostic excerpt. Raw captured output is never
+ * returned.
  */
 export function startFailureSummary(options: StartFailureSummaryOptions): string;
 
