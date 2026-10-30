@@ -18,7 +18,10 @@
  *     `SUPABASE_*` aliases;
  *   - `sanitizeEnv` strips every credential-shaped variable (bare keys,
  *     `SUPABASE_*`, `NEXT_PUBLIC_*`, `POSTGRES_*`, `VITE_*`, `REACT_APP_*`,
- *     and `*_KEY`/`*_TOKEN`/`*_SECRET`/`*_PASSWORD`/`*_CREDENTIAL` suffixes);
+ *     and `*_KEY`/`*_TOKEN`/`*_SECRET`/`*_PASSWORD`/`*_CREDENTIAL` suffixes)
+ *     while preserving ONLY the exact non-secret
+ *     `SUPABASE_INTERNAL_IMAGE_REGISTRY` registry-routing key, and only when
+ *     its value is a plain safely validated registry host;
  *   - `redactSensitiveOutput` masks JWTs, URL userinfo, credential
  *     assignments, and known runtime values (sentinel redaction) in captured
  *     command output, plus secret-bearing CLI table rows (`Publishable`/
@@ -475,6 +478,98 @@ describe("sanitizeEnv", () => {
     expect(clean.NEXT_PUBLIC_SUPABASE_ANON_KEY).toBeUndefined();
     expect(clean.PATH).toBe("/usr/bin");
     expect(clean.HOME).toBe("/home/user");
+  });
+
+  it("preserves only the exact non-secret registry-routing key among SUPABASE_* variables", () => {
+    const clean = sanitizeEnv({
+      // The documented non-secret Supabase CLI image-registry route (CI sets it
+      // to Docker Hub) must survive so the lane's CLI child can use it.
+      SUPABASE_INTERNAL_IMAGE_REGISTRY: "docker.io",
+      // Every other SUPABASE_* value — including credentials/tokens and
+      // near-miss lookalikes built from the allowed key — stays stripped.
+      SUPABASE_URL: "https://hosted-project.supabase.co",
+      SUPABASE_ACCESS_TOKEN: "sbp_hostile_token",
+      SUPABASE_SERVICE_ROLE_KEY: "eyJservice",
+      SUPABASE_DB_URL: "postgresql://hosted:secret@db.internal.example:5432/prod",
+      SUPABASE_INTERNAL_IMAGE_REGISTRY_TOKEN: "hostile-registry-token",
+      SUPABASE_INTERNAL_IMAGE_REGISTRY_SECRET: "hostile-registry-secret",
+      SUPABASE_INTERNAL_IMAGE_REGISTRY_CREDENTIAL: "hostile-registry-credential",
+      SUPABASE_INTERNAL_IMAGE_REGISTRY_PASSWORD: "hostile-registry-password",
+      SUPABASE_INTERNAL_IMAGE_REGISTRY_API_KEY: "hostile-registry-key",
+      // Case-variant keys are not the CLI's exact key and are not exempted.
+      supabase_internal_image_registry: "docker.io",
+      PATH: "/usr/bin",
+    });
+    expect(clean.SUPABASE_INTERNAL_IMAGE_REGISTRY).toBe("docker.io");
+    for (const key of [
+      "SUPABASE_URL",
+      "SUPABASE_ACCESS_TOKEN",
+      "SUPABASE_SERVICE_ROLE_KEY",
+      "SUPABASE_DB_URL",
+      "SUPABASE_INTERNAL_IMAGE_REGISTRY_TOKEN",
+      "SUPABASE_INTERNAL_IMAGE_REGISTRY_SECRET",
+      "SUPABASE_INTERNAL_IMAGE_REGISTRY_CREDENTIAL",
+      "SUPABASE_INTERNAL_IMAGE_REGISTRY_PASSWORD",
+      "SUPABASE_INTERNAL_IMAGE_REGISTRY_API_KEY",
+      "supabase_internal_image_registry",
+    ]) {
+      expect(clean[key], `${key} must be stripped by sanitizeEnv`).toBeUndefined();
+    }
+    expect(clean.PATH).toBe("/usr/bin");
+  });
+
+  it("preserves ordinary safe Docker registry host values", () => {
+    for (const value of [
+      "docker.io",
+      "registry.example.com",
+      "ghcr.io",
+      "public.ecr.aws",
+      "localhost:5000",
+      "host.docker.internal:5000",
+      "REGISTRY.EXAMPLE.COM:443",
+    ]) {
+      const clean = sanitizeEnv({ SUPABASE_INTERNAL_IMAGE_REGISTRY: value });
+      expect(clean.SUPABASE_INTERNAL_IMAGE_REGISTRY, `${value} must survive`).toBe(value);
+    }
+  });
+
+  it("removes registry values with credential-bearing URLs, schemes, paths, or unsafe syntax", () => {
+    for (const value of [
+      // Credential-bearing URL / userinfo.
+      "https://user:token@registry.example",
+      "user:token@registry.example.com",
+      // Scheme-only URL.
+      "https://registry.example.com",
+      // Paths, query strings, and fragments.
+      "registry.example.com/supabase",
+      "registry.example.com:5000/team",
+      "registry.example.com?token=abc",
+      "registry.example.com#fragment",
+      // Whitespace.
+      " docker.io",
+      "docker.io ",
+      "docker .io",
+      "docker.io\n",
+      // Unsafe host syntax.
+      "-registry.example.com",
+      "registry-.example.com",
+      "registry_example.com",
+      ".registry.example.com",
+      "registry.example.com.",
+      // Out-of-range or non-numeric ports.
+      "docker.io:0",
+      "docker.io:65536",
+      "docker.io:99999",
+      "docker.io:abc",
+      // Empty value.
+      "",
+    ]) {
+      const clean = sanitizeEnv({ SUPABASE_INTERNAL_IMAGE_REGISTRY: value });
+      expect(
+        clean.SUPABASE_INTERNAL_IMAGE_REGISTRY,
+        `unsafe value ${JSON.stringify(value)} must be removed`
+      ).toBeUndefined();
+    }
   });
 
   it("strips POSTGRES_*/PG* and suffix-marked credential variables", () => {

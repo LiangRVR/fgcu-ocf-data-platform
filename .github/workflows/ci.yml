@@ -102,6 +102,10 @@ jobs:
     name: Contract tests (Docker-local Supabase)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Route Supabase CLI image pulls to Docker Hub (public, non-secret
+      # registry host) instead of the rate/data-limited public ECR mirror.
+      SUPABASE_INTERNAL_IMAGE_REGISTRY: docker.io
     steps:
       - uses: actions/checkout@v4
 
@@ -137,6 +141,10 @@ jobs:
     name: E2E tests (Playwright Chromium)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      # Route Supabase CLI image pulls to Docker Hub (public, non-secret
+      # registry host) instead of the rate/data-limited public ECR mirror.
+      SUPABASE_INTERNAL_IMAGE_REGISTRY: docker.io
     steps:
       - uses: actions/checkout@v4
 

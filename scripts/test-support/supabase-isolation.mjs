@@ -1429,7 +1429,65 @@ const SENSITIVE_PREFIXES = ["SUPABASE_", "NEXT_PUBLIC_", "POSTGRES_", "VITE_", "
 /** Suffixes that mark a credential-bearing variable. */
 const SENSITIVE_SUFFIXES = ["TOKEN", "SECRET", "KEY", "PASSWORD", "CREDENTIAL"];
 
-function isSensitiveEnvKey(key) {
+/**
+ * A single DNS-style host label: alphanumeric at both ends, hyphens only in
+ * the middle, at most 63 characters.
+ */
+const REGISTRY_HOST_LABEL = "[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?";
+
+/**
+ * A safe Docker registry host value: dot-separated host labels plus an
+ * OPTIONAL numeric port. NO scheme, userinfo, path, query, fragment, or
+ * whitespace is permitted. The port is range-checked separately.
+ */
+const REGISTRY_HOST_RE = new RegExp(
+  `^(?:${REGISTRY_HOST_LABEL}\\.)*${REGISTRY_HOST_LABEL}(?::(\\d{1,5}))?$`
+);
+
+/** Maximum DNS hostname length (RFC 1035), excluding an optional port. */
+const REGISTRY_HOST_MAX_LENGTH = 253;
+
+/**
+ * True ONLY for a plain, safe Docker registry host such as `docker.io`,
+ * `registry.example.com`, `ghcr.io`, or `localhost:5000`.
+ *
+ * Rejects credential-bearing URLs, schemes (`https://`), userinfo
+ * (`user:token@…`), paths, query strings, fragments, surrounding/internal
+ * whitespace, malformed host syntax, and out-of-range ports. This guards the
+ * one sanitization allowlist entry so it can never forward a credential-shaped
+ * value just because its key name is the documented non-secret route.
+ */
+function isSafeRegistryHostValue(value) {
+  if (typeof value !== "string" || value === "") return false;
+  if (value.trim() !== value) return false;
+  const match = value.match(REGISTRY_HOST_RE);
+  if (!match) return false;
+  const port = match[1];
+  const host = port ? value.slice(0, -(port.length + 1)) : value;
+  if (host.length > REGISTRY_HOST_MAX_LENGTH) return false;
+  if (port !== undefined) {
+    const portNumber = Number(port);
+    if (portNumber < 1 || portNumber > 65_535) return false;
+  }
+  return true;
+}
+
+/**
+ * Exact, literal non-secret environment keys that survive sanitization.
+ *
+ * Deliberately narrow: this is an ALLOWLIST of exact key names, not a prefix
+ * or suffix exemption. Only `SUPABASE_INTERNAL_IMAGE_REGISTRY` (the documented
+ * non-secret Supabase CLI image-registry route) is admitted, and only when its
+ * value is a plain safe registry host (see `isSafeRegistryHostValue`). Every
+ * other `SUPABASE_*` variable — including URLs, keys, tokens, and secrets —
+ * still matches the credential prefixes/suffixes below and is stripped. The
+ * key is matched case-sensitively so a lookalike/case variant cannot broaden
+ * the exemption.
+ */
+const SANITIZE_ENV_ALLOWLIST = new Set(["SUPABASE_INTERNAL_IMAGE_REGISTRY"]);
+
+function isSensitiveEnvKey(key, value) {
+  if (SANITIZE_ENV_ALLOWLIST.has(key)) return !isSafeRegistryHostValue(value);
   const upper = key.toUpperCase();
   if (SENSITIVE_BARE_KEYS.has(upper)) return true;
   if (SENSITIVE_PREFIXES.some((prefix) => upper.startsWith(prefix))) return true;
@@ -1446,11 +1504,19 @@ function isSensitiveEnvKey(key) {
  * `VITE_*`, `REACT_APP_*`, the bare key names, and any key ending in
  * `TOKEN`/`SECRET`/`KEY`/`PASSWORD`/`CREDENTIAL` — the union of every
  * credential-shaped variable that could otherwise reach a child process.
+ *
+ * The ONLY exemption is the exact non-secret key
+ * `SUPABASE_INTERNAL_IMAGE_REGISTRY`, which routes Supabase CLI image pulls
+ * (e.g. to Docker Hub in CI). It is a literal key allowlist rather than a
+ * `SUPABASE_*` prefix exemption, and it survives ONLY when its value is a
+ * plain, safely validated registry host (no scheme, userinfo, path, query,
+ * fragment, or whitespace). Credential-shaped variables in the same family
+ * remain stripped.
  */
 export function sanitizeEnv(base = process.env) {
   const env = { ...base };
   for (const key of Object.keys(env)) {
-    if (isSensitiveEnvKey(key)) delete env[key];
+    if (isSensitiveEnvKey(key, env[key])) delete env[key];
   }
   return env;
 }

@@ -10,7 +10,8 @@
  *   - the lane's child env for the Vitest run is built by
  *     `runtimeEnv(sanitizeEnv(base), runtime)`, and `sanitizeEnv` strips every
  *     credential-shaped variable, so even a hostile parent env cannot forward
- *     a credential to the contract suite.
+ *     a credential to the contract suite. The single exemption is the exact
+ *     non-secret `SUPABASE_INTERNAL_IMAGE_REGISTRY` registry-routing key.
  *
  * This file asserts both halves of the guard using ONLY synthetic hostile
  * environment fixtures and safe literal key names. It never opens, parses,
@@ -46,6 +47,10 @@ const HOSTILE_CREDENTIALS: Record<string, string> = {
   PGUSER: "hosted",
   PGPASSWORD: "hostile-pg-password",
   SUPABASE_ACCESS_TOKEN: "sbp_hostile_token",
+  // Near-miss lookalikes of the one allowed registry-routing key are still
+  // credential-shaped and must remain stripped.
+  SUPABASE_INTERNAL_IMAGE_REGISTRY_TOKEN: "hostile-registry-token",
+  SUPABASE_INTERNAL_IMAGE_REGISTRY_CREDENTIAL: "hostile-registry-credential",
   // SUPABASE_* prefix family.
   SUPABASE_URL: "https://hostile-project.supabase.co",
   SUPABASE_ANON_KEY: "hostile-anon-key",
@@ -77,6 +82,9 @@ const BENIGN_VARS: Record<string, string> = {
   NODE_ENV: "test",
   TMPDIR: "/tmp",
   CONTRACT_LABEL: "contract",
+  // Exact non-secret Supabase CLI registry-routing key: this is the sole
+  // admitted `SUPABASE_*` variable and must reach the contract lane child env.
+  SUPABASE_INTERNAL_IMAGE_REGISTRY: "docker.io",
 };
 
 describe("contract Vitest cannot load repository env files (amendment A3)", () => {
