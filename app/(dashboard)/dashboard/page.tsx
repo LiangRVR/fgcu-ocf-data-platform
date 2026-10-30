@@ -43,9 +43,21 @@ function countBy<T extends object>(
   return Object.entries(map).sort(([, a], [, b]) => b - a);
 }
 
+/**
+ * Inclusive final calendar day of the OCF month starting on `firstOfMonth`.
+ * Computed in UTC from date-only parts so no server-local zone can shift it.
+ */
+function endOfMonthDate(firstOfMonth: string): string {
+  const [year, month] = firstOfMonth.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(year, month, 0));
+  return `${lastDay.getUTCFullYear()}-${String(lastDay.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    lastDay.getUTCDate()
+  ).padStart(2, "0")}`;
+}
+
 // ─── data fetching ────────────────────────────────────────────────────────────
 
-async function getDashboardData() {
+export async function getDashboardData() {
   const supabase = createServerClient();
 
   const reportingMonth = getNewYorkMonthRange();
@@ -163,6 +175,9 @@ async function getDashboardData() {
 
     return {
       error: false as const,
+      // Captured once so every label and drill-down link on the page describes
+      // the same OCF reporting month, even across a midnight boundary.
+      reportingMonth,
       stats: {
         totalStudents: studentsRes.count ?? 0,
         totalFellowships: fellowshipsRes.count ?? 0,
@@ -184,7 +199,7 @@ async function getDashboardData() {
     };
   } catch (err) {
     console.error("Dashboard data fetch failed:", err);
-    return { error: true as const };
+    return { error: true as const, reportingMonth };
   }
 }
 
@@ -259,7 +274,13 @@ function DistributionList({
 export default async function DashboardPage() {
   const result = await getDashboardData();
 
-  const monthLabel = getNewYorkMonthRange().label;
+  const { reportingMonth } = result;
+  const monthLabel = reportingMonth.label;
+  // The monthly no-show drill-down carries the exact same OCF month back to
+  // advising as a validated, canonical date range.
+  const monthNoShowHref = `/advising?no_show=yes&from=${reportingMonth.start}&to=${endOfMonthDate(
+    reportingMonth.start
+  )}`;
 
   if (result.error) {
     return (
@@ -365,7 +386,7 @@ export default async function DashboardPage() {
           description={monthLabel}
           icon={CalendarCheck}
           tone="green"
-          href="/advising"
+          href={`/advising?from=${reportingMonth.start}&to=${endOfMonthDate(reportingMonth.start)}`}
             trend={`${stats.noShowsThisMonth} no-shows this month`}
         />
         </div>
@@ -403,7 +424,7 @@ export default async function DashboardPage() {
             count: stats.noShowsThisMonth,
             icon: XCircle,
             tone: "rose",
-            href: "/advising?no_show=yes",
+            href: monthNoShowHref,
           },
         ].map(({ label, count, icon: Icon, tone, href }) => {
           const pct =
@@ -467,7 +488,7 @@ export default async function DashboardPage() {
                 {
                   label: "Advising no-shows this month",
                   value: stats.noShowsThisMonth,
-                  href: "/advising?no_show=yes",
+                  href: monthNoShowHref,
                   tone: "red" as const,
                 },
               ].map((item) => (

@@ -11,7 +11,9 @@ import type { Database } from "@/types/database";
 import Link from "next/link";
 import { CalendarCheck2, ShieldAlert, UserRoundCheck, Users } from "lucide-react";
 import { redirect } from "next/navigation";
+import { resolveNewYorkDateRange } from "@/lib/utils/new-york-date";
 import { resolvePagination, totalPages } from "@/lib/utils/pagination";
+import { formatDate } from "@/lib/utils/format";
 
 export const metadata: Metadata = { title: "Advising" };
 
@@ -29,6 +31,8 @@ interface Props {
     pageSize?: string;
     search?: string;
     mode?: string;
+    from?: string;
+    to?: string;
   }>;
 }
 
@@ -102,6 +106,8 @@ async function getAdvisingMeetings(params: {
   mode?: string;
   no_show?: string;
   advisor_id?: string;
+  from?: string;
+  to?: string;
 }): Promise<AdvisingMeetingsResult> {
   const supabase = createServerClient();
   const pagination = resolvePagination(params);
@@ -135,6 +141,10 @@ async function getAdvisingMeetings(params: {
     if (params.advisor_id && /^\d+$/.test(params.advisor_id)) {
       query = query.eq("advisor_id", Number(params.advisor_id));
     }
+    // OCF calendar-day bounds on the date-only meeting_date column. The values
+    // are already validated/canonicalized by the page boundary.
+    if (params.from) query = query.gte("meeting_date", params.from);
+    if (params.to) query = query.lte("meeting_date", params.to);
 
     const { data, error, count } = await query
       .order("meeting_date", { ascending: false })
@@ -221,20 +231,33 @@ export default async function AdvisingPage({ searchParams }: Props) {
   const defaultAdvisorId  = params.advisor_id ?? String(advisor.advisor_id);
   const initialNoShowFilter =
     params.no_show === "yes" ? "yes" : params.no_show === "no" ? "no" : undefined;
+  // Validate the OCF date filter once at the untrusted URL boundary. Malformed
+  // or reversed bounds are dropped below and rewritten to a canonical URL.
+  const dateRange = resolveNewYorkDateRange(params.from, params.to);
 
-  const result = await getAdvisingMeetings(params);
+  const result = await getAdvisingMeetings({
+    ...params,
+    from: dateRange.from,
+    to: dateRange.through,
+  });
   // Canonicalize the URL: an out-of-range page (after a filter change or a
   // deleted row) collapses to the last valid page, and any non-canonical
-  // page/pageSize representation is rewritten once via redirect.
+  // page/pageSize/date representation is rewritten once via redirect.
   const pageOutOfRange = result.pagination.page > Math.max(1, result.pages);
   const nonCanonical =
     String(result.pagination.page) !== (params.page ?? "1") ||
-    String(result.pagination.pageSize) !== (params.pageSize ?? "25");
+    String(result.pagination.pageSize) !== (params.pageSize ?? "25") ||
+    params.from !== dateRange.from ||
+    params.to !== dateRange.through;
   if (pageOutOfRange || nonCanonical) {
     const canonical = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
       if (value !== undefined) canonical.set(key, value);
     }
+    if (dateRange.from) canonical.set("from", dateRange.from);
+    else canonical.delete("from");
+    if (dateRange.through) canonical.set("to", dateRange.through);
+    else canonical.delete("to");
     canonical.set(
       "page",
       String(pageOutOfRange ? Math.max(1, result.pages) : result.pagination.page),
@@ -261,6 +284,15 @@ export default async function AdvisingPage({ searchParams }: Props) {
         <MetricBadge tone="blue">{result.count} meetings</MetricBadge>
         <MetricBadge tone="red">{noShowCount} no-shows</MetricBadge>
         <MetricBadge tone="amber">{studentIdsWithMeetings.size} students on this page</MetricBadge>
+        {(dateRange.from || dateRange.through) && (
+          <MetricBadge tone="slate">
+            {dateRange.from && dateRange.through
+              ? `${formatDate(dateRange.from)} – ${formatDate(dateRange.through)}`
+              : dateRange.from
+                ? `From ${formatDate(dateRange.from)}`
+                : `Through ${formatDate(dateRange.through)}`}
+          </MetricBadge>
+        )}
       </PageHeader>
 
       <PageSection

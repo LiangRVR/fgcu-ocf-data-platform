@@ -12,6 +12,10 @@ const { requireAdvisor } = vi.hoisted(() => ({
   requireAdvisor: vi.fn(),
 }));
 
+const { redirect } = vi.hoisted(() => ({
+  redirect: vi.fn(),
+}));
+
 vi.mock("@/lib/supabase/server", () => ({
   createServerClient,
 }));
@@ -19,6 +23,8 @@ vi.mock("@/lib/supabase/server", () => ({
 vi.mock("@/lib/auth/session", () => ({
   requireAdvisor,
 }));
+
+vi.mock("next/navigation", () => ({ redirect }));
 
 // The client AdvisingTable is mocked to a passthrough that renders the
 // display contracts this unit suite owns on the server-data side:
@@ -178,6 +184,8 @@ function createMockClient(
         select: ReturnType<typeof vi.fn>;
         or: ReturnType<typeof vi.fn>;
         eq: ReturnType<typeof vi.fn>;
+        gte: ReturnType<typeof vi.fn>;
+        lte: ReturnType<typeof vi.fn>;
         in: ReturnType<typeof vi.fn>;
         order: ReturnType<typeof vi.fn>;
         range: ReturnType<typeof vi.fn>;
@@ -186,6 +194,8 @@ function createMockClient(
         select: vi.fn(),
         or: vi.fn(),
         eq: vi.fn(),
+        gte: vi.fn(),
+        lte: vi.fn(),
         in: vi.fn(),
         order: vi.fn(),
         range: vi.fn(),
@@ -194,6 +204,8 @@ function createMockClient(
       chain.select.mockReturnValue(chain);
       chain.or.mockReturnValue(chain);
       chain.eq.mockReturnValue(chain);
+      chain.gte.mockReturnValue(chain);
+      chain.lte.mockReturnValue(chain);
       chain.in.mockReturnValue(chain);
       chain.order.mockReturnValue(chain);
       chain.range.mockReturnValue(chain);
@@ -423,6 +435,114 @@ describe("AdvisingPage", () => {
     expect(orExpression).not.toContain("search_document");
     // Page 2 of 25 → inclusive [25, 49].
     expect(listChain.range).toHaveBeenCalledWith(25, 49);
+  });
+
+  it("applies a validated month date filter as inclusive meeting_date bounds", async () => {
+    const client = createMockClient({
+      advising_meeting_list: { data: [], count: 0, error: null },
+    }) as unknown as { from: ReturnType<typeof vi.fn> };
+    createServerClient.mockReturnValue(client);
+
+    await renderPage(
+      createElement(AdvisingPage, {
+        searchParams: Promise.resolve({
+          no_show: "yes",
+          from: "2026-10-01",
+          to: "2026-10-31",
+          page: "1",
+          pageSize: "25",
+        }),
+      })
+    );
+
+    const listChain = client.from.mock.results[0].value as {
+      eq: ReturnType<typeof vi.fn>;
+      gte: ReturnType<typeof vi.fn>;
+      lte: ReturnType<typeof vi.fn>;
+    };
+    // Month drill-down constrains the same date-only column range the
+    // dashboard counted, while keeping the no-show predicate intact.
+    expect(listChain.gte).toHaveBeenCalledWith("meeting_date", "2026-10-01");
+    expect(listChain.lte).toHaveBeenCalledWith("meeting_date", "2026-10-31");
+    expect(listChain.eq).toHaveBeenCalledWith("no_show", true);
+    expect(redirect).not.toHaveBeenCalled();
+  });
+
+  it("drops malformed date params and redirects to the canonical URL", async () => {
+    const client = createMockClient({
+      advising_meeting_list: { data: [], count: 0, error: null },
+    }) as unknown as { from: ReturnType<typeof vi.fn> };
+    createServerClient.mockReturnValue(client);
+
+    await renderPage(
+      createElement(AdvisingPage, {
+        searchParams: Promise.resolve({
+          from: "10/01/2026",
+          to: "2026-13-01",
+          page: "1",
+          pageSize: "25",
+        }),
+      })
+    );
+
+    const listChain = client.from.mock.results[0].value as {
+      gte: ReturnType<typeof vi.fn>;
+      lte: ReturnType<typeof vi.fn>;
+    };
+    expect(listChain.gte).not.toHaveBeenCalled();
+    expect(listChain.lte).not.toHaveBeenCalled();
+    expect(redirect).toHaveBeenCalledWith("/advising?page=1&pageSize=25");
+  });
+
+  it("canonicalizes a reversed range by dropping only the invalid upper bound", async () => {
+    const client = createMockClient({
+      advising_meeting_list: { data: [], count: 0, error: null },
+    }) as unknown as { from: ReturnType<typeof vi.fn> };
+    createServerClient.mockReturnValue(client);
+
+    await renderPage(
+      createElement(AdvisingPage, {
+        searchParams: Promise.resolve({
+          from: "2026-10-31",
+          to: "2026-10-01",
+          page: "1",
+          pageSize: "25",
+        }),
+      })
+    );
+
+    const listChain = client.from.mock.results[0].value as {
+      gte: ReturnType<typeof vi.fn>;
+      lte: ReturnType<typeof vi.fn>;
+    };
+    expect(listChain.gte).toHaveBeenCalledWith("meeting_date", "2026-10-31");
+    expect(listChain.lte).not.toHaveBeenCalled();
+    expect(redirect).toHaveBeenCalledWith(
+      "/advising?from=2026-10-31&page=1&pageSize=25"
+    );
+  });
+
+  it("keeps the all-time no-show view unbounded when no date filter is supplied", async () => {
+    const client = createMockClient({
+      advising_meeting_list: { data: [], count: 0, error: null },
+    }) as unknown as { from: ReturnType<typeof vi.fn> };
+    createServerClient.mockReturnValue(client);
+
+    await renderPage(
+      createElement(AdvisingPage, {
+        searchParams: Promise.resolve({ no_show: "yes", page: "1", pageSize: "25" }),
+      })
+    );
+
+    const listChain = client.from.mock.results[0].value as {
+      eq: ReturnType<typeof vi.fn>;
+      gte: ReturnType<typeof vi.fn>;
+      lte: ReturnType<typeof vi.fn>;
+    };
+    expect(listChain.gte).not.toHaveBeenCalled();
+    expect(listChain.lte).not.toHaveBeenCalled();
+    expect(listChain.eq).toHaveBeenCalledWith("no_show", true);
+    expect(redirect).not.toHaveBeenCalled();
   });
 
   it("renders the page shell (zero counts) when a query fails instead of crashing", async () => {

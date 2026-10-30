@@ -58,6 +58,18 @@ const STUDENT_NAME = requireEnv("E2E_STUDENT_NAME");
 const FELLOWSHIP_NAME = requireEnv("E2E_FELLOWSHIP_NAME");
 const APPLICATION_YEAR = requireEnv("E2E_APPLICATION_YEAR");
 
+function newYorkCalendarDate(now = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  return `${value("year")}-${value("month")}-${value("day")}`;
+}
+
 async function signInAsActive(page: Page): Promise<void> {
   await page.goto("/login");
   await page.locator("#email").fill(ACTIVE_EMAIL);
@@ -694,7 +706,7 @@ test.describe("audit history and activity surfaces", () => {
     const PAGE_OVERFLOW_WRITES = 25;
     const original = await readStudentRow(studentId);
     const originalMajor = String(original.major ?? "");
-    const today = new Date().toISOString().slice(0, 10);
+    const firstWriteDay = newYorkCalendarDate();
 
     try {
       for (let i = 0; i < PAGE_OVERFLOW_WRITES; i += 1) {
@@ -704,6 +716,7 @@ test.describe("audit history and activity surfaces", () => {
           `${originalMajor} · E2E activity ${Date.now()}-${i}`,
         );
       }
+      const lastWriteDay = newYorkCalendarDate();
 
       await signInAsActive(page);
       await page.goto("/activity");
@@ -807,10 +820,11 @@ test.describe("audit history and activity surfaces", () => {
         await expect(row).toContainText(STUDENT_NAME);
       }
 
-      // Date range: today's events (all generated writes) are included.
+      // Date range: all generated OCF-calendar-day writes are included, even
+      // when this test runs after UTC midnight but before New York midnight.
       await page.getByRole("link", { name: "Clear" }).click();
-      await page.getByLabel(/^From/).fill(today);
-      await page.getByLabel(/^Through/).fill(today);
+      await page.getByLabel(/^From/).fill(firstWriteDay);
+      await page.getByLabel(/^Through/).fill(lastWriteDay);
       await page.getByRole("button", { name: "Apply filters" }).click();
       await expect(page).toHaveURL(/from=/);
       await expect(page).toHaveURL(/to=/);
